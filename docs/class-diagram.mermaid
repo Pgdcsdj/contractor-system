@@ -1,0 +1,95 @@
+classDiagram
+    %% ── 后端 ──
+    class ImportService {
+        +Array IMPORT_FIELDS
+        +Object FIELD_LABELS
+        +buildMapping(headerRow) Object
+        +locateHeaderRow(rows) Number
+        +parseDate(v) String
+        +editDistance(a, b) Number
+        +commitImport(buffer, admin, filename) Object
+    }
+    note for ImportService "T1: IMPORT_FIELDS 扩充 location/plan_finish_time 别名\nT5(P1): buildMapping 复合表头分词增强"
+
+    class HazardLoopRoute {
+        +FIELD_MAP Object
+        +PATCH_handler(req, res) void
+        +coerceIsReject(v) Number
+        +requireAdminOrSafety middleware
+    }
+    note for HazardLoopRoute "T2: FIELD_MAP 补 is_reject_item/deduct_score\n沿用 requireAdminOrSafety + safety仅本人403\n仅更新 updated_at(无审计)"
+
+    %% ── 前端 ──
+    class HazardApi {
+        +getHazardDetail(id) Promise
+        +updateHazard(id, payload) Promise
+        +getHazards(params) Promise
+        +getContractorUnits() Promise
+    }
+    note for HazardApi "updateHazard/getHazardDetail 已存在(确认不改)"
+
+    class HazardLoopPage {
+        +Array list
+        +openEdit(h) void
+        +onEditUpdated(id) void
+    }
+
+    class HazardEditDrawer {
+        +Object form
+        +loadDetail(id) void
+        +submit() void
+        +toSql(v) String
+        +toLocalInput(v) String
+    }
+    note for HazardEditDrawer "T3 新增: 复制 HazardDetailDrawer scoped 样式\n不含 status/rectify_status"
+
+    class HazardDetailDrawer {
+        +Object current
+        +assignHazard/rectifyHazard/verifyHazard
+    }
+    note for HazardDetailDrawer "样式与 form-group 结构来源(参考)"
+
+    %% ── 数据结构 ──
+    class HazardRecord {
+        +id: Number
+        +hazard_code: String
+        +unit_name: String
+        +location: String
+        +hazard_level: String
+        +description: String
+        +rectify_measures: String
+        +responsible_person: String
+        +plan_finish_time: String
+        +is_reject_item: 0/1
+        +deduct_score: String
+        +remark: String
+        +status: String
+        +rectify_status: String
+    }
+
+    class HazardEditPayload {
+        +hazard_investigation_item: String
+        +contractor_unit_id: int|null
+        +unit_name: String
+        +location: String
+        +business_dept: String
+        +business_dept_head: String
+        +description: String
+        +hazard_level: String
+        +rectify_measures: String
+        +remark: String
+        +responsible_person: String
+        +plan_finish_time: String
+        +is_reject_item: 0/1
+        +deduct_score: String
+    }
+    note for HazardEditPayload "不含 status / rectify_status"
+
+    %% ── 关系 ──
+    HazardLoopPage ..> HazardEditDrawer : 打开/监听 updated
+    HazardEditDrawer ..> HazardApi : getHazardDetail / updateHazard
+    HazardApi ..> HazardLoopRoute : HTTP PATCH /api/hazards/:id
+    HazardLoopRoute ..> HazardRecord : SELECT/UPDATE t_hazard
+    HazardEditDrawer ..> HazardDetailDrawer : 复用 scoped 样式 + form-group
+    HazardEditDrawer ..> HazardEditPayload : 提交体
+    HazardLoopRoute ..> ImportService : 导入落库(既有, 独立)

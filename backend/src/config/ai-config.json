@@ -1,0 +1,23 @@
+{
+  "provider": "moonshot",
+  "apiKeys": {
+    "deepseek": "YOUR_DEEPSEEK_API_KEY_HERE",
+    "siliconflow": "",
+    "groq": "",
+    "moonshot": "YOUR_MOONSHOT_API_KEY_HERE"
+  },
+  "models": {
+    "question": "chat",
+    "grading": "chat",
+    "vision": "vision"
+  },
+  "questionConfig": {
+    "defaultCount": 10,
+    "temperature": 0.3,
+    "maxTokens": 2000
+  },
+  "gradingConfig": {
+    "pointsPerItem": 2,
+    "maxScore": 20
+  }
+}

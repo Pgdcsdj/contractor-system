@@ -1,0 +1,72 @@
+import axios from 'axios'
+import { useAuthStore } from '@/stores/auth'
+
+// admin 接口前缀（请求需注入 admin token；401 时跳 /admin/login）
+const ADMIN_API_PREFIXES = [
+  '/api/admin',
+  '/api/record',
+  '/api/material',
+  '/api/ai/config',
+  '/api/contractor-units',
+  '/api/hazard',
+  '/api/rectify-unit-biz', // ← 本次新增，修复隐患设置页误跳 /login 的 Bug
+  '/api/safety',    // ← 安全员登录（公开，但走 admin token 存储复用）
+  '/api/account',   // ← 账号管理（admin/superadmin）
+  '/api/data',      // ← 数据备份/导出（admin/superadmin）
+  '/api/contractor-docs', // ← 承包商开工资料（admin/superadmin）
+]
+
+const request = axios.create({
+  baseURL: import.meta.env.VITE_API_BASE || '',
+  timeout: 15000,
+  headers: { 'Content-Type': 'application/json' },
+})
+
+// 请求拦截：自动注入 JWT（员工 / 管理员）
+request.interceptors.request.use((config) => {
+  // 管理员接口用 admin token，员工接口用普通 token
+  const isAdminApi = ADMIN_API_PREFIXES.some((prefix) =>
+    config.url?.startsWith(prefix)
+  )
+  if (isAdminApi) {
+    const adminToken = localStorage.getItem('tnb_admin_token')
+    if (adminToken) config.headers.Authorization = `Bearer ${adminToken}`
+  } else {
+    const token = localStorage.getItem('tnb_token')
+    if (token) config.headers.Authorization = `Bearer ${token}`
+  }
+  return config
+})
+
+// 响应拦截：401 → 跳转对应登录页
+request.interceptors.response.use(
+  (res) => res,
+  (err) => {
+    if (err.response?.status === 401) {
+      const url = err.config?.url || ''
+      // 登录类接口（/api/admin/login、/api/safety/login）失败不跳转，由页面自行提示
+      if (url.includes('/login')) {
+        return Promise.reject(err)
+      }
+      localStorage.removeItem('tnb_admin_token')
+      localStorage.removeItem('tnb_admin_user')
+      // 清除员工端（培训端）会话，避免 401 整页刷新后 localStorage 仍残留
+      // 员工 token，导致 isLoggedIn 持续为真、反复跳 /quiz 形成死循环
+      localStorage.removeItem('tnb_token')
+      localStorage.removeItem('tnb_user')
+      // 跳回各自登录页。拼接 Vite base（生产 /tnb/，开发 /），确保三端跳转目标
+      // 与 base 一致，线上能正确回到 /tnb/login、/tnb/admin/login、/tnb/safety/login
+      const base = import.meta.env.BASE_URL || '/'
+      if (url.startsWith('/api/safety')) {
+        window.location.href = base + 'safety/login'
+      } else if (ADMIN_API_PREFIXES.some((prefix) => url.startsWith(prefix))) {
+        window.location.href = base + 'admin/login'
+      } else {
+        window.location.href = base + 'login'
+      }
+    }
+    return Promise.reject(err)
+  }
+)
+
+export { request }

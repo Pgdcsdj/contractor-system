@@ -1,0 +1,44 @@
+sequenceDiagram
+    autonumber
+    participant U as 用户
+    participant P as HazardLoopPage
+    participant E as HazardEditDrawer
+    participant A as HazardApi(前端)
+    participant R as HazardLoopRoute(后端)
+    participant DB as MySQL
+
+    %% 1. 打开编辑
+    U->>P: 点击列表行「编辑」按钮 (openEdit(h))
+    P->>E: 打开抽屉 :show=true, :hazardId=h.id
+
+    %% 2. 预填（调详情接口拿全量字段）
+    E->>A: getHazardDetail(id)
+    A->>R: GET /api/hazards/:id
+    R->>DB: SELECT HAZARD_COLUMNS ... WHERE id=? AND deleted_at IS NULL
+    DB-->>R: 隐患完整记录(含 is_reject_item/deduct_score/remark)
+    R-->>A: 200 { data: hazard }
+    A-->>E: 完整记录
+    E->>E: 预填表单(form)，is_reject_item→0/1, plan_finish_time→toLocalInput
+
+    %% 3. 提交修改
+    U->>E: 修改字段，点击「保存」
+    E->>A: updateHazard(id, payload)  [仅改动的白名单字段]
+    A->>R: PATCH /api/hazards/:id
+
+    Note over R: requireAdminOrSafety 鉴权\n+ safety 仅本人(recorder_id) 否则 403
+    R->>R: FIELD_MAP 校验 + coerce\n(is_reject_item=Number(v)?1:0, deduct_score=trim)
+    R->>DB: UPDATE t_hazard SET ... updated_at=NOW()
+    DB-->>R: OK
+    R-->>A: 200 { data: updated }
+    A-->>E: 更新成功
+
+    %% 4. 反馈 + 刷新
+    E->>E: toast 成功 + emit('updated', id) + 关闭
+    E->>P: emit('updated', id)
+    P->>A: getHazards(...) 刷新列表
+    A->>R: GET /api/hazards
+    R->>DB: SELECT ...
+    DB-->>R: 新列表
+    R-->>A: 列表数据
+    A-->>P: list
+    P-->>U: 列表行更新
