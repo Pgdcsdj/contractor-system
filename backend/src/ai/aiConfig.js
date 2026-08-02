@@ -24,6 +24,7 @@ const PROVIDERS = {
       reasoner: 'deepseek-reasoner',
     },
     supportsVision: false,
+    supportsStructuredOutput: true,
     freeQuota: 0, // 无免费额度
     pricePer1K: { input: 0.27, output: 2.19 }, // ¥/M tokens
   },
@@ -39,6 +40,7 @@ const PROVIDERS = {
       vision: 'Qwen/Qwen2-VL-72B-Instruct',    // 视觉模型，支持看图
     },
     supportsVision: true,
+    supportsStructuredOutput: false,
     freeQuota: 1000, // 每月1000次免费（DeepSeek-R1）
     pricePer1K: { input: 0.001, output: 0.001 }, // ¥/M tokens，极便宜
   },
@@ -51,6 +53,7 @@ const PROVIDERS = {
       reasoner: 'deepseek-r1-distill-qwen-32b', // 推理模型
     },
     supportsVision: false,
+    supportsStructuredOutput: false,
     freeQuota: 999999, // 几乎无限免费
     pricePer1K: { input: 0, output: 0 }, // 免费
   },
@@ -64,6 +67,7 @@ const PROVIDERS = {
       reasoner: 'o3-mini',                     // 推理模型
     },
     supportsVision: true,
+    supportsStructuredOutput: true,
     freeQuota: 0,
     pricePer1K: { input: 0.005, output: 0.015 }, // $/1K tokens
   },
@@ -77,6 +81,7 @@ const PROVIDERS = {
       reasoner: 'kimi-k2.6',                   // 推理模型
     },
     supportsVision: true,
+    supportsStructuredOutput: true,
     freeQuota: 0,
     pricePer1K: { input: 0.012, output: 0.012 }, // ¥/K tokens（按实际计费调整）
   },
@@ -194,6 +199,22 @@ function supportsVision() {
   const config = loadConfig()
   const provider = PROVIDERS[config.provider]
   return !!provider && !!provider.supportsVision && !!getVisionModel()
+}
+
+/**
+ * 检查指定 Provider 是否支持结构化输出（response_format: json_object）
+ * 同时兼容直接传入 provider.id 字符串或 provider 对象
+ * @param {string|Object} provider - Provider ID 字符串（如 'moonshot'）或 Provider 配置对象
+ * @returns {boolean}
+ */
+function supportsStructuredOutput(provider) {
+  if (!provider) return false
+  if (typeof provider === 'string') {
+    const p = PROVIDERS[provider]
+    return !!p && !!p.supportsStructuredOutput
+  }
+  // provider 对象（从 getProvider() 返回）
+  return !!provider.supportsStructuredOutput
 }
 
 /**
@@ -315,6 +336,7 @@ module.exports = {
   getGradingModel,
   getVisionModel,
   supportsVision,
+  supportsStructuredOutput,
   getConfigSummary,
   updateConfig,
   testConnection,

@@ -50,3 +50,8 @@ export function exportHazards(payload) {
 export function listBackups() {
   return request.get('/api/data/backups')
 }
+
+/** 隐患排查项目下拉枚举（来自已入库数据） */
+export function getInvestigationItems() {
+  return request.get('/api/data/investigation-items')
+}

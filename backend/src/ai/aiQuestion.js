@@ -6,12 +6,15 @@
  * - 视频督查通报 → 打包多图 + 多选题 + 简答题
  * - 制度/通知文件 → 单选题 + 多选题 + 判断题
  * - 支持批量图片打包
+ * - 两阶段流水线（生成 → 校验 → 修复 → 返回）
+ * - 结构化输出（response_format）支持
+ * - 难度控制（1-5）
  *
  * 使用方式：
  *   const { generateQuestions } = require('./aiQuestion')
  *   const questions = await generateQuestions({ content, images: [...] })
  */
-const { getApiKey, getProvider, getQuestionModel, getVisionModel, supportsVision } = require('./aiConfig')
+const { getApiKey, getProvider, getQuestionModel, getVisionModel, supportsVision, supportsStructuredOutput } = require('./aiConfig')
 
 // ─── Prompt 模板 ────────────────────────────────────────────────────────────
 
@@ -220,6 +223,21 @@ ${vars.imageIndexInfo}
   },
 }
 
+/**
+ * 难度描述模板
+ */
+function buildDifficultyPrompt(difficulty) {
+  const level = Math.min(5, Math.max(1, Number(difficulty) || 3))
+  return [
+    '',
+    `难度等级 ${level}/5：`,
+    `1-2（基础）：考察原文中的直接内容、关键词复现、条款识记`,
+    `3（应用）：考察概念理解、场景匹配、合规判断`,
+    `4-5（深入）：考察综合分析、多条款交叉、最优方案选择`,
+    `当前难度：${level}/5 — ${level <= 2 ? '请生成基础难度题目' : level <= 3 ? '请生成中等应用难度题目' : '请生成深入综合分析难度题目'}`,
+  ].join('\n')
+}
+
 // ─── 文档类型自动识别 ───────────────────────────────────────────────────────
 
 const TYPE_KEYWORDS = {
@@ -247,12 +265,12 @@ function classifyDocument(content, imageCount = 0) {
   return scores.video_report > scores.policy_notice ? 'video_report' : 'policy_notice'
 }
 
-// ─── 出题核心函数 ───────────────────────────────────────────────────────────
+// ─── 调用 AI API ────────────────────────────────────────────────────────────
 
 /**
- * 调用 AI API 生成题目
+ * 调用 AI API 生成题目（基础版）
  */
-async function callAI(messages, maxTokens = 2000) {
+async function callAI(messages, maxTokens = 4096) {
   const provider = getProvider()
   const apiKey = getApiKey()
   const model = getQuestionModel()
@@ -273,8 +291,6 @@ async function callAI(messages, maxTokens = 2000) {
   }
 
   // Moonshot / Kimi 系列模型对 temperature 敏感，仅允许固定值 1。
-  // 例：kimi-k2.6 会返回「invalid temperature: only 1 is allowed for this model」，
-  // 导致整次出题失败（ai_status=3）。此处强制兼容，不写死默认 provider。
   const isMoonshot = provider.id === 'moonshot' || /moonshot/i.test(provider.name || '')
   const isKimiModel = /kimi/i.test(model)
   if (isMoonshot || isKimiModel) {
@@ -296,7 +312,73 @@ async function callAI(messages, maxTokens = 2000) {
   }
 
   const result = await response.json()
-  return result.choices?.[0]?.message?.content?.trim() || ''
+  return extractContentFromResult(result)
+}
+
+/**
+ * 调用 AI API（带结构化输出 response_format）
+ */
+async function callAIStructured(messages, maxTokens = 4096) {
+  const provider = getProvider()
+  const apiKey = getApiKey()
+  const model = getQuestionModel()
+
+  const config = require('./aiConfig').loadConfig()
+  const qc = config.questionConfig || {}
+
+  const body = {
+    model,
+    messages,
+    temperature: qc.temperature ?? 0.3,
+    max_tokens: maxTokens,
+    response_format: { type: 'json_object' },
+  }
+
+  // SiliconFlow 的 DeepSeek-R1 是推理模型，不需要 temperature
+  if (model.includes('R1') || model.includes('reasoner')) {
+    delete body.temperature
+  }
+
+  // Moonshot / Kimi 系列模型对 temperature 敏感
+  const isMoonshot = provider.id === 'moonshot' || /moonshot/i.test(provider.name || '')
+  const isKimiModel = /kimi/i.test(model)
+  if (isMoonshot || isKimiModel) {
+    body.temperature = 1
+  }
+
+  const response = await fetch(`${provider.baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(body),
+  })
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}))
+    throw new Error(`AI API 错误 [${response.status}]: ${err.error?.message || response.statusText}`)
+  }
+
+  const result = await response.json()
+  return extractContentFromResult(result)
+}
+
+/**
+ * 从 API 响应中提取文本内容
+ * 处理 Moonshot reasoning_content 情况：若 content 为空且 reasoning_content 存在，用其作为内容
+ */
+function extractContentFromResult(result) {
+  const message = result.choices?.[0]?.message
+  if (!message) return ''
+
+  let content = message.content
+  // Moonshot/Kimi 等模型可能返回 reasoning_content 而非 content
+  if ((!content || content.trim() === '') && message.reasoning_content) {
+    content = message.reasoning_content
+  }
+
+  return (content || '').trim()
 }
 
 /**
@@ -335,27 +417,323 @@ function parseJSONResponse(raw) {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+//  两阶段流水线：质量门禁 + 修复
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * 质量门禁：校验题目数组的完整性和正确性
+ *
+ * @param {Array} questions - 待校验的题目数组
+ * @param {Object} params - 校验参数
+ * @param {number} params.count - 期望的题目数量
+ * @param {string} [params.questionTypes] - 期望的题型（如 '单选题' / '单选+多选+判断+简答'）
+ * @returns {{ valid: boolean, results: Array<{ index: number, ok: boolean, errors: string[] }> }}
+ */
+function validateQuestions(questions, { count, questionTypes } = {}) {
+  if (!Array.isArray(questions)) {
+    return {
+      valid: false,
+      results: [{ index: -1, ok: false, errors: ['返回内容不是数组'] }],
+    }
+  }
+
+  // 解析期望的题型列表
+  const expectedTypes = parseExpectedTypes(questionTypes || '')
+
+  const results = questions.map((q, index) => {
+    const errors = []
+
+    // 1. 必须有 question 字符串且非空
+    if (!q.question || typeof q.question !== 'string' || q.question.trim() === '') {
+      errors.push(`题 ${index + 1} 缺少 question 字段或为空`)
+    }
+
+    // 2. 必须有 options 对象且至少有 2 个 key
+    if (!q.options || typeof q.options !== 'object' || Array.isArray(q.options)) {
+      errors.push(`题 ${index + 1} 缺少有效的 options 对象`)
+    } else {
+      const optionKeys = Object.keys(q.options)
+      if (optionKeys.length < 2) {
+        errors.push(`题 ${index + 1} options 至少需要 2 个选项，当前 ${optionKeys.length} 个`)
+      }
+
+      // 3. 必须有 answer 字符串且非空
+      if (!q.answer || typeof q.answer !== 'string' || q.answer.trim() === '') {
+        errors.push(`题 ${index + 1} 缺少 answer 字段或为空`)
+      } else {
+        // 4. answer 必须在 options 的 keys 中
+        const answerStr = q.answer.trim()
+        const qtype = q.type || ''
+
+        if (qtype === 'multiple' || qtype === 'multi' || qtype === 'multiple_image') {
+          // 多选题：answer 每个字母都在 options keys 中
+          const letters = answerStr.split('').filter(c => /[A-Za-z]/.test(c))
+          if (letters.length === 0) {
+            errors.push(`题 ${index + 1} 多选题 answer "${answerStr}" 不含有效选项字母`)
+          } else {
+            for (const letter of letters) {
+              if (!optionKeys.includes(letter.toUpperCase()) && !optionKeys.includes(letter)) {
+                errors.push(`题 ${index + 1} 多选题 answer 中的 "${letter}" 不在 options keys [${optionKeys.join(',')}] 中`)
+              }
+            }
+          }
+        } else if (qtype === 'judgment') {
+          // 判断题：answer 应为 "正确" 或 "错误"
+          if (answerStr !== '正确' && answerStr !== '错误' && answerStr !== 'true' && answerStr !== 'false') {
+            errors.push(`题 ${index + 1} 判断题 answer 应为 "正确" 或 "错误"，当前 "${answerStr}"`)
+          }
+        } else if (qtype === 'fill') {
+          // 填空题：answer 非空即可（已在上层校验）
+        } else {
+          // 单选题/默认：answer 必须是 options 中的某一个 key
+          if (!optionKeys.includes(answerStr)) {
+            errors.push(`题 ${index + 1} answer "${answerStr}" 不在 options keys [${optionKeys.join(',')}] 中`)
+          }
+        }
+      }
+    }
+
+    // 5. 有 explanation 字符串
+    if (!q.explanation || typeof q.explanation !== 'string' || q.explanation.trim() === '') {
+      // explanation 为可选增强，不强制报错，仅记录
+    }
+
+    // 6. 题型匹配（若 questionTypes 指明了）
+    if (expectedTypes.length > 0 && q.type) {
+      if (!expectedTypes.includes(q.type)) {
+        errors.push(`题 ${index + 1} 类型 "${q.type}" 不在期望类型 [${expectedTypes.join(',')}] 中`)
+      }
+    }
+
+    return { index, ok: errors.length === 0, errors }
+  })
+
+  const valid = results.every(r => r.ok)
+
+  // count 校验：仅当 count > 0 时检查数量是否符合
+  const countErrors = []
+  if (count > 0 && questions.length !== count) {
+    countErrors.push(`期望 ${count} 道题，实际生成 ${questions.length} 道`)
+  }
+
+  return {
+    valid: valid && countErrors.length === 0,
+    results,
+    countErrors,
+  }
+}
+
+/**
+ * 解析 questionTypes 字符串为期望的题型数组
+ */
+function parseExpectedTypes(qt) {
+  if (!qt) return []
+  const t = qt || ''
+  const parts = t.split('+').map(s => s.trim())
+  const typeMap = {
+    '单选题': 'single',
+    '单选': 'single',
+    '多选题': 'multiple',
+    '多选': 'multiple',
+    '判断题': 'judgment',
+    '判断': 'judgment',
+    '简答题': 'short_answer',
+    '简答': 'short_answer',
+    '填空题': 'fill',
+    '填空': 'fill',
+  }
+  const result = []
+  for (const p of parts) {
+    if (typeMap[p]) result.push(typeMap[p])
+  }
+  return result
+}
+
+/**
+ * 解析 + 校验：解析 AI 返回的 JSON，并进行质量校验
+ *
+ * @param {string} raw - AI 返回的原始文本
+ * @param {Object} params - 校验参数（传递给 validateQuestions）
+ * @returns {{ questions: Array, parsed: boolean, validation: Object }}
+ */
+function parseWithValidation(raw, params = {}) {
+  let questions = []
+  let parsed = false
+
+  try {
+    // 尝试 JSON.parse（结构化输出得到的直接就是有效 JSON）
+    const parsedObj = JSON.parse(raw)
+
+    // 处理 response_format: json_object 的情况——最外层可能是 { questions: [...] } 或直接数组
+    if (Array.isArray(parsedObj)) {
+      questions = parsedObj
+    } else if (parsedObj && typeof parsedObj === 'object') {
+      // 可能是 { questions: [...] } 或 { data: [...] } 格式
+      if (Array.isArray(parsedObj.questions)) {
+        questions = parsedObj.questions
+      } else if (Array.isArray(parsedObj.data)) {
+        questions = parsedObj.data
+      } else {
+        // 顶层是单对象且非题目数组（如 AI 偶发返回异常结构 / 整段文本）：
+        // 不盲目包装成 1 道题，否则会把垃圾内容当成题目入库。
+        questions = []
+      }
+    }
+    parsed = true
+  } catch {
+    // 用原有的解析方式兜底
+    try {
+      questions = parseJSONResponse(raw)
+    } catch {
+      questions = []
+    }
+  }
+
+  // 确保是数组
+  if (!Array.isArray(questions)) {
+    questions = [questions]
+  }
+
+  // 补充缺失字段
+  questions = normalizeQuestions(questions)
+
+  // 质量校验
+  const validation = validateQuestions(questions, params)
+
+  return { questions, parsed, validation }
+}
+
+/**
+ * 将 options 统一规范为对象格式 { "A": "文本", "B": "文本" }
+ * 兼容模型把 options 返回成数组的情况：
+ *   ["A. 12家", "B. 20家"]  ->  { "A": "12家", "B": "20家" }
+ * 也兼容数组里每项本身就是对象的情况。
+ * @param {*} options
+ * @returns {Object}
+ */
+function normalizeOptions(options) {
+  if (!options) return {}
+  if (!Array.isArray(options)) return options // 已是对象，原样返回
+  const obj = {}
+  for (const item of options) {
+    if (typeof item === 'string') {
+      const m = item.trim().match(/^([A-Za-z])[.、:：)\s]\s*(.*)$/)
+      if (m) {
+        obj[m[1].toUpperCase()] = m[2].trim()
+      } else {
+        // 无字母前缀，按顺序用 A/B/C... 兜底
+        obj[String.fromCharCode(65 + Object.keys(obj).length)] = item.trim()
+      }
+    } else if (item && typeof item === 'object') {
+      Object.assign(obj, item)
+    }
+  }
+  return obj
+}
+
+/**
+ * 补充题目缺失字段，并兼容 options 的数组/对象两种格式
+ */
+function normalizeQuestions(questions, detectedType) {
+  return questions.map((q, i) => {
+    if (!q.id) q.id = i + 1
+    if (!q.type) q.type = detectedType === 'video_report' ? 'multiple_image' : 'single'
+    if (!q.theme) q.theme = '安全培训'
+
+    // options 兼容数组/对象两种格式（模型可能返回 ["A. xxx"] 或 {"A":"xxx"}）
+    if (q.options) {
+      q.options = normalizeOptions(q.options)
+    }
+
+    // 若 answer 是选项整段文本（而非字母），映射回对应字母
+    if (q.options && typeof q.options === 'object' && !Array.isArray(q.options) && q.answer) {
+      const keys = Object.keys(q.options)
+      const a = String(q.answer).trim()
+      if (keys.includes(a) || keys.includes(a.toUpperCase())) {
+        q.answer = a.toUpperCase()
+      } else {
+        const hit = keys.find(k => String(q.options[k] || '').trim() === a)
+        if (hit) q.answer = hit
+      }
+    }
+
+    return q
+  })
+}
+
+/**
+ * 阶段 2 修复：将原始响应和校验错误发送给 LLM，要求修正
+ *
+ * @param {string} originalRaw - 原始 AI 响应文本
+ * @param {Array} failedResults - 校验失败的结果数组（validateQuestions 返回的 results 中 ok=false 的项）
+ * @param {Object} params - 生成参数（用于构建修复 prompt）
+ * @returns {Promise<string>} 修复后的 AI 响应文本
+ */
+async function callAIForRepair(originalRaw, failedResults, params) {
+  const { count, questionTypes, difficulty, content, detectedType } = params
+
+  // 构建错误描述
+  const errorLines = failedResults.map(r => {
+    return `题 ${r.index + 1}：${r.errors.join('；')}`
+  })
+
+  const repairPrompt = `## 修复任务
+以下 AI 生成的题目 JSON 存在格式或内容错误，请修正后重新输出完整的 JSON 数组。
+
+## 原始内容
+\`\`\`json
+${originalRaw}
+\`\`\`
+
+## 校验错误
+${errorLines.join('\n')}
+
+## 修复要求
+1. 保持题目数量 ${count} 道不变
+2. 每题必须包含：question（字符串）、options（对象，至少2个选项）、answer（在选项keys中）、explanation（字符串）
+3. 单选题 answer 为单个字母如 "A"
+4. 多选题 answer 为多个字母如 "ABC"
+5. 判断题 answer 为 "正确" 或 "错误"
+6. 保持原有题目的主题和内容不变，仅修正格式错误
+7. 严格输出 JSON 数组格式，不要其他文字说明`
+
+  const systemMsg = `你是一名 JSON 格式修复专家。你的任务是修正 JSON 格式错误，保持题目内容不变。
+严格输出 JSON 数组，不要任何其他文字。${buildDifficultyPrompt(difficulty || 3)}`
+
+  // 修复调用降级为普通 callAI（不带 response_format，因为原始调用已失败）
+  const raw = await callAI([
+    { role: 'system', content: systemMsg },
+    { role: 'user', content: repairPrompt },
+  ], 3000)
+
+  return raw
+}
+
 // ─── 主函数 ─────────────────────────────────────────────────────────────────
 
 /**
- * 生成题目
+ * 生成题目（两阶段流水线）
  *
  * @param {Object} params
- * @param {string} params.content           - 文档文字内容（必需）
- * @param {Array}  params.images            - 图片信息 [{filename, localPath, description}]
- * @param {number} params.count             - 出题数量（默认10）
- * @param {string} params.docType           - 文档类型（auto/ video_report / policy_notice）
- * @param {Object} params.overrideImages    - 手动指定图片-违章映射 {filename: description}
+ * @param {string}  params.content           - 文档文字内容（必需）
+ * @param {Array}   params.images            - 图片信息 [{filename, localPath, description}]
+ * @param {number}  params.count             - 出题数量（默认10）
+ * @param {string}  params.docType           - 文档类型（auto/ video_report / policy_notice）
+ * @param {string}  params.questionTypes     - 可选：强制指定题型，如 '单选题' 或 '单选+多选+判断+简答'
+ * @param {Object}  params.overrideImages    - 手动指定图片-违章映射 {filename: description}
+ * @param {number}  params.difficulty        - 难度等级 1-5（默认 3）
  *
- * @returns {Object} { questions, metadata }
+ * @returns {Object} { questions, metadata, hasErrors, repairAttempted, validationSummary }
  */
 async function generateQuestions({
   content,
   images = [],
   count = 10,
   docType = 'auto',
-  questionTypes = null,   // 可选：强制指定题型，如 '单选题' 或 '单选+多选+判断+简答'
+  questionTypes = null,
   overrideImages = {},
+  difficulty = 3,
 }) {
   // 1. 识别文档类型
   const detectedType = docType === 'auto'
@@ -365,13 +743,15 @@ async function generateQuestions({
   // 2. 构建图片信息文本
   const imageInfo = buildImageInfo(images, overrideImages)
 
-  // 3. 确定题型数量（优先用 questionTypes，否则自动推导）
+  // 3. 确定题型数量
   const distribution = questionTypes
     ? parseQuestionTypes(questionTypes, count)
     : calcDistribution(detectedType, count)
 
-  // 4. 构造 Prompt
+  // 4. 构造 Prompt（system + user）
   const promptDef = PROMPTS[detectedType]
+  const systemContent = promptDef.system + buildDifficultyPrompt(difficulty)
+
   const userContent = promptDef.user({
     content,
     imageInfo,
@@ -379,43 +759,89 @@ async function generateQuestions({
     ...distribution,
   })
 
-  // 5. 调用 AI
-  console.log(`[AI 出题] 类型=${detectedType}，出题${count}道（多选${distribution.mcCount}道+简答${distribution.shortCount}道 / 单选${distribution.scCount}道+多选${distribution.mcCount}道+判断${distribution.judgeCount}道）`)
+  // 5. 调用 AI（Stage 1：生成）
+  const provider = getProvider()
+  const useStructured = supportsStructuredOutput(provider)
 
-  const raw = await callAI([
-    { role: 'system', content: promptDef.system },
+  console.log(`[AI 出题] 类型=${detectedType}，出题${count}道，难度=${difficulty}/5，结构化=${useStructured}`)
+
+  const messages = [
+    { role: 'system', content: systemContent },
     { role: 'user', content: userContent },
-  ])
+  ]
 
-  // 6. 解析结果
-  let questions = parseJSONResponse(raw)
-
-  // 确保是数组
-  if (!Array.isArray(questions)) {
-    questions = [questions]
+  let raw
+  try {
+    if (useStructured) {
+      raw = await callAIStructured(messages)
+    } else {
+      raw = await callAI(messages)
+    }
+  } catch (err) {
+    console.error(`[AI 出题] Stage 1 调用失败:`, err.message)
+    throw err
   }
 
-  // 7. 补充字段
-  questions.forEach((q, i) => {
-    if (!q.id) q.id = i + 1
-    if (!q.type) q.type = detectedType === 'video_report' ? 'multiple_image' : 'single'
-    if (!q.theme) q.theme = '安全培训'
-    if (q.type === 'multiple_image' || q.type === 'short_answer_image') {
-      if (q.images && q.images.length > 0) {
-        // images 已是文件名数组，无需额外处理
-      }
-    }
-  })
+  // 6. Stage 1：解析 + 校验
+  let { questions, validation } = parseWithValidation(raw, { count, questionTypes })
+  let repairAttempted = false
 
-  console.log(`[AI 出题] 成功生成 ${questions.length} 道题`)
+  if (!validation.valid) {
+    // 6b. Stage 2：修复
+    console.log(`[AI 出题] Stage 1 校验未通过，进入 Stage 2 修复`)
+
+    const failedResults = validation.results.filter(r => !r.ok)
+    repairAttempted = true
+
+    try {
+      const repairRaw = await callAIForRepair(raw, failedResults, {
+        count,
+        questionTypes,
+        difficulty,
+        content,
+        detectedType,
+      })
+
+      // 再次解析 + 校验
+      const repairResult = parseWithValidation(repairRaw, { count, questionTypes })
+      if (repairResult.validation.valid) {
+        questions = repairResult.questions
+        validation = repairResult.validation
+        console.log(`[AI 出题] Stage 2 修复成功`)
+      } else {
+        console.log(`[AI 出题] Stage 2 修复仍失败，使用原始结果（降级）`)
+        // 降级：原始结果 + 标记 hasErrors
+      }
+    } catch (repairErr) {
+      console.error(`[AI 出题] Stage 2 修复异常:`, repairErr.message)
+      // 降级：使用原始结果
+    }
+  }
+
+  // 7. 补充字段 + 日志
+  questions = normalizeQuestions(questions, detectedType)
+
+  // 构建校验摘要
+  const totalChecks = validation.results.length
+  const passedChecks = validation.results.filter(r => r.ok).length
+  const validationSummary = `${passedChecks}/${totalChecks} 题通过校验`
+
+  const hasErrors = !validation.valid || questions.length === 0
+
+  console.log(`[AI 出题] 完成: ${questions.length} 道题, ${validationSummary}, 修复=${repairAttempted}, 降级=${hasErrors}`)
 
   return {
     questions,
+    hasErrors,
+    repairAttempted,
+    validationSummary,
     metadata: {
       docType: detectedType,
       count: questions.length,
       model: getQuestionModel(),
       distribution,
+      difficulty,
+      usedStructuredOutput: useStructured,
     },
   }
 }
@@ -552,7 +978,7 @@ async function callAIVision({ textPrompt, imageBuffers, maxTokens = 4000 }) {
   }
 
   const result = await response.json()
-  return result.choices?.[0]?.message?.content?.trim() || ''
+  return extractContentFromResult(result)
 }
 
 /**
@@ -645,4 +1071,8 @@ module.exports = {
   callAI,
   callAIVision,
   parseJSONResponse,
+  // 新增导出
+  validateQuestions,
+  parseWithValidation,
+  callAIForRepair,
 }

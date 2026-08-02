@@ -50,9 +50,11 @@ const ALLOWED_MIMES = [
   'image/png',
 ]
 
+const MAX_FILE_SIZE = 50 * 1024 * 1024 // 50MB
+
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits:  { fileSize: 20 * 1024 * 1024 }, // 20MB
+  limits:  { fileSize: MAX_FILE_SIZE },
   fileFilter: (req, file, cb) => {
     const ext = file.originalname.split('.').pop().toLowerCase()
     const allowed = ['pdf', 'docx', 'doc', 'jpg', 'jpeg', 'png']
@@ -64,8 +66,24 @@ const upload = multer({
   },
 })
 
+// 上传守卫：捕获 multer 错误并返回清晰文案，避免超限时冒泡到全局
+// 错误处理逻辑被误报成「文件超过 5MB 限制」（与实际 50MB 上限不一致）。
+function uploadGuard(req, res, next) {
+  upload.single('file')(req, res, (err) => {
+    if (err) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(400).json({
+          error: `单个文件不得超过 ${MAX_FILE_SIZE / 1024 / 1024}MB`,
+        })
+      }
+      return res.status(400).json({ error: err.message || '文件上传失败' })
+    }
+    next()
+  })
+}
+
 // ─── POST /api/material/upload ──────────────────────────────────────────────
-router.post('/upload', adminAuth, upload.single('file'), async (req, res) => {
+router.post('/upload', adminAuth, uploadGuard, async (req, res) => {
   if (!req.file) return res.status(400).json({ error: '请上传文件' })
 
   const {
@@ -78,6 +96,7 @@ router.post('/upload', adminAuth, upload.single('file'), async (req, res) => {
     ai_enabled = 'false',
     ai_question_types = 'choice',
     ai_question_count = 10,
+    difficulty = 3,
   } = req.body
 
   const safePassScore  = Math.min(100, Math.max(0, Number(pass_score) || 60))
@@ -114,6 +133,34 @@ router.post('/upload', adminAuth, upload.single('file'), async (req, res) => {
     )
     const materialId = result.insertId
 
+    // ── 读取 preview 参数 ──────────────────────────────────────
+    const preview = req.query.preview === 'true'
+
+    if (preview) {
+      // ── Preview 模式：上传 + 提取文本，不触发 AI ─────────────
+      let contentText = ''
+      try {
+        const extracted = await extractFromBuffer(req.file.buffer, ext)
+        contentText = extracted.text || ''
+        if (contentText) {
+          await pool.execute(
+            'UPDATE t_material SET content_text = ? WHERE id = ?',
+            [contentText, materialId]
+          )
+        }
+      } catch (extractErr) {
+        console.warn('[upload preview] extractFromBuffer 失败:', extractErr.message)
+      }
+
+      res.json({
+        success: true,
+        message: '上传成功',
+        data: { materialId, preview: true, hasContent: !!contentText, fileUrl: url },
+      })
+      return
+    }
+
+    // ── 非 Preview 模式：原有异步 AI 流程 ──────────────────────
     res.json({
       success: true,
       message: '上传成功，正在触发 AI 出题（异步处理）',
@@ -126,6 +173,7 @@ router.post('/upload', adminAuth, upload.single('file'), async (req, res) => {
         count:  Number(ai_question_count) || 10,
         types:  ai_question_types || 'choice',
         material_type: material_type,
+        difficulty: Math.min(5, Math.max(1, Number(difficulty) || 3)),
       }).catch(err => {
         console.error(`[AI出题失败] materialId=${materialId}`, err.message)
       })
@@ -152,6 +200,137 @@ router.post('/upload', adminAuth, upload.single('file'), async (req, res) => {
   }
 })
 
+// ─── POST /api/material/:id/preview-ai ──────────────────────────────────────
+// 预览模式：生成题目但不保存到数据库
+router.post('/:id/preview-ai', adminAuth, async (req, res) => {
+  const { id } = req.params
+
+  try {
+    const [material] = await pool.execute(
+      'SELECT id, title, content_text, file_type FROM t_material WHERE id = ?',
+      [id]
+    )
+    if (!material.length) {
+      return res.status(404).json({ error: '素材不存在' })
+    }
+
+    const content = material[0].content_text
+    if (!content || !content.trim()) {
+      return res.status(400).json({
+        error: '素材内容为空，无法生成题目。请确保文件内容已正确提取。',
+      })
+    }
+
+    const {
+      count = 10,
+      questionTypes = 'choice',
+      difficulty = 3,
+    } = req.body || {}
+
+    const result = await generateQuestions({
+      content,
+      count: Number(count) || 10,
+      docType: 'policy_notice',
+      questionTypes: questionTypes || 'choice',
+      difficulty: Math.min(5, Math.max(1, Number(difficulty) || 3)),
+    })
+
+    res.json({
+      success: true,
+      data: {
+        questions: result.questions || [],
+        hasErrors: !!result.hasErrors,
+        validationSummary: result.validationSummary || '',
+        repairAttempted: !!result.repairAttempted,
+        difficulty: Math.min(5, Math.max(1, Number(difficulty) || 3)),
+      },
+    })
+  } catch (err) {
+    console.error('[preview-ai error]', err.message)
+    res.status(500).json({ error: 'AI 出题失败：' + err.message })
+  }
+})
+
+// ─── POST /api/material/:id/confirm-questions ────────────────────────────────
+// 确认保存预览的题目到数据库
+router.post('/:id/confirm-questions', adminAuth, async (req, res) => {
+  const { id } = req.params
+  const { questions } = req.body
+
+  if (!Array.isArray(questions) || questions.length === 0) {
+    return res.status(400).json({ error: '题目列表不能为空' })
+  }
+
+  const conn = await pool.getConnection()
+  try {
+    await conn.beginTransaction()
+
+    // 清掉旧题目
+    await conn.execute('DELETE FROM t_question WHERE material_id = ?', [id])
+
+    // 批量 INSERT
+    for (let i = 0; i < questions.length; i++) {
+      const q = questions[i]
+      await conn.execute(
+        `INSERT INTO t_question (material_id, type, question, options, answer, analysis, score, sort_order)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id,
+          q.type || 'single',
+          q.question || '',
+          q.options ? JSON.stringify(q.options) : null,
+          q.answer || '',
+          q.explanation || q.analysis || '',
+          q.score || 5,
+          i,
+        ]
+      )
+    }
+
+    // 计算 hasErrors：存在任意题缺少 options 或 answer 则算有问题
+    const hasErrors = questions.some(
+      (q) => !q.options || !q.answer || (Array.isArray(q.answer) && q.answer.length === 0)
+    )
+    const aiStatus = hasErrors ? 3 : 2
+
+    await conn.execute(
+      'UPDATE t_material SET status = 2, ai_status = ?, question_cnt = ? WHERE id = ?',
+      [aiStatus, questions.length, id]
+    )
+
+    await conn.commit()
+
+    res.json({
+      success: true,
+      message: `已保存 ${questions.length} 道题`,
+      data: {
+        questionCount: questions.length,
+        aiStatus,
+      },
+    })
+  } catch (err) {
+    await conn.rollback()
+    console.error('[confirm-questions error]', err.message)
+    res.status(500).json({ error: '保存题目失败：' + err.message })
+  } finally {
+    conn.release()
+  }
+})
+
+// ─── POST /api/material/:id/cancel-ai ────────────────────────────────────────
+// 取消 AI 出题（重置 ai_status 为 0，回到未出题状态）
+router.post('/:id/cancel-ai', adminAuth, async (req, res) => {
+  const { id } = req.params
+
+  try {
+    await pool.execute('UPDATE t_material SET ai_status = 0 WHERE id = ?', [id])
+    res.json({ success: true, message: '已取消出题' })
+  } catch (err) {
+    console.error('[cancel-ai error]', err.message)
+    res.status(500).json({ error: '取消失败：' + err.message })
+  }
+})
+
 /**
  * 异步：从文件提取文本/图片 → 调用 AI 出题 → 写入 t_question
  * @param {number} materialId
@@ -160,7 +339,7 @@ router.post('/upload', adminAuth, upload.single('file'), async (req, res) => {
  * @param {{ count: number, types: string, material_type?: string }} config
  */
 async function triggerAiQuestion(materialId, buffer, fileType, config) {
-  const { count = 10, types = 'choice', material_type = 'other' } = config || {}
+  const { count = 10, types = 'choice', material_type = 'other', difficulty = 3 } = config || {}
 
   // 更新状态：出题中
   await pool.execute(
@@ -252,18 +431,11 @@ async function triggerAiQuestion(materialId, buffer, fileType, config) {
       console.log(`[AI图片出题完成] materialId=${materialId}，生成 ${questions.length} 道题`)
 
     } else {
-      // ── 原有逻辑：纯文字出题 ─────────────────────────────────
-      if (['docx', 'doc'].includes(fileType)) {
-        content = buffer.toString('utf8').replace(/[^\u4e00-\u9fa5a-zA-Z0-9，。！？、：；""''（）\s]/g, '').trim()
-        if (content.length < 50) content = '[文档内容已上传，请在题目审核页手动录入或重新提取]'
-        if (content.length > 100000) {
-          console.log(`[AI出题] 原始内容 ${content.length} 字符，截断至 100000 字符`)
-          content = content.slice(0, 100000) + '\n\n[内容已截断，完整内容请在审核页查看]'
-        }
-      } else if (['jpg', 'jpeg', 'png'].includes(fileType)) {
-        content = '[图片素材，AI将根据图片描述生成题目，请确保通报内容清晰可读]'
-      } else if (fileType === 'pdf') {
-        content = '[PDF素材，文本提取需要 pdfjs 库，当前降级处理：请在审核页手动补充题目内容]'
+      // ── 原有逻辑：纯文字出题（统一用解析器提取真实文本，支持 docx/doc/pdf/jpg/png）──
+      const extracted = await extractFromBuffer(buffer, fileType)
+      content = extracted.text || ''
+      if (content.length < 20) {
+        content = '[文档内容提取失败，请在审核页手动补充题目内容]'
       }
 
       // 保存文字内容
@@ -278,6 +450,7 @@ async function triggerAiQuestion(materialId, buffer, fileType, config) {
         count:   count,
         docType: 'policy_notice',
         questionTypes,
+        difficulty,
       })
 
       const questions = result.questions || []
@@ -300,12 +473,16 @@ async function triggerAiQuestion(materialId, buffer, fileType, config) {
         )
       }
 
+      // 处理新的返回值格式：hasErrors 时设置 ai_status=3 但保存题目
+      const aiStatus = result.hasErrors ? 3 : 2
+
       await pool.execute(
-        'UPDATE t_material SET status = 2, ai_status = 2, question_cnt = ? WHERE id = ?',
-        [questions.length, materialId]
+        'UPDATE t_material SET status = 2, ai_status = ?, question_cnt = ? WHERE id = ?',
+        [aiStatus, questions.length, materialId]
       )
 
-      console.log(`[AI出题完成] materialId=${materialId}，生成 ${questions.length} 道题`)
+      const summary = result.validationSummary || `${questions.length} 道题`
+      console.log(`[AI出题完成] materialId=${materialId}，${summary}，修复=${result.repairAttempted}，降级=${result.hasErrors}`)
     }
 
   } catch (err) {
@@ -417,11 +594,13 @@ router.post('/:id/retry-ai', adminAuth, async (req, res) => {
       )
     }
 
+    const aiStatus = result.hasErrors ? 3 : 2
     await pool.execute(
-      'UPDATE t_material SET status = 2, ai_status = 2, question_cnt = ? WHERE id = ?',
-      [questions.length, id]
+      'UPDATE t_material SET status = 2, ai_status = ?, question_cnt = ? WHERE id = ?',
+      [aiStatus, questions.length, id]
     )
-    console.log(`[AI出题完成] materialId=${id}，生成 ${questions.length} 道题`)
+    const summary = result.validationSummary || `${questions.length} 道题`
+    console.log(`[AI出题完成] materialId=${id}，${summary}，修复=${result.repairAttempted}，降级=${result.hasErrors}`)
   } catch (err) {
     await pool.execute(
       'UPDATE t_material SET status = 2, ai_status = 3 WHERE id = ?', [id]

@@ -18,6 +18,7 @@ const { pool } = require('../db/db')
 const BACKUPS_DIR = path.resolve(__dirname, '../../backups')
 
 // 导出字段白名单：字段编码 → 中文列头（设计 §8.7，顺序即导出列顺序）
+// 注意：t_hazard 表已删除 responsible_phone 列，白名单内不能保留该字段。
 const EXPORT_FIELDS = {
   hazard_code:       '隐患编号',
   unit_name:         '责任单位',
@@ -25,7 +26,6 @@ const EXPORT_FIELDS = {
   description:       '隐患描述',
   location:          '场所站点',
   responsible_person: '整改责任人',
-  responsible_phone: '责任人电话',
   status:            '状态',
   recorder_name:     '录入人',
   recorder_unit_name: '录入人单位',
@@ -102,7 +102,7 @@ async function backupNow() {
   ensureBackupsDir()
   const [rows] = await pool.query(
     `SELECT hazard_code, unit_name, hazard_level, description, location, hazard_investigation_item,
-            responsible_person, responsible_phone, status, recorder_name, recorder_unit_name,
+            responsible_person, status, recorder_name, recorder_unit_name,
             plan_finish_time, created_at, closed_at,
             CASE WHEN status <> 'closed' AND plan_finish_time IS NOT NULL AND plan_finish_time < NOW() THEN 1 ELSE 0 END AS is_overdue
        FROM t_hazard
@@ -134,7 +134,6 @@ async function backupNow() {
     { key: 'location', header: '场所站点' },
     { key: 'hazard_investigation_item', header: '隐患排查项目' },
     { key: 'responsible_person', header: '整改责任人' },
-    { key: 'responsible_phone', header: '责任人电话' },
     { key: 'status', header: '状态', map: (v) => STATUS_LABEL[v] || v },
     { key: 'recorder_name', header: '录入人' },
     { key: 'recorder_unit_name', header: '录入人单位' },
@@ -189,7 +188,8 @@ async function exportReport(opts = {}) {
   // ── 筛选条件 ──
   const filters = opts.filters || {}
   const TEXT_FILTERS = ['rectify_unit', 'location'] // 模糊匹配
-  const EXACT_FILTERS = ['status', 'business_dept', 'hazard_level', 'hazard_investigation_item'] // 精确匹配
+  const EXACT_FILTERS = ['status', 'business_dept', 'hazard_level'] // 精确匹配
+  const ARRAY_FILTERS = ['hazard_investigation_item'] // 前端多选，支持数组 IN 或单值精确匹配
   for (const k of TEXT_FILTERS) {
     const v = filters[k]
     if (v != null && String(v).trim() !== '') {
@@ -200,6 +200,16 @@ async function exportReport(opts = {}) {
   for (const k of EXACT_FILTERS) {
     const v = filters[k]
     if (v != null && String(v).trim() !== '') {
+      where.push(`${k} = ?`)
+      params.push(String(v).trim())
+    }
+  }
+  for (const k of ARRAY_FILTERS) {
+    const v = filters[k]
+    if (Array.isArray(v) && v.length) {
+      where.push(`${k} IN (?)`)
+      params.push(v)
+    } else if (v != null && String(v).trim() !== '') {
       where.push(`${k} = ?`)
       params.push(String(v).trim())
     }

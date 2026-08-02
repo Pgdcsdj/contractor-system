@@ -35,6 +35,12 @@ request.interceptors.request.use((config) => {
     const token = localStorage.getItem('tnb_token')
     if (token) config.headers.Authorization = `Bearer ${token}`
   }
+  // 上传 / AI 出题类请求放宽超时：大文件 + COS 上传 + 模型响应耗时，
+  // 默认 15s 易被 axios 主动掐断，表现为「上传失败」。与 nginx proxy_read_timeout(300s) 对齐，
+  // 避免前端先于网关掐断。其他请求保持 15s。
+  if (config.url && /\/upload|preview-ai|confirm-questions/.test(config.url)) {
+    config.timeout = 300000
+  }
   return config
 })
 

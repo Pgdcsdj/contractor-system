@@ -112,6 +112,16 @@
                   <label>题目数量</label>
                   <input v-model.number="form.ai_question_count" type="number" class="form-input" min="5" max="50" />
                 </div>
+                <div class="form-group">
+                  <label>难度</label>
+                  <select v-model.number="form.difficulty" class="form-input">
+                    <option :value="1">1 - 基础（识记）</option>
+                    <option :value="2">2 - 基础（复现）</option>
+                    <option :value="3" selected>3 - 应用（默认）</option>
+                    <option :value="4">4 - 深入（分析）</option>
+                    <option :value="5">5 - 深入（综合）</option>
+                  </select>
+                </div>
               </div>
             </div>
           </div>
@@ -194,6 +204,18 @@
               请确保后台 AI 配置中已设置支持图片理解的模型（如 Qwen2-VL 或 GPT-4o）。<br>
               当前默认出题 15 道（单选+多选+判断+填空），您可在题目审核页调整。
             </p>
+            <div class="form-row" style="margin-top: 10px;">
+              <div class="form-group" style="min-width: 120px;">
+                <label style="font-size: 12px;">难度</label>
+                <select v-model.number="imgForm.difficulty" class="form-input" style="font-size: 13px;">
+                  <option :value="1">1 - 基础</option>
+                  <option :value="2">2 - 基础</option>
+                  <option :value="3" selected>3 - 应用（默认）</option>
+                  <option :value="4">4 - 深入</option>
+                  <option :value="5">5 - 深入</option>
+                </select>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -244,6 +266,16 @@
             <label>默认模式</label>
             <select v-model="importForm.mode" class="form-input">
               <option v-for="(label, val) in MODE_LABELS" :key="val" :value="val">{{ label }}</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>难度</label>
+            <select v-model.number="importForm.difficulty" class="form-input">
+              <option :value="1">1 - 基础</option>
+              <option :value="2">2 - 基础</option>
+              <option :value="3" selected>3 - 应用（默认）</option>
+              <option :value="4">4 - 深入</option>
+              <option :value="5">5 - 深入</option>
             </select>
           </div>
         </div>
@@ -299,6 +331,19 @@
       </div>
     </div>
   </div>
+
+  <!-- AI 出题预览确认弹窗 -->
+  <AIPreviewModal
+    :visible="previewVisible"
+    :questions="previewQuestions"
+    :title="previewTitle"
+    :difficulty="previewDifficulty"
+    :loading="previewLoading"
+    :loading-text="previewLoadingText"
+    @confirm="_confirmPreview(previewMaterialId)"
+    @regenerate="_startPreview(previewMaterialId, { count: form.ai_question_count, questionTypes: form.ai_question_types, difficulty: form.difficulty || 3 })"
+    @cancel="_cancelPreview(previewMaterialId)"
+  />
 </template>
 
 <script setup>
@@ -306,11 +351,21 @@ import { ref, reactive, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { request } from '@/utils/request'
 import { MODE_LABELS } from '@/utils/quizModes'
+import AIPreviewModal from './components/AIPreviewModal.vue'
 
 const router = useRouter()
 
 // ── 模式选择 ──
-const mode = ref(null) // null | 'ai' | 'import'
+const mode = ref(null) // null | 'ai' | 'import' | 'image_violation'
+
+// ── 预览确认状态 ──
+const previewVisible = ref(false)
+const previewQuestions = ref([])
+const previewMaterialId = ref(null)
+const previewLoading = ref(false)
+const previewLoadingText = ref('AI 正在生成题目，请稍候…')
+const previewDifficulty = ref(3)
+const previewTitle = ref('')
 
 // ── AI 出题模式 ──
 const form = reactive({
@@ -323,6 +378,7 @@ const form = reactive({
   ai_enabled: false,
   ai_question_types: 'choice',
   ai_question_count: 10,
+  difficulty: 3,
 })
 const categories = ref([])
 
@@ -353,22 +409,106 @@ async function handleAiSubmit() {
     fd.append('ai_enabled', form.ai_enabled)
     fd.append('ai_question_types', form.ai_question_types)
     fd.append('ai_question_count', form.ai_question_count)
+    fd.append('difficulty', form.difficulty || 3)
 
-    const res = await request.post('/api/material/upload', fd, {
+    // 使用 preview 模式：上传时加 preview=true 参数，跳过异步 AI
+    const res = await request.post('/api/material/upload?preview=true', fd, {
       headers: { 'Content-Type': 'multipart/form-data' },
       onUploadProgress: (e) => {
         if (e.total) uploadProgress.value = Math.round((e.loaded / e.total) * 100)
       },
     })
 
-    result.value = { message: '培训创建成功！AI 出题进行中…' }
-    setTimeout(() => router.push('/admin/trainings'), 1800)
+    const data = res.data?.data || {}
+    const materialId = data.materialId
+    if (!materialId) throw new Error('上传失败，未获取到素材ID')
+
+    // 保存 preview 状态
+    previewMaterialId.value = materialId
+    previewTitle.value = form.title || selectedFile.value?.name || '培训素材'
+    previewDifficulty.value = form.difficulty || 3
+
+    // 调用 preview-ai 生成题目
+    await _startPreview(materialId, {
+      count: form.ai_question_count,
+      questionTypes: form.ai_question_types,
+      difficulty: form.difficulty || 3,
+    })
   } catch (e) {
-    result.value = { error: e.response?.data?.error || '创建失败' }
+    result.value = { error: e.response?.data?.error || e.message || '创建失败' }
+    previewVisible.value = false
   } finally {
     submitting.value = false
     uploadProgress.value = 0
   }
+}
+
+/**
+ * 调用 preview-ai 生成题目并弹出预览弹窗
+ */
+async function _startPreview(materialId, config) {
+  previewLoading.value = true
+  previewLoadingText.value = 'AI 正在生成题目，请稍候…'
+  previewVisible.value = true
+
+  try {
+    const res = await request.post('/api/material/' + materialId + '/preview-ai', {
+      count: config.count || 10,
+      questionTypes: config.questionTypes || 'choice',
+      difficulty: config.difficulty || 3,
+    })
+
+    const data = res.data?.data || {}
+    previewQuestions.value = data.questions || []
+    previewLoading.value = false
+
+    // 如果生成的题目为空，显示错误
+    if (previewQuestions.value.length === 0) {
+      previewLoadingText.value = 'AI 生成题目失败，请重试或检查素材内容'
+      previewLoading.value = true
+      setTimeout(() => {
+        _cancelPreview(materialId)
+      }, 2000)
+    }
+  } catch (e) {
+    previewLoading.value = false
+    previewLoadingText.value = 'AI 出题失败：' + (e.response?.data?.error || e.message)
+    // 3秒后关闭弹窗
+    setTimeout(() => {
+      _cancelPreview(materialId)
+    }, 3000)
+  }
+}
+
+/**
+ * 确认保存题目
+ */
+async function _confirmPreview(materialId) {
+  try {
+    const res = await request.post('/api/material/' + materialId + '/confirm-questions', {
+      questions: previewQuestions.value,
+    })
+    previewVisible.value = false
+    result.value = { message: res.data?.message || '题目已保存成功' }
+    setTimeout(() => router.push('/admin/trainings'), 1500)
+  } catch (e) {
+    result.value = { error: e.response?.data?.error || '保存题目失败' }
+    previewVisible.value = false
+  }
+}
+
+/**
+ * 取消（关闭预览弹窗）
+ */
+async function _cancelPreview(materialId) {
+  try {
+    await request.post('/api/material/' + materialId + '/cancel-ai')
+  } catch (e) {
+    // 取消失败不影响跳转
+  }
+  previewVisible.value = false
+  result.value = { message: '已取消出题' }
+  setTimeout(() => router.push('/admin/trainings'), 800)
 }
 
 // ── 图片违章识别模式 ──
@@ -378,6 +518,7 @@ const imgForm = reactive({
   pass_score: 60,
   time_limit: 30,
   mode: 'exam',
+  difficulty: 3,
 })
 const imgFileInput = ref(null)
 const imgFile = ref(null)
@@ -407,6 +548,7 @@ async function handleImgSubmit() {
     fd.append('ai_enabled', 'true')
     fd.append('ai_question_types', 'mixed')
     fd.append('ai_question_count', 15)
+    fd.append('difficulty', imgForm.difficulty || 3)
 
     const res = await request.post('/api/material/upload', fd, {
       headers: { 'Content-Type': 'multipart/form-data' },
@@ -432,6 +574,7 @@ const importForm = reactive({
   pass_score: 60,
   time_limit: 30,
   mode: 'exam',
+  difficulty: 3,
 })
 const importFileInput = ref(null)
 const importFile = ref(null)

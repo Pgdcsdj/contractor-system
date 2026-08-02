@@ -10,6 +10,12 @@
 const AdmZip = require('adm-zip')
 const xml2js = require('xml2js')
 
+// PDF 解析库采用 vendor 化（相对路径引入），避免依赖服务器 node_modules 持久化
+const pdfParse = require('../lib/pdf-parse')
+
+// 老版本 Word (.doc, OLE2 复合文档) 解析采用 vendor 化的 word-extractor（相对路径引入）
+const WordExtractor = require('../lib/word-extractor')
+
 /**
  * 根据文件类型自动选择解析器
  * @param {Buffer} buffer  文件内容
@@ -23,9 +29,12 @@ async function extractFromBuffer(buffer, ext) {
     return extractFromDocx(buffer)
   }
 
+  if (lowerExt === 'doc') {
+    return extractFromDoc(buffer)
+  }
+
   if (lowerExt === 'pdf') {
-    // PDF 图片提取较复杂，当前版本仅提取文字
-    return { text: '[PDF素材，当前版本仅支持Word文档自动提取图片。请手动上传图片或切换为Word格式。]', images: [] }
+    return extractFromPdf(buffer)
   }
 
   // 图片文件直接返回
@@ -34,6 +43,51 @@ async function extractFromBuffer(buffer, ext) {
   }
 
   return { text: '[未知格式，无法自动提取内容]', images: [] }
+}
+
+/**
+ * 从 PDF 文件中提取文字内容
+ * 基于 vendor 化的 pdf-parse（相对路径 require，不依赖服务器 node_modules）。
+ * PDF 解析对损坏/加密/扫描件等场景会失败或返回空，统一容错为占位文字，
+ * 保证调用方（出题流程）始终拿到字符串而非抛错。
+ * @param {Buffer} buffer PDF 文件内容
+ * @returns {{text: string, images: Array}}
+ */
+async function extractFromPdf(buffer) {
+  try {
+    const data = await pdfParse(buffer)
+    const text = (data.text || '').trim()
+    if (text.length < 20) {
+      return { text: '[PDF解析结果为空，可能为扫描件/图片型PDF，请在审核页手动补充题目内容]', images: [] }
+    }
+    console.log(`[docParser] PDF解析完成：${text.length} 字符，${data.numpages || 0} 页`)
+    return { text, images: [] }
+  } catch (err) {
+    console.error('[docParser] PDF解析失败:', err.message)
+    return { text: '[PDF解析失败：' + err.message + '，请在审核页手动补充题目内容]', images: [] }
+  }
+}
+
+/**
+ * 从老版本 Word .doc（OLE2 复合文档）中提取文字
+ * 使用 vendor 化的 word-extractor（相对路径 require，不依赖服务器 node_modules）。
+ * @param {Buffer} buffer
+ * @returns {{text: string, images: Array}}
+ */
+async function extractFromDoc(buffer) {
+  try {
+    const extractor = new WordExtractor()
+    const extracted = await extractor.extract(buffer)
+    const text = (extracted.getBody() || '').trim()
+    if (text.length < 20) {
+      return { text: '[Word文档内容提取过少，可能为加密或图片型文档，请在审核页手动补充]', images: [] }
+    }
+    console.log(`[docParser] DOC解析完成：${text.length} 字符`)
+    return { text, images: [] }
+  } catch (err) {
+    console.error('[docParser] DOC解析失败:', err.message)
+    return { text: '[Word文档解析失败：' + err.message + '，请在审核页手动补充]', images: [] }
+  }
 }
 
 /**
@@ -157,4 +211,6 @@ function extractTextWithRegex(xml) {
 module.exports = {
   extractFromBuffer,
   extractFromDocx,
+  extractFromPdf,
+  extractFromDoc,
 }

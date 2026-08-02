@@ -75,7 +75,24 @@
           <div class="filter-grid">
             <div class="filter-item">
               <span class="filter-label">隐患排查项目</span>
-              <input v-model="filterInvestigationItem" type="text" class="form-input" placeholder="模糊匹配" />
+              <div class="multi-select" :class="{ open: investigationOpen }" ref="investigationSelectRef">
+                <div class="multi-select-trigger" @click="investigationOpen = !investigationOpen">
+                  <span v-if="filterInvestigationItem.length === 0" class="placeholder">请选择</span>
+                  <span v-else class="selected-text">{{ investigationSelectedText }}</span>
+                  <span class="arrow">▼</span>
+                </div>
+                <div v-if="investigationOpen" class="multi-select-panel">
+                  <label class="multi-option all-option">
+                    <input type="checkbox" :checked="isAllInvestigationSelected" @change="toggleAllInvestigation">
+                    <span>全部</span>
+                  </label>
+                  <label v-for="o in investigationItemOptions" :key="o.value" class="multi-option">
+                    <input type="checkbox" :value="o.value" v-model="filterInvestigationItem">
+                    <span>{{ o.label }}</span>
+                  </label>
+                  <div v-if="investigationItemOptions.length === 0" class="multi-empty">暂无数据</div>
+                </div>
+              </div>
             </div>
             <div class="filter-item">
               <span class="filter-label">状态</span>
@@ -190,8 +207,8 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
-import { triggerBackup, exportHazards, listBackups } from '@/api/safety'
+import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
+import { triggerBackup, exportHazards, listBackups, getInvestigationItems } from '@/api/safety'
 import { getHazardDict, getImportLogs } from '@/api/hazard'
 
 const RANGE_OPTIONS = [
@@ -204,7 +221,6 @@ const RANGE_OPTIONS = [
 const FIELD_OPTIONS = [
   { value: 'hazard_code', label: '隐患编号' },
   { value: 'hazard_level', label: '隐患等级' },
-  { value: 'hazard_type', label: '隐患类型' },
   { value: 'location', label: '位置' },
   { value: 'description', label: '问题描述' },
   { value: 'rectify_unit', label: '整改单位' },
@@ -216,7 +232,7 @@ const FIELD_OPTIONS = [
   { value: 'status', label: '状态' },
   { value: 'created_at', label: '上报时间' },
   { value: 'plan_finish_time', label: '计划完成时间' },
-  { value: 'actual_finish_time', label: '实际完成时间' },
+  { value: 'closed_at', label: '闭环时间' },
 ]
 
 // 备份状态
@@ -237,7 +253,7 @@ const selectedFields = ref(FIELD_OPTIONS.map((f) => f.value))
 const exporting = ref(false)
 
 // 导出筛选条件
-const filterInvestigationItem = ref('')
+const filterInvestigationItem = ref([])
 const filterStatus = ref('')
 const filterBusinessDept = ref('')
 const filterRectifyUnit = ref('')
@@ -245,6 +261,9 @@ const filterLocation = ref('')
 const filterLevel = ref('')
 const businessDeptOptions = ref([])
 const levelOptions = ref([])
+const investigationItemOptions = ref([])
+const investigationOpen = ref(false)
+const investigationSelectRef = ref(null)
 const STATUS_OPTIONS = [
   { value: '', label: '全部' },
   { value: 'reported', label: '已上报' },
@@ -267,6 +286,33 @@ function showToast(msg, type = 'success') {
 function fmtDate(v) {
   if (!v) return '-'
   return String(v).slice(0, 16).replace('T', ' ')
+}
+
+const investigationSelectedText = computed(() => {
+  if (filterInvestigationItem.value.length === 0) return '请选择'
+  if (filterInvestigationItem.value.length === investigationItemOptions.value.length) return '全部'
+  const names = filterInvestigationItem.value.map((v) =>
+    investigationItemOptions.value.find((o) => o.value === v)?.label || v
+  )
+  return names.join('、')
+})
+
+const isAllInvestigationSelected = computed(() => {
+  return investigationItemOptions.value.length > 0 && filterInvestigationItem.value.length === investigationItemOptions.value.length
+})
+
+function toggleAllInvestigation() {
+  if (isAllInvestigationSelected.value) {
+    filterInvestigationItem.value = []
+  } else {
+    filterInvestigationItem.value = investigationItemOptions.value.map((o) => o.value)
+  }
+}
+
+function onDocumentClick(e) {
+  if (investigationSelectRef.value && !investigationSelectRef.value.contains(e.target)) {
+    investigationOpen.value = false
+  }
 }
 
 function getDateRange(range) {
@@ -366,7 +412,7 @@ async function handleExport(type) {
       fields: [...selectedFields.value],
       range,
       filters: {
-        hazard_investigation_item: filterInvestigationItem.value,
+        hazard_investigation_item: filterInvestigationItem.value.length ? filterInvestigationItem.value : undefined,
         status: filterStatus.value,
         business_dept: filterBusinessDept.value,
         rectify_unit: filterRectifyUnit.value,
@@ -416,6 +462,7 @@ onMounted(() => {
   loadBackups()
   loadDictOptions()
   loadImportLogs()
+  document.addEventListener('click', onDocumentClick)
   // 默认本周
   const now = new Date()
   customEnd.value = fmtDateISO(now)
@@ -424,20 +471,29 @@ onMounted(() => {
   customStart.value = fmtDateISO(start)
 })
 
-// 加载筛选下拉字典（业务归口 / 隐患等级），复用 getHazardDict
+onUnmounted(() => {
+  document.removeEventListener('click', onDocumentClick)
+})
+
+// 加载筛选下拉字典（业务归口 / 隐患等级 / 隐患排查项目）
 async function loadDictOptions() {
   try {
-    const [biz, lvl] = await Promise.all([
+    const [biz, lvl, itemRes] = await Promise.all([
       getHazardDict('business_dept'),
       getHazardDict('level'),
+      getInvestigationItems(),
     ])
     const bizList = biz?.data?.data?.list || biz?.data?.data || []
     const lvlList = lvl?.data?.data?.list || lvl?.data?.data || []
+    // /api/data/investigation-items 返回 { data: { list: [...] } }
+    const itemList = itemRes?.data?.data?.list || itemRes?.data?.data || []
     businessDeptOptions.value = [{ value: '', label: '全部' }, ...bizList.map((d) => ({ value: d.code || d.name, label: d.name }))]
     levelOptions.value = [{ value: '', label: '全部' }, ...lvlList.map((d) => ({ value: d.code || d.name, label: d.name }))]
+    investigationItemOptions.value = itemList.map((name) => ({ value: name, label: name }))
   } catch {
     businessDeptOptions.value = [{ value: '', label: '全部' }]
     levelOptions.value = [{ value: '', label: '全部' }]
+    investigationItemOptions.value = []
   }
 }
 </script>
@@ -522,4 +578,37 @@ async function loadDictOptions() {
 .ok { color: var(--c-success); font-weight: 600; }
 .log-detail { margin: 8px 0 18px; padding: 10px 12px; background: #f8f9fa; border: 1px solid var(--c-border); border-radius: 8px; }
 .log-detail-item { font-size: 12px; line-height: 1.9; color: var(--c-text-2); }
+
+/* 多选下拉 */
+.multi-select { position: relative; }
+.multi-select-trigger {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  width: 100%; min-height: 36px; padding: 7px 10px;
+  border: 1px solid var(--c-border-strong); border-radius: var(--r);
+  background: var(--c-surface); color: var(--c-text); font-size: 13px;
+  cursor: pointer; transition: border-color .15s ease;
+}
+.multi-select-trigger:hover { border-color: var(--c-blue-600); }
+.multi-select.open .multi-select-trigger { border-color: var(--c-blue-600); }
+.multi-select-trigger .placeholder { color: var(--c-text-3); }
+.multi-select-trigger .selected-text {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.multi-select-trigger .arrow { font-size: 10px; color: var(--c-text-3); transition: transform .15s ease; }
+.multi-select.open .arrow { transform: rotate(180deg); }
+.multi-select-panel {
+  position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 100;
+  max-height: 220px; overflow-y: auto;
+  background: var(--c-surface); border: 1px solid var(--c-border); border-radius: var(--r);
+  box-shadow: var(--shadow-lg); padding: 6px 0;
+}
+.multi-option {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; font-size: 13px; color: var(--c-text);
+  cursor: pointer; transition: background .12s ease;
+}
+.multi-option:hover { background: var(--c-blue-50); }
+.multi-option input[type="checkbox"] { width: 15px; height: 15px; flex-shrink: 0; cursor: pointer; }
+.multi-option.all-option { font-weight: 600; border-bottom: 1px solid var(--c-border); margin-bottom: 4px; padding-bottom: 10px; }
+.multi-empty { padding: 12px; font-size: 12px; color: var(--c-text-3); text-align: center; }
 </style>
