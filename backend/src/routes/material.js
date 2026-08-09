@@ -18,11 +18,52 @@ const { generateQuestions, generateImageQuestions } = require('../ai/aiQuestion'
 const { extractFromBuffer } = require('../services/docParser')
 const { verifyAdminToken } = require('../services/adminAuth')
 const { QUIZ_MODES } = require('../constants/quizCodes')
+const {
+  getNextRound,
+  logRevision,
+  clampDifficulty,
+  normalizeBloom,
+  toStringArray,
+} = require('../services/qualityService')
 
 // ─── 规范化模式参数（仅允许 study/practice/exam，非法值回退 'exam'）──
 function normalizeModeParam(value, fallback = QUIZ_MODES.EXAM) {
   const v = typeof value === 'string' ? value.trim().toLowerCase() : ''
   return Object.values(QUIZ_MODES).includes(v) ? v : fallback
+}
+
+/**
+ * 从 AI 题目对象中提取质量标注字段，缺失时给安全默认值
+ *
+ * 用于 t_question 的 5 个新增列，保证任何出题链路（预览确认 / 图片题 /
+ * 纯文字题 / 重试）落库后都带有可统计的标注数据。
+ *
+ * @param {Object} q         单道题目对象
+ * @param {number} roundNo   本次出题轮次
+ * @returns {[number, string, string, string, number]} 依次对应
+ *          difficulty, bloom_level, knowledge_points, source_keypoints, quality_round
+ */
+function annotationValues(q, roundNo = 1) {
+  const src = q && typeof q === 'object' ? q : {}
+  return [
+    clampDifficulty(src.difficulty),
+    normalizeBloom(src.bloom_level ?? src.bloomLevel),
+    JSON.stringify(toStringArray(src.knowledge_points ?? src.knowledgePoints)),
+    JSON.stringify(toStringArray(src.source_keypoints ?? src.sourceKeypoints)),
+    Math.max(1, Number(roundNo) || 1),
+  ]
+}
+
+/**
+ * 取当前请求的操作人信息（PUT/DELETE 等未挂 adminAuth 的接口可能为空）
+ * @param {import('express').Request} req
+ * @returns {{operatorId:number, operatorName:string}}
+ */
+function operatorOf(req) {
+  return {
+    operatorId: Number(req.admin?.id) || 0,
+    operatorName: String(req.admin?.username || '') || '系统',
+  }
 }
 
 const router = express.Router()
@@ -261,9 +302,18 @@ router.post('/:id/confirm-questions', adminAuth, async (req, res) => {
     return res.status(400).json({ error: '题目列表不能为空' })
   }
 
+  // 本次确认属于新一轮出题，取轮次号用于质量追踪
+  const roundNo = await getNextRound(id)
+
   const conn = await pool.getConnection()
   try {
     await conn.beginTransaction()
+
+    // 记录变更前的题目快照（用于修订留痕）
+    const [beforeRows] = await conn.execute(
+      'SELECT id, type, question, answer FROM t_question WHERE material_id = ?',
+      [id]
+    )
 
     // 清掉旧题目
     await conn.execute('DELETE FROM t_question WHERE material_id = ?', [id])
@@ -272,8 +322,10 @@ router.post('/:id/confirm-questions', adminAuth, async (req, res) => {
     for (let i = 0; i < questions.length; i++) {
       const q = questions[i]
       await conn.execute(
-        `INSERT INTO t_question (material_id, type, question, options, answer, analysis, score, sort_order)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO t_question
+          (material_id, type, question, options, answer, analysis, score, sort_order,
+           difficulty, bloom_level, knowledge_points, source_keypoints, quality_round)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           id,
           q.type || 'single',
@@ -283,6 +335,7 @@ router.post('/:id/confirm-questions', adminAuth, async (req, res) => {
           q.explanation || q.analysis || '',
           q.score || 5,
           i,
+          ...annotationValues(q, roundNo),
         ]
       )
     }
@@ -300,12 +353,33 @@ router.post('/:id/confirm-questions', adminAuth, async (req, res) => {
 
     await conn.commit()
 
+    // 修订留痕（事务外，失败不影响主流程）
+    const op = operatorOf(req)
+    await logRevision({
+      materialId: Number(id),
+      roundNo,
+      operatorId: op.operatorId,
+      operatorName: op.operatorName,
+      opType: beforeRows.length ? 'REGEN' : 'GENERATE',
+      opContent: `确认保存题目：${beforeRows.length} 道 → ${questions.length} 道（第 ${roundNo} 轮）`,
+      before: { count: beforeRows.length, questions: beforeRows },
+      after: {
+        count: questions.length,
+        questions: questions.map(q => ({
+          type: q.type || 'single',
+          question: q.question || '',
+          answer: q.answer || '',
+        })),
+      },
+    })
+
     res.json({
       success: true,
       message: `已保存 ${questions.length} 道题`,
       data: {
         questionCount: questions.length,
         aiStatus,
+        roundNo,
       },
     })
   } catch (err) {
@@ -361,17 +435,21 @@ async function triggerAiQuestion(materialId, buffer, fileType, config) {
       extractedImages = extracted.images || []
 
       // 将提取的图片上传到COS
+      // visionImages 与 imageUrls 严格同序同长：只收录上传成功的图片，
+      // 避免上传失败时 AI 侧下标与 COS URL 下标错位（图文对错的根因之一）
       const imageUrls = []
+      const visionImages = []
       for (let i = 0; i < extractedImages.length; i++) {
         const img = extractedImages[i]
         try {
           const { url } = await uploadFile(img.buffer, img.filename, 'materials/images')
           imageUrls.push(url)
+          visionImages.push({ buffer: img.buffer, filename: img.filename, url })
           // 存入素材图片表
           await pool.execute(
             `INSERT INTO t_material_image (material_id, url, sort_order, description)
              VALUES (?, ?, ?, ?)`,
-            [materialId, url, i, null]
+            [materialId, url, imageUrls.length - 1, null]
           )
         } catch (uploadErr) {
           console.error(`[图片上传失败] ${img.filename}:`, uploadErr.message)
@@ -391,44 +469,77 @@ async function triggerAiQuestion(materialId, buffer, fileType, config) {
         throw new Error('未能从文档中提取到图片，请确保上传的Word文档中包含图片')
       }
 
-      const questionTypes = types === 'mixed' ? '单选+多选+判断+填空' : '单选+多选+判断'
+      // 图片题固定题型集合（与 calcDistribution('image_violation') 的分布保持一致）
+      const questionTypes = '单选+多选+判断+填空'
       const result = await generateImageQuestions({
         content,
-        images: extractedImages.filter((_, i) => i < imageUrls.length),
+        images: visionImages,
         count: count,
+        difficulty,
+        questionTypes,
+        materialId,
       })
 
       const questions = result.questions || []
+      const fallbackUsed = !!result.fallbackUsed
+      const droppedCount = Number(result.droppedCount) || 0
 
-      // 批量写入 t_question，根据 image_index 关联图片URL
+      // 本轮出题轮次（质量追踪用）
+      const imageRoundNo = await getNextRound(materialId)
+
+      // 批量写入 t_question，优先用 AI 侧按文件名反查绑定好的 image_url
       for (let i = 0; i < questions.length; i++) {
         const q = questions[i]
-        const imageIndex = q.image_index || 0
-        const imageUrl = imageUrls[imageIndex] || null
+        // image_index 为 null 表示该题已降级为纯文字题，不绑定任何图片
+        const imageUrl = q.image_url
+          || (q.image_index === null || q.image_index === undefined ? null : (imageUrls[q.image_index] || null))
 
         await pool.execute(
-          `INSERT INTO t_question (material_id, type, question, image_url, options, answer, analysis, score, sort_order)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO t_question
+            (material_id, type, question, image_url, options, answer, analysis, score, sort_order,
+             difficulty, bloom_level, knowledge_points, source_keypoints, quality_round)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             materialId,
             q.type || 'single',
             q.question,
             imageUrl,
             q.options ? JSON.stringify(q.options) : null,
-            q.answer || '',
+            // t_question.answer 为 VARCHAR(50)，填空题答案可能超长，
+            // 严格模式下会抛 ER_DATA_TOO_LONG 导致整批写入失败，故截断
+            String(q.answer || '').slice(0, 50),
             q.explanation || q.analysis || '',
             q.score || 5,
             i,
+            ...annotationValues(q, imageRoundNo),
           ]
         )
       }
 
+      // 降级（fallback 为纯文字题）或有题目被丢弃时，标记 ai_status=3 提示管理员复核
+      const imageAiStatus = (fallbackUsed || droppedCount > 0) ? 3 : 2
+
       await pool.execute(
-        'UPDATE t_material SET status = 2, ai_status = 2, question_cnt = ? WHERE id = ?',
-        [questions.length, materialId]
+        'UPDATE t_material SET status = 2, ai_status = ?, question_cnt = ? WHERE id = ?',
+        [imageAiStatus, questions.length, materialId]
       )
 
-      console.log(`[AI图片出题完成] materialId=${materialId}，生成 ${questions.length} 道题`)
+      await logRevision({
+        materialId,
+        roundNo: imageRoundNo,
+        operatorId: Number(req.admin?.id) || 0,
+        operatorName: String(req.admin?.username || '') || '系统',
+        opType: 'GENERATE',
+        opContent: `AI 图片出题：生成 ${questions.length} 道（丢弃 ${droppedCount} 道，第 ${imageRoundNo} 轮）`,
+        before: null,
+        after: { count: questions.length, droppedCount, fallbackUsed },
+      })
+
+      console.log(
+        `[AI图片出题完成] materialId=${materialId}，生成 ${questions.length} 道题，` +
+        `丢弃 ${droppedCount} 道，降级为文字题=${fallbackUsed}，` +
+        `校验=${result.validationSummary || '-'}，耗时=${result.metadata?.durationMs ?? '-'}ms`
+      )
 
     } else {
       // ── 原有逻辑：纯文字出题（统一用解析器提取真实文本，支持 docx/doc/pdf/jpg/png）──
@@ -455,23 +566,41 @@ async function triggerAiQuestion(materialId, buffer, fileType, config) {
 
       const questions = result.questions || []
 
+      // 本轮出题轮次（质量追踪用）
+      const textRoundNo = await getNextRound(materialId)
+
       for (let i = 0; i < questions.length; i++) {
         const q = questions[i]
         await pool.execute(
-          `INSERT INTO t_question (material_id, type, question, options, answer, analysis, score, sort_order)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO t_question
+            (material_id, type, question, options, answer, analysis, score, sort_order,
+             difficulty, bloom_level, knowledge_points, source_keypoints, quality_round)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             materialId,
             q.type || 'single',
             q.question,
             q.options ? JSON.stringify(q.options) : null,
-            q.answer || '',
+            // t_question.answer 为 VARCHAR(50)，超长答案会触发 ER_DATA_TOO_LONG，故截断
+            String(q.answer || '').slice(0, 50),
             q.analysis || '',
             q.score || 5,
             i,
+            ...annotationValues(q, textRoundNo),
           ]
         )
       }
+
+      await logRevision({
+        materialId,
+        roundNo: textRoundNo,
+        operatorId: Number(req.admin?.id) || 0,
+        operatorName: String(req.admin?.username || '') || '系统',
+        opType: 'GENERATE',
+        opContent: `AI 文字出题：生成 ${questions.length} 道（第 ${textRoundNo} 轮）`,
+        before: null,
+        after: { count: questions.length },
+      })
 
       // 处理新的返回值格式：hasErrors 时设置 ai_status=3 但保存题目
       const aiStatus = result.hasErrors ? 3 : 2
@@ -563,6 +692,13 @@ router.post('/:id/retry-ai', adminAuth, async (req, res) => {
   )
   if (!material.length) return res.status(404).json({ error: '素材不存在' })
 
+  // 本次重试属于新一轮出题，先取轮次并留存旧题快照
+  const roundNo = await getNextRound(id)
+  const [oldQuestions] = await pool.execute(
+    'SELECT id, type, question, answer FROM t_question WHERE material_id = ?', [id]
+  )
+  const retryOp = operatorOf(req)
+
   // 清掉旧题目
   await pool.execute('DELETE FROM t_question WHERE material_id = ?', [id])
   // 重置状态
@@ -586,11 +722,15 @@ router.post('/:id/retry-ai', adminAuth, async (req, res) => {
     for (let i = 0; i < questions.length; i++) {
       const q = questions[i]
       await pool.execute(
-        `INSERT INTO t_question (material_id, type, question, options, answer, analysis, score, sort_order)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO t_question
+          (material_id, type, question, options, answer, analysis, score, sort_order,
+           difficulty, bloom_level, knowledge_points, source_keypoints, quality_round)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [id, q.type || 'single', q.question,
          q.options ? JSON.stringify(q.options) : null,
-         q.answer || '', q.analysis || '', q.score || 5, i]
+         // t_question.answer 为 VARCHAR(50)，超长答案会触发 ER_DATA_TOO_LONG，故截断
+         String(q.answer || '').slice(0, 50), q.analysis || '', q.score || 5, i,
+         ...annotationValues(q, roundNo)]
       )
     }
 
@@ -599,6 +739,18 @@ router.post('/:id/retry-ai', adminAuth, async (req, res) => {
       'UPDATE t_material SET status = 2, ai_status = ?, question_cnt = ? WHERE id = ?',
       [aiStatus, questions.length, id]
     )
+
+    await logRevision({
+      materialId: Number(id),
+      roundNo,
+      operatorId: retryOp.operatorId,
+      operatorName: retryOp.operatorName,
+      opType: 'REGEN',
+      opContent: `重新 AI 出题：${oldQuestions.length} 道 → ${questions.length} 道（第 ${roundNo} 轮）`,
+      before: { count: oldQuestions.length, questions: oldQuestions },
+      after: { count: questions.length },
+    })
+
     const summary = result.validationSummary || `${questions.length} 道题`
     console.log(`[AI出题完成] materialId=${id}，${summary}，修复=${result.repairAttempted}，降级=${result.hasErrors}`)
   } catch (err) {
@@ -609,10 +761,106 @@ router.post('/:id/retry-ai', adminAuth, async (req, res) => {
   }
 })
 
+// ─── POST /api/material/:id/question ────────────────────────────────────────
+// 人工新增单道题目（审核页手动补题），同步写入质量标注字段并留痕
+router.post('/:id/question', adminAuth, async (req, res) => {
+  const { id } = req.params
+  const {
+    type = 'single',
+    question = '',
+    options = null,
+    answer = '',
+    analysis = '',
+    score = 5,
+    image_url = null,
+    difficulty,
+    bloom_level,
+    knowledge_points,
+    source_keypoints,
+  } = req.body || {}
+
+  if (!String(question).trim()) {
+    return res.status(400).json({ error: '题干不能为空' })
+  }
+
+  try {
+    const [material] = await pool.execute('SELECT id FROM t_material WHERE id = ?', [id])
+    if (!material.length) return res.status(404).json({ error: '素材不存在' })
+
+    // 排序号接在现有题目之后
+    const [[{ maxSort }]] = await pool.execute(
+      'SELECT COALESCE(MAX(sort_order), -1) AS maxSort FROM t_question WHERE material_id = ?',
+      [id]
+    )
+
+    // 人工新增归入当前最新轮次（不新开一轮）
+    const [[{ curRound }]] = await pool.execute(
+      'SELECT COALESCE(MAX(quality_round), 1) AS curRound FROM t_question WHERE material_id = ?',
+      [id]
+    )
+
+    const [result] = await pool.execute(
+      `INSERT INTO t_question
+        (material_id, type, question, image_url, options, answer, analysis, score, sort_order,
+         difficulty, bloom_level, knowledge_points, source_keypoints, quality_round)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        type || 'single',
+        String(question),
+        image_url || null,
+        options ? JSON.stringify(options) : null,
+        String(answer || '').slice(0, 50),
+        analysis || '',
+        Number(score) || 5,
+        Number(maxSort) + 1,
+        ...annotationValues(
+          { difficulty, bloom_level, knowledge_points, source_keypoints },
+          Number(curRound) || 1
+        ),
+      ]
+    )
+
+    // 更新题目数量
+    const [[{ cnt }]] = await pool.execute(
+      'SELECT COUNT(*) AS cnt FROM t_question WHERE material_id = ? AND status = 1', [id]
+    )
+    await pool.execute('UPDATE t_material SET question_cnt = ? WHERE id = ?', [cnt, id])
+
+    const op = operatorOf(req)
+    await logRevision({
+      materialId: Number(id),
+      roundNo: Number(curRound) || 1,
+      operatorId: op.operatorId,
+      operatorName: op.operatorName,
+      opType: 'ADD',
+      opContent: `人工新增题目 #${result.insertId}`,
+      before: null,
+      after: { id: result.insertId, type, question: String(question).slice(0, 200), answer },
+    })
+
+    res.json({
+      success: true,
+      message: '题目已新增',
+      data: { id: result.insertId, questionCount: cnt },
+    })
+  } catch (err) {
+    console.error('[add-question error]', err.message)
+    res.status(500).json({ error: '新增题目失败：' + err.message })
+  }
+})
+
 // ─── PUT /api/material/:id/question/:qid ────────────────────────────────────
 router.put('/:id/question/:qid', async (req, res) => {
-  const { qid } = req.params
+  const { id, qid } = req.params
   const { question, options, answer, analysis, score } = req.body
+
+  // 变更前快照（用于修订留痕）
+  const [beforeRows] = await pool.execute(
+    `SELECT id, type, question, options, answer, analysis, score, quality_round
+       FROM t_question WHERE id = ?`,
+    [qid]
+  )
 
   await pool.execute(
     `UPDATE t_question
@@ -621,12 +869,32 @@ router.put('/:id/question/:qid', async (req, res) => {
     [question, options ? JSON.stringify(options) : null, answer, analysis || '', score || 5, qid]
   )
 
+  const before = beforeRows[0] || null
+  const op = operatorOf(req)
+  await logRevision({
+    materialId: Number(id),
+    roundNo: Number(before && before.quality_round) || 1,
+    operatorId: op.operatorId,
+    operatorName: op.operatorName,
+    opType: 'EDIT',
+    opContent: `修改题目 #${qid}`,
+    before,
+    after: { id: Number(qid), question, options, answer, analysis: analysis || '', score: score || 5 },
+  })
+
   res.json({ success: true, message: '题目已更新' })
 })
 
 // ─── DELETE /api/material/:id/question/:qid ─────────────────────────────────
 router.delete('/:id/question/:qid', async (req, res) => {
   const { id, qid } = req.params
+
+  // 变更前快照（用于修订留痕）
+  const [beforeRows] = await pool.execute(
+    `SELECT id, type, question, options, answer, analysis, score, quality_round
+       FROM t_question WHERE id = ? AND material_id = ?`,
+    [qid, id]
+  )
 
   await pool.execute('DELETE FROM t_question WHERE id = ? AND material_id = ?', [qid, id])
 
@@ -635,6 +903,19 @@ router.delete('/:id/question/:qid', async (req, res) => {
     'SELECT COUNT(*) AS cnt FROM t_question WHERE material_id = ? AND status = 1', [id]
   )
   await pool.execute('UPDATE t_material SET question_cnt = ? WHERE id = ?', [cnt, id])
+
+  const before = beforeRows[0] || null
+  const op = operatorOf(req)
+  await logRevision({
+    materialId: Number(id),
+    roundNo: Number(before && before.quality_round) || 1,
+    operatorId: op.operatorId,
+    operatorName: op.operatorName,
+    opType: 'DELETE',
+    opContent: `删除题目 #${qid}`,
+    before,
+    after: null,
+  })
 
   res.json({ success: true, message: '题目已删除' })
 })

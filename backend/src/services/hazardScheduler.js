@@ -1,21 +1,31 @@
 /**
- * 隐患定时任务服务（Sprint 3 / P0-2 / P0-6 / P0-7）
+ * 隐患定时任务服务（Sprint 3 / P0-2 / P0-6 / P0-7，模块三）
  *
  * 进程内定时器（原生 setInterval，无 node-cron）：
  *   1) 超期扫描：每 scanIntervalMin 分钟，扫描「未闭环 + 计划时间已过 + 当日未通知」的隐患，
  *      按超期天数分级 @责任人 / 单位安全员 / 安全环保室，并落库 last_overdue_notify_at。
- *   2) 周报：每 1 分钟校验是否到达「周一 09:00」且本周未发，命中则发上周周通报。
+ *   2) 未整改隐患周报（模块三）：每周三 01:00 窗口，生成「全部未整改隐患 Excel」传 COS，
+ *      钉钉发 markdown 统计 + 下载链接；周 key 去重，失败清 key 允许窗口内重试。
+ *
+ * 模块三停用（保留函数定义与导出，便于回退）：
+ *   - checkWeeklyReport / sendWeeklyReport（周报 WEEKLY）
+ *   - checkDailyDigest / sendDailyDigest（每日摘要 DIGEST）
+ *   - 上报/分派/验收即时通知的停用见 routes/hazardLoop.js fireNotify 白名单。
  *
  * 通知 fire-and-forget：先落库（每日幂等护栏），再 try/catch 调 sendHazardNotification，
  * 通知失败仅 console.error，不抛错、不回滚、不影响后续隐患。
  */
 
 const { sendHazardNotification, mergeMobiles } = require('./dingtalk/notify')
+const { sendWeeklyUnclosedToDingtalk } = require('./unclosedHazardReport')
 const { chooseEscalationTarget, OVERDUE_ESCALATE_OFFICE_DAYS } = require('../constants/hazardStates')
 const schedulerConfig = require('./schedulerConfig')
 
 // 周报去重：已发送的周 key（内存，进程内单实例足够）
 let lastWeeklyKey = ''
+
+// 未整改隐患周报去重：已发送的周 key（内存，进程内单实例足够）
+let lastWeeklyExcelKey = ''
 
 // 每日摘要去重：已发送日期 + 上次校验日期（跨进程重启为内存态，单实例足够）
 let dailyDigestSentDate = ''
@@ -366,6 +376,50 @@ async function checkWeeklyReport(pool) {
 }
 
 /**
+ * 未整改隐患周报：生成 Excel → 传 COS → 钉钉发统计 + 下载链接（每周三 01:00）
+ * @param {Object} pool
+ * @returns {Promise<{ok:boolean, url:string, count:number, overdueCount:number}>}
+ */
+async function sendWeeklyExcel(pool) {
+  const result = await sendWeeklyUnclosedToDingtalk(pool)
+  console.log(
+    `[scheduler] 未整改隐患周报已发送：未整改 ${result.count} 条 / 已超期 ${result.overdueCount} 条，Excel 已传 COS: ${result.url}`
+  )
+  return result
+}
+
+/** 未整改隐患周报窗口判定：每周三 01:00 - 01:09（纯函数，便于测试） */
+function isWeeklyExcelWindow(now) {
+  const isTargetDay = now.getDay() === 3 // 3 = 周三
+  const isTargetHour = now.getHours() === 1
+  const withinWindow = now.getMinutes() >= 0 && now.getMinutes() < 10
+  return isTargetDay && isTargetHour && withinWindow
+}
+
+/**
+ * 每周三 01:00 前后窗口校验 + 周 key 去重（失败清 key 允许窗口内重试）。
+ * @param {Object} pool
+ * @returns {Promise<boolean>} 是否触发了发送
+ */
+async function checkWeeklyExcel(pool) {
+  const now = new Date()
+  if (!isWeeklyExcelWindow(now)) return false
+
+  const weekKey = getWeekKey(now)
+  if (weekKey === lastWeeklyExcelKey) return false // 本周已发
+
+  lastWeeklyExcelKey = weekKey // 占位，避免窗口内重复发送
+  try {
+    await sendWeeklyExcel(pool)
+    return true
+  } catch (e) {
+    console.error('[scheduler] 未整改隐患周报执行异常', e.message)
+    lastWeeklyExcelKey = '' // 失败则允许下次重试（仍在窗口内）
+    return false
+  }
+}
+
+/**
  * 启动定时任务（在 autoMigrate 成功后调用，确保 last_overdue_notify_at 列已存在）
  * @param {Object} pool
  */
@@ -379,7 +433,8 @@ function startSchedulers(pool) {
   const mm = String(cfg.weeklyMin).padStart(2, '0')
   console.log(
     `[scheduler] 已启动：超期扫描每 ${cfg.scanIntervalMin} 分钟；` +
-    `周报每周${cfg.weeklyDay} ${hh}:${mm}（周 key 去重）；每日摘要 17:00`
+    `未整改隐患周报每周三 01:00（周 key 去重）；` +
+    `周报(每周${cfg.weeklyDay} ${hh}:${mm})与每日摘要(17:00)已按模块三停用`
   )
 
   const scanMs = Math.max(1, cfg.scanIntervalMin) * 60 * 1000
@@ -387,13 +442,19 @@ function startSchedulers(pool) {
     scanOverdueHazards(pool).catch((e) => console.error('[scheduler] 超期扫描异常', e.message))
   }, scanMs)
 
-  setInterval(() => {
-    checkWeeklyReport(pool).catch((e) => console.error('[scheduler] 周报校验异常', e.message))
-  }, 60 * 1000)
+  // 模块三：停用「周报(WEEKLY) / 每日摘要(DIGEST)」定时触发（保留函数定义与导出，便于回退）。
+  // setInterval(() => {
+  //   checkWeeklyReport(pool).catch((e) => console.error('[scheduler] 周报校验异常', e.message))
+  // }, 60 * 1000)
+  //
+  // // 每日摘要：每分钟校验是否到达 17:00 且当日未发（到达后每天发一次）
+  // setInterval(() => {
+  //   checkDailyDigest(pool).catch((e) => console.error('[scheduler] 每日摘要校验异常', e.message))
+  // }, 60 * 1000)
 
-  // 每日摘要：每分钟校验是否到达 17:00 且当日未发（到达后每天发一次）
+  // 模块三：未整改隐患周报（每周三 01:00 窗口，周 key 去重）——每分钟校验是否命中窗口
   setInterval(() => {
-    checkDailyDigest(pool).catch((e) => console.error('[scheduler] 每日摘要校验异常', e.message))
+    checkWeeklyExcel(pool).catch((e) => console.error('[scheduler] 未整改周报校验异常', e.message))
   }, 60 * 1000)
 
   // 启动后立即跑一次超期扫描（幂等，不会重复通知）
@@ -407,4 +468,7 @@ module.exports = {
   checkWeeklyReport,
   sendDailyDigest,
   checkDailyDigest,
+  sendWeeklyExcel,
+  checkWeeklyExcel,
+  isWeeklyExcelWindow,
 }

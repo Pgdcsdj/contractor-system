@@ -36,9 +36,9 @@ export function resetPassword(id, payload) {
   return request.put(`/api/account/${id}/reset-password`, payload)
 }
 
-/** 立即备份 */
+/** 立即备份（返回 xlsx 附件 blob） */
 export function triggerBackup() {
-  return request.post('/api/data/backup')
+  return request.post('/api/data/backup', null, { responseType: 'blob' })
 }
 
 /** 导出隐患（返回 xlsx 附件 blob） */
@@ -54,4 +54,9 @@ export function listBackups() {
 /** 隐患排查项目下拉枚举（来自已入库数据） */
 export function getInvestigationItems() {
   return request.get('/api/data/investigation-items')
+}
+
+/** 未整改隐患周报（未整改隐患清单 xlsx，admin/superadmin）——模块三 */
+export function getUnclosedWeeklyExcel() {
+  return request.get('/api/hazard/unclosed-weekly-excel', { responseType: 'blob' })
 }

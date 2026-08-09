@@ -18,6 +18,44 @@ const { getApiKey, getProvider, getQuestionModel, getVisionModel, supportsVision
 
 // ─── Prompt 模板 ────────────────────────────────────────────────────────────
 
+/**
+ * 质量标注要求（所有题型通用）
+ *
+ * 追加到每个出题 Prompt 的尾部，要求模型在生成题目的同时产出 4 个标注字段，
+ * 供「出题质量量化校验」模块做一致性校验、覆盖率统计与质量打分。
+ *
+ * 该段落是纯增量要求：即使模型忽略这些字段，normalizeQuestions() 也会补齐
+ * 安全默认值，不会影响既有出题链路。
+ */
+const ANNOTATION_REQUIREMENT = `
+## 质量标注要求（每道题都必须附带，不可省略）
+除题目本身字段外，每道题的 JSON 对象还必须额外包含以下 4 个标注字段：
+
+1. "difficulty"：整数 1-5，该题的实际难度
+   - 1-2 = 基础识记（原文关键词、条款复现）
+   - 3   = 中等理解（概念辨析、条款匹配）
+   - 4-5 = 深入应用（综合分析、多条款交叉、场景决策）
+
+2. "bloom_level"：字符串，只能取以下三个值之一（严格使用中文）
+   - "识记"：考察记住原文事实、数字、条款名称
+   - "理解"：考察解释含义、辨析概念、判断正误
+   - "应用"：考察在具体场景中运用规定解决问题
+
+3. "knowledge_points"：字符串数组，该题考察的知识点标签，2-4 个
+   - 用简短名词短语，如 ["高处作业防护", "安全带使用规范"]
+   - 不要使用整句话，不要重复题干原文
+
+4. "source_keypoints"：字符串数组，该题在源文档中的直接依据，1-3 条
+   - 必须是源文档中真实出现的原文片段或条款要点的凝练
+   - 每条不超过 40 字，不得编造源文档中不存在的内容
+
+示例（在原有字段基础上追加）：
+  "difficulty": 3,
+  "bloom_level": "理解",
+  "knowledge_points": ["动火作业审批", "作业票管理"],
+  "source_keypoints": ["特级动火作业须由厂级安全部门审批"]
+`
+
 const PROMPTS = {
   // ── 视频督查通报（带图片违章场景）─────────────────────────────
   video_report: {
@@ -79,7 +117,7 @@ ${vars.imageInfo}
     "ai_scoring_prompt": "评分用的提示词，包含标准答案和评分规则"
   }
 ]
-
+${ANNOTATION_REQUIREMENT}
 ## 输出要求
 严格只输出JSON数组，不要任何其他文字说明。`,
   },
@@ -135,7 +173,7 @@ ${vars.content}
     "explanation": "解析"
   }
 ]
-
+${ANNOTATION_REQUIREMENT}
 ## 输出要求
 严格只输出JSON数组，不要任何其他文字说明。`,
   },
@@ -176,16 +214,22 @@ ${vars.imageInfo}
 - 填空题：${vars.fillCount} 道
   → 结合图片场景，补充关键安全参数（如安全距离、浓度限值等）
 
-## 每道题的image_index说明
-每张图片有一个编号（从0开始），请在每道题中标注使用哪张图片：
-${vars.imageIndexInfo}
+## 每道题的图片标注说明（非常重要）
+每道题必须包含 "image_filenames" 字段，值为该题涉及图片的【文件名数组】。
+文件名必须与下方清单**逐字一致**，不得编造、改写、翻译或用序号代替：
+${vars.imageFileInfo || vars.imageIndexInfo || '（无可用图片，请勿输出 image_filenames）'}
+
+规则：
+- 只涉及一张图片时：{"image_filenames": ["清单中的文件名"]}
+- 涉及多张图片时：{"image_filenames": ["文件名1", "文件名2"]}
+- 禁止输出 image_index 字段，禁止输出清单之外的文件名
 
 ## JSON格式（严格，数组最外层）
 [
   {
     "id": 1,
     "type": "single",
-    "image_index": 0,
+    "image_filenames": ["image1.png"],
     "question": "根据图片场景，一名作业人员在未搭设脚手架的情况下直接攀爬钢结构立柱进行焊接。该行为最直接违反了以下哪项？",
     "options": {"A": "《高处作业安全管理规定》...","B": "《焊接安全规程》...","C": "《劳动防护用品管理制度》...","D": "《钢结构施工规范》..."},
     "answer": "A",
@@ -194,7 +238,7 @@ ${vars.imageIndexInfo}
   {
     "id": 2,
     "type": "multiple",
-    "image_index": 0,
+    "image_filenames": ["image1.png"],
     "question": "根据图片，该作业面存在哪些隐患或违章？",
     "options": {"A": "...","B": "...","C": "...","D": "...","E": "..."},
     "answer": "ABC",
@@ -203,7 +247,7 @@ ${vars.imageIndexInfo}
   {
     "id": 3,
     "type": "judgment",
-    "image_index": 1,
+    "image_filenames": ["image2.png"],
     "question": "图中作业人员未系安全带进行5米高度作业，直接违反了'严禁高处作业不系安全带'的保命条款。",
     "answer": "正确",
     "explanation": "该保命条款为各行业通用强制性规定..."
@@ -211,13 +255,13 @@ ${vars.imageIndexInfo}
   {
     "id": 4,
     "type": "fill",
-    "image_index": 2,
+    "image_filenames": ["image3.png"],
     "question": "图中氧气瓶与乙炔瓶并排放置，两者间距不足______米，不符合国标要求。",
     "answer": "5",
     "explanation": "GB 9448规定两者间距不小于5米..."
   }
 ]
-
+${ANNOTATION_REQUIREMENT}
 ## 输出要求
 严格只输出JSON数组，不要任何其他文字说明。`,
   },
@@ -290,11 +334,13 @@ async function callAI(messages, maxTokens = 4096) {
     delete body.temperature
   }
 
-  // Moonshot / Kimi 系列模型对 temperature 敏感，仅允许固定值 1。
+  // Moonshot / Kimi 系列模型对 temperature 敏感，仅允许固定值 0.6（API 强制，否则 400）。
+  // 同时关闭思考，避免 reasoning_content 兜底成散文导致解析失败。
   const isMoonshot = provider.id === 'moonshot' || /moonshot/i.test(provider.name || '')
   const isKimiModel = /kimi/i.test(model)
   if (isMoonshot || isKimiModel) {
-    body.temperature = 1
+    body.temperature = 0.6
+    body.thinking = { type: 'disabled' }
   }
 
   const response = await fetch(`${provider.baseUrl}/chat/completions`, {
@@ -334,16 +380,23 @@ async function callAIStructured(messages, maxTokens = 4096) {
     response_format: { type: 'json_object' },
   }
 
+  // Moonshot/Kimi 是推理模型，默认先输出思维链(reasoning_content)，
+  // 会耗尽 token 且让 content 为空 → extractContentFromResult 回退到散文导致解析失败。
+  // 关闭思考让其直接输出 JSON（文字出题同样受益）。
+  if (provider && provider.id === 'moonshot') {
+    body.thinking = { type: 'disabled' }
+  }
+
   // SiliconFlow 的 DeepSeek-R1 是推理模型，不需要 temperature
   if (model.includes('R1') || model.includes('reasoner')) {
     delete body.temperature
   }
 
-  // Moonshot / Kimi 系列模型对 temperature 敏感
+  // Moonshot / Kimi 系列模型对 temperature 敏感，仅允许固定值 0.6（API 强制，否则 400）。
   const isMoonshot = provider.id === 'moonshot' || /moonshot/i.test(provider.name || '')
   const isKimiModel = /kimi/i.test(model)
   if (isMoonshot || isKimiModel) {
-    body.temperature = 1
+    body.temperature = 0.6
   }
 
   const response = await fetch(`${provider.baseUrl}/chat/completions`, {
@@ -421,6 +474,9 @@ function parseJSONResponse(raw) {
 //  两阶段流水线：质量门禁 + 修复
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/** 无需 options 选项的题型（判断/填空/简答） */
+const OPTIONLESS_TYPES = ['judgment', 'fill', 'short_answer', 'short_answer_image']
+
 /**
  * 质量门禁：校验题目数组的完整性和正确性
  *
@@ -442,55 +498,60 @@ function validateQuestions(questions, { count, questionTypes } = {}) {
   const expectedTypes = parseExpectedTypes(questionTypes || '')
 
   const results = questions.map((q, index) => {
+    // 防御：模型偶发返回 null / 字符串 / 嵌套数组，直接判不合格，避免抛异常打断整单
+    if (!q || typeof q !== 'object' || Array.isArray(q)) {
+      return { index, ok: false, errors: [`题 ${index + 1} 不是有效的题目对象`] }
+    }
+
     const errors = []
+    const qtype = q.type || ''
+    // 判断题 / 填空题 / 简答题天然没有选项，不应因缺少 options 被判为不合格
+    const optionless = OPTIONLESS_TYPES.includes(qtype)
 
     // 1. 必须有 question 字符串且非空
     if (!q.question || typeof q.question !== 'string' || q.question.trim() === '') {
       errors.push(`题 ${index + 1} 缺少 question 字段或为空`)
     }
 
-    // 2. 必须有 options 对象且至少有 2 个 key
-    if (!q.options || typeof q.options !== 'object' || Array.isArray(q.options)) {
-      errors.push(`题 ${index + 1} 缺少有效的 options 对象`)
-    } else {
-      const optionKeys = Object.keys(q.options)
-      if (optionKeys.length < 2) {
+    // 2. 选项校验（仅对需要选项的题型）
+    const hasOptionsObj = !!q.options && typeof q.options === 'object' && !Array.isArray(q.options)
+    const optionKeys = hasOptionsObj ? Object.keys(q.options) : []
+
+    if (!optionless) {
+      if (!hasOptionsObj) {
+        errors.push(`题 ${index + 1} 缺少有效的 options 对象`)
+      } else if (optionKeys.length < 2) {
         errors.push(`题 ${index + 1} options 至少需要 2 个选项，当前 ${optionKeys.length} 个`)
       }
+    }
 
-      // 3. 必须有 answer 字符串且非空
-      if (!q.answer || typeof q.answer !== 'string' || q.answer.trim() === '') {
-        errors.push(`题 ${index + 1} 缺少 answer 字段或为空`)
-      } else {
-        // 4. answer 必须在 options 的 keys 中
-        const answerStr = q.answer.trim()
-        const qtype = q.type || ''
-
-        if (qtype === 'multiple' || qtype === 'multi' || qtype === 'multiple_image') {
-          // 多选题：answer 每个字母都在 options keys 中
-          const letters = answerStr.split('').filter(c => /[A-Za-z]/.test(c))
-          if (letters.length === 0) {
-            errors.push(`题 ${index + 1} 多选题 answer "${answerStr}" 不含有效选项字母`)
-          } else {
-            for (const letter of letters) {
-              if (!optionKeys.includes(letter.toUpperCase()) && !optionKeys.includes(letter)) {
-                errors.push(`题 ${index + 1} 多选题 answer 中的 "${letter}" 不在 options keys [${optionKeys.join(',')}] 中`)
-              }
-            }
-          }
-        } else if (qtype === 'judgment') {
-          // 判断题：answer 应为 "正确" 或 "错误"
-          if (answerStr !== '正确' && answerStr !== '错误' && answerStr !== 'true' && answerStr !== 'false') {
-            errors.push(`题 ${index + 1} 判断题 answer 应为 "正确" 或 "错误"，当前 "${answerStr}"`)
-          }
-        } else if (qtype === 'fill') {
-          // 填空题：answer 非空即可（已在上层校验）
-        } else {
-          // 单选题/默认：answer 必须是 options 中的某一个 key
-          if (!optionKeys.includes(answerStr)) {
-            errors.push(`题 ${index + 1} answer "${answerStr}" 不在 options keys [${optionKeys.join(',')}] 中`)
+    // 3. 必须有 answer 且非空（答案可能是数字/布尔，统一转字符串判断）
+    const answerStr = q.answer === undefined || q.answer === null ? '' : String(q.answer).trim()
+    if (answerStr === '') {
+      errors.push(`题 ${index + 1} 缺少 answer 字段或为空`)
+    } else if (qtype === 'multiple' || qtype === 'multi' || qtype === 'multiple_image') {
+      // 4a. 多选题：answer 每个字母都要在 options keys 中
+      const letters = answerStr.split('').filter(c => /[A-Za-z]/.test(c))
+      if (letters.length === 0) {
+        errors.push(`题 ${index + 1} 多选题 answer "${answerStr}" 不含有效选项字母`)
+      } else if (optionKeys.length > 0) {
+        for (const letter of letters) {
+          if (!optionKeys.includes(letter.toUpperCase()) && !optionKeys.includes(letter)) {
+            errors.push(`题 ${index + 1} 多选题 answer 中的 "${letter}" 不在 options keys [${optionKeys.join(',')}] 中`)
           }
         }
+      }
+    } else if (qtype === 'judgment') {
+      // 4b. 判断题：answer 应为 "正确" 或 "错误"
+      if (answerStr !== '正确' && answerStr !== '错误' && answerStr !== 'true' && answerStr !== 'false') {
+        errors.push(`题 ${index + 1} 判断题 answer 应为 "正确" 或 "错误"，当前 "${answerStr}"`)
+      }
+    } else if (qtype === 'fill' || qtype === 'short_answer' || qtype === 'short_answer_image') {
+      // 4c. 填空题/简答题：answer 非空即可（上面已校验）
+    } else if (optionKeys.length > 0) {
+      // 4d. 单选题/默认：answer 必须是 options 中的某一个 key
+      if (!optionKeys.includes(answerStr)) {
+        errors.push(`题 ${index + 1} answer "${answerStr}" 不在 options keys [${optionKeys.join(',')}] 中`)
       }
     }
 
@@ -632,14 +693,93 @@ function normalizeOptions(options) {
   return obj
 }
 
+// ─── 质量标注字段归一化 ─────────────────────────────────────────────────────
+
+/** Bloom 认知层级（三级） */
+const BLOOM_LEVELS = ['识记', '理解', '应用']
+
+/** Bloom 常见别名 → 标准值 */
+const BLOOM_ALIAS = {
+  记忆: '识记', 识记: '识记', 记住: '识记', remember: '识记', knowledge: '识记',
+  理解: '理解', 领会: '理解', understand: '理解', comprehension: '理解',
+  应用: '应用', 运用: '应用', apply: '应用', application: '应用',
+  分析: '应用', 综合: '应用', 评价: '应用', analyze: '应用', evaluate: '应用', create: '应用',
+}
+
+/**
+ * 归一化难度为 1-5 的整数
+ * @param {*} v - 原始值
+ * @param {number} fallback - 兜底值
+ * @returns {number} 1-5
+ */
+function normalizeDifficulty(v, fallback = 3) {
+  const n = Number(v)
+  if (!Number.isFinite(n)) return fallback
+  return Math.min(5, Math.max(1, Math.round(n)))
+}
+
+/**
+ * 归一化 Bloom 层级为三级枚举之一
+ * @param {*} v - 原始值
+ * @param {string} fallback - 兜底值
+ * @returns {string} '识记' | '理解' | '应用'
+ */
+function normalizeBloomLevel(v, fallback = '理解') {
+  if (!v) return fallback
+  const s = String(v).trim()
+  if (BLOOM_LEVELS.includes(s)) return s
+  const hit = BLOOM_ALIAS[s] || BLOOM_ALIAS[s.toLowerCase()]
+  if (hit) return hit
+  // 模糊包含：如 "理解层次" / "Bloom-应用"
+  for (const lv of BLOOM_LEVELS) {
+    if (s.includes(lv)) return lv
+  }
+  return fallback
+}
+
+/**
+ * 归一化为去重后的非空字符串数组
+ * @param {*} v - 原始值（数组 / 逗号分隔字符串 / 其他）
+ * @param {number} maxLen - 单项最大长度
+ * @returns {string[]}
+ */
+function normalizeTagArray(v, maxLen = 100) {
+  let arr = []
+  if (Array.isArray(v)) {
+    arr = v
+  } else if (typeof v === 'string' && v.trim()) {
+    arr = v.split(/[,，;；\n]/)
+  } else {
+    return []
+  }
+  const out = []
+  for (const item of arr) {
+    if (item === null || item === undefined) continue
+    const s = String(typeof item === 'object' ? JSON.stringify(item) : item).trim()
+    if (!s) continue
+    const cut = s.length > maxLen ? s.slice(0, maxLen) : s
+    if (!out.includes(cut)) out.push(cut)
+  }
+  return out
+}
+
 /**
  * 补充题目缺失字段，并兼容 options 的数组/对象两种格式
  */
 function normalizeQuestions(questions, detectedType) {
   return questions.map((q, i) => {
+    // 防御：非对象元素原样返回，交给 validateQuestions 判不合格后丢弃
+    if (!q || typeof q !== 'object' || Array.isArray(q)) return q
+
     if (!q.id) q.id = i + 1
     if (!q.type) q.type = detectedType === 'video_report' ? 'multiple_image' : 'single'
     if (!q.theme) q.theme = '安全培训'
+
+    // ── 质量标注字段：缺失时补安全默认值，保证下游落库与统计不为 null ──
+    q.difficulty = normalizeDifficulty(q.difficulty, 3)
+    q.bloom_level = normalizeBloomLevel(q.bloom_level ?? q.bloomLevel, '理解')
+    q.knowledge_points = normalizeTagArray(q.knowledge_points ?? q.knowledgePoints, 100)
+    q.source_keypoints = normalizeTagArray(q.source_keypoints ?? q.sourceKeypoints, 200)
 
     // options 兼容数组/对象两种格式（模型可能返回 ["A. xxx"] 或 {"A":"xxx"}）
     if (q.options) {
@@ -868,10 +1008,20 @@ function calcDistribution(docType, total) {
     return { scCount: 0, mcCount, judgeCount: 0, shortCount, fillCount: 0 }
   } else if (docType === 'image_violation') {
     // 违章图片识别：单选 + 多选 + 判断 + 填空
-    const scCount = Math.max(1, Math.round(total * 0.3))
-    const mcCount = Math.max(1, Math.round(total * 0.3))
-    const fillCount = Math.max(1, Math.round(total * 0.1))
-    const judgeCount = total - scCount - mcCount - fillCount
+    // 小题量（total<=2）时按 填空→多选→单选 的优先级退让，
+    // 保证各题型非负且 scCount + mcCount + judgeCount + fillCount === total
+    const t = Math.max(1, Number(total) || 1)
+    let scCount = Math.max(1, Math.round(t * 0.3))
+    let mcCount = Math.max(1, Math.round(t * 0.3))
+    let fillCount = Math.max(1, Math.round(t * 0.1))
+    while (scCount + mcCount + fillCount > t) {
+      if (fillCount > 0) fillCount--
+      else if (mcCount > 1) mcCount--
+      else if (scCount > 1) scCount--
+      else if (mcCount > 0) mcCount--  // t===1：放弃多选保底，确保总和精确等于 total
+      else break
+    }
+    const judgeCount = Math.max(0, t - scCount - mcCount - fillCount)
     return { scCount, mcCount, judgeCount, shortCount: 0, fillCount }
   } else {
     // 制度通知：单选 + 多选 + 判断
@@ -930,22 +1080,19 @@ async function saveToFile(questions, outPath) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * 调用支持Vision的AI API（发送图片base64）
- * OpenAI兼容格式
+ * 构建 Vision 用户消息的 content 数组（文字 + 图片 base64）
+ * @param {string} textPrompt        文字提示
+ * @param {Array<Buffer>} imageBuffers 图片 Buffer 数组
+ * @returns {Array<Object>} OpenAI 兼容的多模态 content 数组
  */
-async function callAIVision({ textPrompt, imageBuffers, maxTokens = 4000 }) {
-  const provider = getProvider()
-  const apiKey = getApiKey()
-  const model = getVisionModel()
-
-  if (!model) {
-    throw new Error('当前AI Provider未配置Vision模型，请在后台设置支持图片理解的模型（如Qwen2-VL或GPT-4o）')
+function buildVisionContent(textPrompt, imageBuffers = []) {
+  const content = []
+  if (textPrompt && String(textPrompt).trim() !== '') {
+    content.push({ type: 'text', text: String(textPrompt) })
   }
 
-  // 构建消息内容：文字 + 图片
-  const content = [{ type: 'text', text: textPrompt }]
-
   for (const buffer of imageBuffers) {
+    if (!buffer || typeof buffer.toString !== 'function') continue
     const base64 = buffer.toString('base64')
     const mime = detectMimeFromBuffer(buffer)
     content.push({
@@ -957,10 +1104,85 @@ async function callAIVision({ textPrompt, imageBuffers, maxTokens = 4000 }) {
     })
   }
 
+  return content
+}
+
+/**
+ * 调用支持Vision的AI API（发送图片base64），OpenAI 兼容格式
+ *
+ * 支持三种调用姿势（向后兼容）：
+ *  1. 旧版：callAIVision({ textPrompt, imageBuffers })                 → 单条 user 消息
+ *  2. 带系统提示：callAIVision({ system, textPrompt, imageBuffers })   → system + user 两条消息
+ *  3. 完全自定义：callAIVision({ messages, imageBuffers })             → 直接使用 messages，
+ *     若同时传 imageBuffers，则把图片追加到最后一条 user 消息里
+ *
+ * @param {Object} params
+ * @param {string} [params.textPrompt='']   用户文字提示
+ * @param {string} [params.system='']       系统提示词（system message）
+ * @param {Array}  [params.imageBuffers=[]] 图片 Buffer 数组
+ * @param {Array}  [params.messages=null]   自定义消息数组（优先级最高）
+ * @param {number} [params.maxTokens=4000]  最大 token 数
+ * @returns {Promise<string>} 模型返回的文本
+ */
+async function callAIVision({ textPrompt = '', system = '', imageBuffers = [], messages = null, maxTokens = 4000 }) {
+  const provider = getProvider()
+  const apiKey = getApiKey()
+  const model = getVisionModel()
+
+  if (!model) {
+    throw new Error('当前AI Provider未配置Vision模型，请在后台设置支持图片理解的模型（如 THUDM/GLM-4.5V 或 GPT-4o）')
+  }
+
+  const buffers = Array.isArray(imageBuffers) ? imageBuffers.filter(Boolean) : []
+  let finalMessages = []
+
+  if (Array.isArray(messages) && messages.length > 0) {
+    // 姿势 3：使用调用方给定的 messages，必要时把图片挂到最后一条 user 消息
+    finalMessages = messages.map(m => ({ ...m }))
+    if (buffers.length > 0) {
+      let lastUserIdx = -1
+      for (let i = finalMessages.length - 1; i >= 0; i--) {
+        if (finalMessages[i].role === 'user') { lastUserIdx = i; break }
+      }
+      if (lastUserIdx === -1) {
+        finalMessages.push({ role: 'user', content: buildVisionContent('', buffers) })
+      } else {
+        const existing = finalMessages[lastUserIdx].content
+        const parts = Array.isArray(existing)
+          ? existing.slice()
+          : buildVisionContent(typeof existing === 'string' ? existing : '', [])
+        finalMessages[lastUserIdx] = {
+          ...finalMessages[lastUserIdx],
+          content: parts.concat(buildVisionContent('', buffers)),
+        }
+      }
+    }
+  } else {
+    // 姿势 1 / 2：system（可选）+ 单条多模态 user 消息
+    if (system && String(system).trim() !== '') {
+      finalMessages.push({ role: 'system', content: String(system) })
+    }
+    finalMessages.push({ role: 'user', content: buildVisionContent(textPrompt, buffers) })
+  }
+
   const body = {
     model,
-    messages: [{ role: 'user', content }],
+    messages: finalMessages,
     max_tokens: maxTokens,
+  }
+
+  // 结构化输出：当 provider 支持 response_format 时强制要求 JSON 数组。
+  // 否则视觉模型（如 GLM-4.5V / GPT-4o）可能返回散文，导致 JSON.parse 失败、
+  // 图片题出题直接失败。仅在不支持时才省略，避免部分厂商报错。
+  if (supportsStructuredOutput(provider)) {
+    body.response_format = { type: 'json_object' }
+  }
+
+  // Moonshot/Kimi 推理模型默认先输出思维链(reasoning_content)，图片题多图场景下
+  // token 会被思考耗尽、最终 content 为空，extractContentFromResult 回退到散文→解析失败。
+  // 显式关闭思考，直接输出 JSON。
+  if (provider && provider.id === 'moonshot') {
+    body.thinking = { type: 'disabled' }
   }
 
   const response = await fetch(`${provider.baseUrl}/chat/completions`, {
@@ -991,74 +1213,477 @@ function detectMimeFromBuffer(buffer) {
   return 'image/jpeg'
 }
 
+// ─── 图片题：文件名反查与绑定 ───────────────────────────────────────────────
+
 /**
- * 生成图片违章识别题（主入口）
+ * 归一化文件名，便于反查匹配：
+ * 去目录、去首尾空白、统一小写、去掉常见的中文引号/尖括号包裹
+ * @param {*} name
+ * @returns {string}
+ */
+function normalizeFilenameKey(name) {
+  if (name === undefined || name === null) return ''
+  let s = String(name).trim()
+  if (s === '') return ''
+  s = s.replace(/\\/g, '/')
+  const segs = s.split('/')
+  s = segs[segs.length - 1]
+  s = s.replace(/^["'“”‘’《〈<\[(]+/, '').replace(/["'“”‘’》〉>\])]+$/, '')
+  return s.trim().toLowerCase()
+}
+
+/**
+ * 从题目对象中提取模型声明的图片文件名列表（兼容多种字段名）
+ * @param {Object} q
+ * @returns {string[]}
+ */
+function extractDeclaredFilenames(q) {
+  const candidates = [
+    q.image_filenames, q.imageFilenames, q.image_files,
+    q.images, q.image_filename, q.filename, q.image,
+  ]
+
+  for (const c of candidates) {
+    if (Array.isArray(c) && c.length > 0) {
+      const names = c
+        .map(item => {
+          if (typeof item === 'string') return item
+          if (item && typeof item === 'object') return item.filename || item.name || item.url || ''
+          return ''
+        })
+        .filter(s => String(s).trim() !== '')
+      if (names.length > 0) return names
+    } else if (typeof c === 'string' && c.trim() !== '') {
+      return [c.trim()]
+    }
+  }
+  return []
+}
+
+/**
+ * 按文件名把题目和真实图片绑定起来，填充 image_url / image_index。
+ *
+ * 降级策略（与方案 A 一致）：
+ *  - 单图题（模型只给了 0~1 个文件名）反查失败 → 默认绑定第一张图
+ *  - 多图题（模型给了多个文件名）→ 去掉不存在的文件名，至少保留一张有效图
+ *  - 一张都匹配不上且没有可用图片 → 降级为纯文字题（image_url = null）
+ *
+ * @param {Array} questions 题目数组
+ * @param {Array} images    图片数组 [{buffer, filename, url}]
+ * @returns {{ questions: Array, degradedCount: number, missCount: number }}
+ */
+function attachImagesByFilename(questions, images = []) {
+  // 建立 文件名 → 下标 索引
+  const indexByName = new Map()
+  images.forEach((img, idx) => {
+    const key = normalizeFilenameKey(img && (img.filename || img.name))
+    if (key && !indexByName.has(key)) indexByName.set(key, idx)
+  })
+
+  let degradedCount = 0
+  let missCount = 0
+
+  const bound = questions.map(q => {
+    const declared = extractDeclaredFilenames(q)
+    const matched = []
+
+    for (const name of declared) {
+      const key = normalizeFilenameKey(name)
+      if (!key) continue
+
+      let idx = indexByName.has(key) ? indexByName.get(key) : -1
+      if (idx < 0) {
+        // 二次模糊匹配：允许模型少写/多写扩展名或前缀
+        idx = images.findIndex(img => {
+          const k = normalizeFilenameKey(img && (img.filename || img.name))
+          return !!k && (k === key || k.includes(key) || key.includes(k))
+        })
+      }
+      if (idx >= 0 && !matched.includes(idx)) matched.push(idx)
+      else if (idx < 0) missCount++
+    }
+
+    const isMultiImage = declared.length > 1
+    let finalIdx = matched.slice()
+
+    if (finalIdx.length === 0) {
+      if (!isMultiImage && images.length > 0) {
+        // 单图题反查失败 → 兜底绑定第一张图
+        finalIdx = [0]
+      } else {
+        // 多图题全部找不到 / 完全没有图片 → 降级为纯文字题
+        finalIdx = []
+      }
+    }
+
+    if (finalIdx.length === 0) {
+      degradedCount++
+      q.image_index = null
+      q.image_url = null
+      q.image_urls = []
+      q.image_filenames = []
+      q.image_degraded = true
+      return q
+    }
+
+    const primary = images[finalIdx[0]] || {}
+    q.image_index = finalIdx[0]
+    q.image_indexes = finalIdx
+    q.image_url = primary.url || primary.image_url || null
+    q.image_urls = finalIdx.map(i => (images[i] && (images[i].url || images[i].image_url)) || null).filter(Boolean)
+    q.image_filenames = finalIdx.map(i => (images[i] && (images[i].filename || images[i].name)) || '').filter(Boolean)
+    q.image_degraded = false
+    return q
+  })
+
+  return { questions: bound, degradedCount, missCount }
+}
+
+// ─── 图片题日志落库 ─────────────────────────────────────────────────────────
+
+/** 单字段长度上限，避免超长文本撑爆日志表 */
+const LOG_RAW_MAX_LEN = 60000
+const LOG_ERR_MAX_LEN = 4000
+
+/** TINYINT UNSIGNED 上限 */
+function clampTinyInt(n) {
+  const v = Number(n) || 0
+  if (v < 0) return 0
+  return v > 255 ? 255 : Math.floor(v)
+}
+
+/**
+ * 写入 AI 出题日志表 t_ai_question_log。
+ * 写日志失败绝不影响主流程（内部已 try/catch）。
+ *
+ * @param {Object} record
+ * @returns {Promise<void>}
+ */
+async function logImageQuestionRun(record = {}) {
+  try {
+    // 延迟加载，避免测试/无数据库环境下模块加载即创建连接池
+    const { pool } = require('../db/db')
+
+    const rawResponse = String(record.rawResponse || '').slice(0, LOG_RAW_MAX_LEN)
+    const parseError = String(record.parseError || '').slice(0, LOG_ERR_MAX_LEN)
+
+    await pool.execute(
+      `INSERT INTO t_ai_question_log
+        (material_id, doc_type, provider, vision_model, text_model,
+         image_count, question_count, raw_response, parse_error, fallback_used, duration_ms)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        Number(record.materialId) || 0,
+        String(record.docType || 'image_violation').slice(0, 30),
+        String(record.provider || '').slice(0, 30),
+        String(record.visionModel || '').slice(0, 80),
+        String(record.textModel || '').slice(0, 80),
+        clampTinyInt(record.imageCount),
+        clampTinyInt(record.questionCount),
+        rawResponse,
+        parseError,
+        record.fallbackUsed ? 1 : 0,
+        Math.max(0, Number(record.durationMs) || 0),
+      ]
+    )
+  } catch (err) {
+    console.warn('[AI图片出题] 日志写入失败（已忽略，不影响出题）:', err.message)
+  }
+}
+
+// ─── 测试注入钩子（仅供本地测试脚本使用，生产环境全部为 null）─────────────
+
+const __hooks = {
+  callAIVision: null,
+  callAIForRepair: null,
+  generateQuestions: null,
+  supportsVision: null,
+  logRun: null,
+}
+
+/**
+ * 注入测试桩（不传的字段保持原值）
+ * @param {Object} hooks
+ */
+function __setTestHooks(hooks = {}) {
+  for (const key of Object.keys(hooks)) {
+    if (key in __hooks) __hooks[key] = hooks[key]
+  }
+}
+
+/** 清空所有测试桩 */
+function __resetTestHooks() {
+  for (const key of Object.keys(__hooks)) __hooks[key] = null
+}
+
+/** 安全取值：内部 getter 抛错时返回兜底值 */
+function safeGet(fn, fallback = '') {
+  try {
+    const v = fn()
+    return v === undefined || v === null ? fallback : v
+  } catch {
+    return fallback
+  }
+}
+
+/**
+ * 生成图片违章识别题（主入口，两阶段流水线 + 文件名反查 + 降级 + 日志）
+ *
+ * 处理流程：
+ *  1. 组装 system（角色设定 + 难度）与 user（通报文字 + 图片清单 + JSON 规范）提示词
+ *  2. 调用 Vision 模型（system + user 两条消息）
+ *  3. Stage 1：parseWithValidation 解析 + 质量校验
+ *  4. Stage 2：校验不过则调用 callAIForRepair 修复一轮，取有效题更多的一方
+ *  5. 丢弃仍不合格的题目（droppedCount），按 image_filenames 反查绑定图片
+ *  6. 若一道有效题都没有 → 降级为纯文字题（generateQuestions / policy_notice）
+ *  7. 全流程耗时、原始返回、错误信息写入 t_ai_question_log
  *
  * @param {Object} params
- * @param {string} params.content     通报文字内容
- * @param {Array}  params.images      图片buffer数组 [{buffer, filename}]
- * @param {number} params.count       出题数量（默认15）
+ * @param {string} params.content            通报文字内容
+ * @param {Array}  params.images             图片数组 [{buffer, filename, url}]
+ * @param {number} [params.count=15]         出题数量
+ * @param {number} [params.difficulty=3]     难度 1-5
+ * @param {string} [params.questionTypes]    期望题型，如 '单选+多选+判断+填空'
+ * @param {number} [params.materialId=0]     素材ID（仅用于日志）
  *
- * @returns {Object} { questions, metadata }
+ * @returns {Promise<Object>} { questions, fallbackUsed, droppedCount, repairAttempted, hasErrors, validationSummary, metadata }
  */
-async function generateImageQuestions({ content, images = [], count = 15 }) {
-  if (!supportsVision()) {
+async function generateImageQuestions({
+  content = '',
+  images = [],
+  count = 15,
+  difficulty = 3,
+  questionTypes = null,
+  materialId = 0,
+}) {
+  const startedAt = Date.now()
+
+  const visionSupportedFn = __hooks.supportsVision || supportsVision
+  if (!visionSupportedFn()) {
     throw new Error('当前AI配置不支持Vision模型，无法生成图片题。请先在后台配置支持图片理解的模型。')
   }
 
+  const visionFn = __hooks.callAIVision || callAIVision
+  const repairFn = __hooks.callAIForRepair || callAIForRepair
+  const textGenFn = __hooks.generateQuestions || generateQuestions
+  const logFn = __hooks.logRun || logImageQuestionRun
+
+  const visionModel = safeGet(getVisionModel, '')
+  const textModel = safeGet(getQuestionModel, '')
+  const providerId = safeGet(() => getProvider().id, '')
+
   const distribution = calcDistribution('image_violation', count)
 
-  // 构建图片信息描述
-  const imageInfoLines = ['以下是与通报相关的违章现场图片：']
-  const imageIndexInfoLines = []
-  images.forEach((img, i) => {
-    imageInfoLines.push(`${i + 1}. ${img.filename}`)
-    imageIndexInfoLines.push(`  image_index=${i} → ${img.filename}`)
-  })
+  // ── 1. 组装提示词（按批次，避免单次塞入过多图片导致模型思考 token 耗尽 / 请求体过大）──
+  const VISION_BATCH_SIZE = 10
+  const batches = []
+  if (images.length === 0) {
+    // 无图场景：仍走一次 vision（无图），让模型基于通报文字出题
+    batches.push([])
+  } else {
+    for (let i = 0; i < images.length; i += VISION_BATCH_SIZE) {
+      batches.push(images.slice(i, i + VISION_BATCH_SIZE))
+    }
+  }
+  // 将目标题数尽量均匀分配到各批次
+  const batchCounts = []
+  if (batches.length === 0) {
+    batchCounts.push(count)
+  } else {
+    const per = Math.floor(count / batches.length)
+    let rem = count % batches.length
+    for (let b = 0; b < batches.length; b++) {
+      batchCounts.push(Math.max(1, per + (rem > 0 ? 1 : 0)))
+      if (rem > 0) rem--
+    }
+  }
 
   const promptDef = PROMPTS.image_violation
-  const userContent = promptDef.user({
-    content,
-    imageInfo: imageInfoLines.join('\n'),
-    imageIndexInfo: imageIndexInfoLines.join('\n'),
-    count,
-    ...distribution,
+  const systemContent = promptDef.system + buildDifficultyPrompt(difficulty)
+
+  console.log(`[AI图片出题] 图片${images.length}张，分${batches.length}批（每批≤${VISION_BATCH_SIZE}），目标${count}道，难度=${difficulty}/5，Vision模型=${visionModel}`)
+
+  // ── 2. 逐批调用 Vision + 解析 + 校验 + 修复 + 保留有效题 ──
+  const parseErrors = []
+  let raw = ''
+  let repairRaw = ''
+  let repairAttempted = false
+  let fallbackUsed = false
+  let droppedCount = 0
+  let degradedCount = 0
+  let questions = []
+  let validationSummary = '未生成有效题目'
+  let totalKept = 0
+  let totalParsed = 0
+
+  for (let bi = 0; bi < batches.length; bi++) {
+    const batchImgs = batches[bi]
+    const batchCount = batchCounts[bi]
+    const dist = calcDistribution('image_violation', batchCount)
+
+    const imageInfoLines = batchImgs.length > 0
+      ? ['以下是本批与通报相关的违章现场图片（顺序与本次随消息发送的图片一致）：']
+      : ['（本次未提供图片）']
+    const imageFileInfoLines = []
+    batchImgs.forEach((img, i) => {
+      const name = (img && (img.filename || img.name)) || `image_${i + 1}`
+      imageInfoLines.push(`${i + 1}. ${name}`)
+      imageFileInfoLines.push(`  - "${name}"`)
+    })
+    const userContent = promptDef.user({
+      content,
+      imageInfo: imageInfoLines.join('\n'),
+      imageFileInfo: imageFileInfoLines.join('\n'),
+      count: batchCount,
+      ...dist,
+    })
+
+    let batchRaw = ''
+    try {
+      batchRaw = await visionFn({
+        system: systemContent,
+        textPrompt: userContent,
+        imageBuffers: batchImgs.map(img => img && img.buffer).filter(Boolean),
+        maxTokens: 6000,
+      })
+    } catch (err) {
+      parseErrors.push(`批次${bi + 1} Vision 调用失败：${err.message}`)
+      console.error(`[AI图片出题] 批次${bi + 1} Vision 调用失败:`, err.message)
+      continue
+    }
+    if (!batchRaw || String(batchRaw).trim() === '') continue
+    raw += (raw ? '\n\n' : '') + `[BATCH ${bi + 1} / ${batches.length}]\n` + batchRaw
+
+    // 解析 + 校验 + 最多一轮修复
+    const stage1 = parseWithValidation(batchRaw, { count: batchCount, questionTypes })
+    let picked = stage1
+    const hasInvalidQuestion = stage1.validation.results.some(r => !r.ok)
+    const parsedNothing = stage1.questions.length === 0
+    if (hasInvalidQuestion || parsedNothing) {
+      const failed = stage1.validation.results.filter(r => !r.ok)
+      const stage1Errs = failed.reduce((acc, r) => acc.concat(r.errors), [])
+        .concat(stage1.validation.countErrors || [])
+      parseErrors.push(`批次${bi + 1} Stage1 校验未通过：${stage1Errs.join('；')}`)
+      repairAttempted = true
+      try {
+        const bRepair = await repairFn(batchRaw, failed, {
+          count: batchCount, questionTypes, difficulty, content, detectedType: 'image_violation',
+        })
+        repairRaw += (repairRaw ? '\n\n' : '') + `[BATCH ${bi + 1} REPAIR]\n` + bRepair
+        const stage2 = parseWithValidation(bRepair, { count: batchCount, questionTypes })
+        const okCount = res => res.validation.results.filter(r => r.ok).length
+        if (okCount(stage2) >= okCount(stage1)) picked = stage2
+      } catch (repairErr) {
+        parseErrors.push(`批次${bi + 1} Stage2 修复异常：${repairErr.message}`)
+      }
+    }
+
+    // 丢弃仍不合格的题目，保留有效题并按文件名绑定本批图片
+    const kept = picked.questions.filter((q, i) => picked.validation.results[i] && picked.validation.results[i].ok)
+    droppedCount += picked.questions.length - kept.length
+    totalParsed += picked.questions.length
+    totalKept += kept.length
+    if (kept.length > 0) {
+      const attachResult = attachImagesByFilename(kept, batchImgs)
+      degradedCount += attachResult.degradedCount
+      const batchQuestions = attachResult.questions
+      batchQuestions.forEach((q, i) => {
+        if (!q.id) q.id = questions.length + i + 1
+        if (!q.type) q.type = 'single'
+        if (!q.theme) q.theme = '违章图片识别'
+      })
+      questions = questions.concat(batchQuestions)
+      if (attachResult.missCount > 0 || attachResult.degradedCount > 0) {
+        console.warn(`[AI图片出题] 批次${bi + 1} 文件名反查：${attachResult.missCount} 个未命中，${attachResult.degradedCount} 道降级纯文字`)
+      }
+    }
+  }
+
+  if (totalParsed > 0) {
+    validationSummary = `${totalKept}/${totalParsed} 题通过校验`
+  }
+
+  // ── 6. 一道有效题都没有 → 降级为纯文字题 ────────────────────
+  if (questions.length === 0) {
+    console.warn('[AI图片出题] 未产出任何有效图片题，降级为纯文字出题（基于通报文字）')
+    try {
+      const fb = await textGenFn({
+        content,
+        count,
+        docType: 'policy_notice',
+        difficulty,
+      })
+      const fbQuestions = (fb && fb.questions) || []
+      if (fbQuestions.length > 0) {
+        fallbackUsed = true
+        questions = fbQuestions.map((q, i) => {
+          if (!q.id) q.id = i + 1
+          if (!q.theme) q.theme = '违章通报（文字题）'
+          q.image_index = null
+          q.image_url = null
+          q.image_urls = []
+          q.image_filenames = []
+          q.image_degraded = true
+          return q
+        })
+        validationSummary = (fb && fb.validationSummary) || `${questions.length} 道纯文字题（降级）`
+      } else {
+        parseErrors.push('降级出题未产出题目')
+      }
+    } catch (fbErr) {
+      parseErrors.push(`降级出题失败：${fbErr.message}`)
+      console.error('[AI图片出题] 降级出题失败:', fbErr.message)
+    }
+  }
+
+  // ── 7. 日志落库（失败不影响主流程）────────────────────────
+  const durationMs = Date.now() - startedAt
+  const rawForLog = repairRaw
+    ? `${raw}\n\n----- REPAIR RESPONSE -----\n${repairRaw}`
+    : raw
+
+  await logFn({
+    materialId,
+    docType: 'image_violation',
+    provider: providerId,
+    visionModel,
+    textModel,
+    imageCount: images.length,
+    questionCount: questions.length,
+    rawResponse: rawForLog,
+    parseError: parseErrors.join(' | '),
+    fallbackUsed,
+    durationMs,
   })
 
-  console.log(`[AI图片出题] 图片${images.length}张，出题${count}道，使用Vision模型=${getVisionModel()}`)
+  if (questions.length === 0) {
+    throw new Error(`AI 图片出题失败，且纯文字降级也未产出题目：${parseErrors.join(' | ') || '未知原因'}`)
+  }
 
-  // 调用Vision API（发送文字+所有图片）
-  const raw = await callAIVision({
-    textPrompt: userContent,
-    imageBuffers: images.map(img => img.buffer),
-    maxTokens: 4000,
-  })
-
-  // 解析结果
-  let questions = parseJSONResponse(raw)
-  if (!Array.isArray(questions)) questions = [questions]
-
-  // 补充字段 + 图片URL占位（后续由调用方替换为COS URL）
-  questions.forEach((q, i) => {
-    if (!q.id) q.id = i + 1
-    if (!q.type) q.type = 'single'
-    if (!q.theme) q.theme = '违章图片识别'
-    // image_index 标识使用第几张图片
-    if (q.image_index === undefined) q.image_index = 0
-    // 确保image_index在有效范围内
-    if (q.image_index >= images.length) q.image_index = 0
-  })
-
-  console.log(`[AI图片出题] 成功生成 ${questions.length} 道题`)
+  console.log(
+    `[AI图片出题] 完成: ${questions.length} 道题，丢弃=${droppedCount}，降级为文字题=${fallbackUsed}，耗时=${durationMs}ms`
+  )
 
   return {
     questions,
+    fallbackUsed,
+    droppedCount,
+    repairAttempted,
+    hasErrors: fallbackUsed || droppedCount > 0,
+    validationSummary,
     metadata: {
-      docType: 'image_violation',
+      docType: fallbackUsed ? 'policy_notice' : 'image_violation',
       count: questions.length,
-      model: getVisionModel(),
+      model: visionModel,
+      textModel,
+      provider: providerId,
       distribution,
+      difficulty,
       imageCount: images.length,
+      fallbackUsed,
+      droppedCount,
+      degradedCount,
+      durationMs,
     },
   }
 }
@@ -1075,4 +1700,15 @@ module.exports = {
   validateQuestions,
   parseWithValidation,
   callAIForRepair,
+  // 图片题相关工具（供路由/测试使用）
+  attachImagesByFilename,
+  logImageQuestionRun,
+  // 质量标注字段归一化（供 material 路由 / qualityService 复用）
+  BLOOM_LEVELS,
+  normalizeDifficulty,
+  normalizeBloomLevel,
+  normalizeTagArray,
+  normalizeQuestions,
+  __setTestHooks,
+  __resetTestHooks,
 }

@@ -103,7 +103,9 @@
     <div class="card info-card">
       <h3 class="section-title">ℹ️ 系统信息</h3>
       <div class="info-grid">
-        <div class="info-item"><span class="info-label">系统版本</span><span class="info-val">v1.0.0</span></div>
+        <div class="info-item"><span class="info-label">系统版本</span><span class="info-val">{{ APP_VERSION }}</span></div>
+        <div class="info-item"><span class="info-label">后端版本</span><span class="info-val">{{ backendVersion }}</span></div>
+        <div class="info-item"><span class="info-label">构建时间</span><span class="info-val">{{ BUILD_DATE }}</span></div>
         <div class="info-item"><span class="info-label">Node.js</span><span class="info-val">v20.x</span></div>
         <div class="info-item"><span class="info-label">MySQL</span><span class="info-val">v8.0</span></div>
         <div class="info-item"><span class="info-label">部署环境</span><span class="info-val">Docker</span></div>
@@ -115,10 +117,12 @@
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
 import { request } from '@/utils/request'
+import { APP_VERSION, BUILD_DATE } from '@/version'
 
 const showKey = ref(false)
 const saving = ref(null)
 const savedKey = ref(null)
+const backendVersion = ref('—')
 
 const settings = reactive({
   deepseek_api_key: '',
@@ -206,7 +210,20 @@ async function loadSettings() {
   }
 }
 
-onMounted(loadSettings)
+onMounted(() => {
+  loadSettings()
+  loadVersion()
+})
+
+// 拉取后端版本（公开接口，无需鉴权）
+async function loadVersion() {
+  try {
+    const res = await request.get('/api/version')
+    backendVersion.value = res.data?.version || '未知'
+  } catch {
+    backendVersion.value = '获取失败'
+  }
+}
 </script>
 
 <style scoped>

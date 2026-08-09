@@ -75,6 +75,234 @@ function normalizeAnswer(type, std, user) {
   return s === u
 }
 
+// ─── GET /api/quiz/wrong-questions ──────────────────────────────────────────
+// 员工端：获取当前用户的错题库（学习/练习/考试中答错的题，答对已移出）
+// 注：必须注册在 /:materialId 之前，否则 'wrong-questions' 会被 :materialId 吞掉。
+router.get('/wrong-questions', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.id
+    const [rows] = await pool.execute(
+      `SELECT w.id, w.material_id, w.question_id, w.wrong_times, w.last_wrong_at, w.starred,
+              m.title AS material_title,
+              q.type, q.question, q.options, q.answer, q.analysis, q.score
+       FROM t_wrong_question w
+       JOIN t_material m ON m.id = w.material_id
+       JOIN t_question q  ON q.id = w.question_id
+       WHERE w.user_id = ?
+       ORDER BY w.starred DESC, w.last_wrong_at DESC`,
+      [userId]
+    )
+    const list = rows.map(r => ({
+      id:            r.id,
+      materialId:    r.material_id,
+      materialTitle: r.material_title,
+      questionId:    r.question_id,
+      type:          r.type,
+      question:      r.question,
+      options:       parseOptions(r.options),
+      correctAnswer: r.answer,
+      analysis:      r.analysis,
+      score:         r.score,
+      wrongTimes:    r.wrong_times,
+      lastWrongAt:   r.last_wrong_at,
+      starred:       !!r.starred,
+    }))
+    res.json({ success: true, data: list })
+  } catch (err) {
+    console.error('[wrong-questions]', err)
+    sendError(res, 'INTERNAL_ERROR')
+  }
+})
+
+// ─── DELETE /api/quiz/wrong-questions/:id ───────────────────────────────────
+// 员工端：将某道错题移出错题库（标记为已掌握）
+router.delete('/wrong-questions/:id', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params
+    const userId = req.user.id
+    await pool.execute(
+      'DELETE FROM t_wrong_question WHERE id = ? AND user_id = ?',
+      [id, userId]
+    )
+    res.json({ success: true })
+  } catch (err) {
+    console.error('[wrong-questions.delete]', err)
+    sendError(res, 'INTERNAL_ERROR')
+  }
+})
+
+// ─── PATCH /api/quiz/wrong-questions/:id/star ──────────────────────────────
+// 员工端：切换某道错题的「重点标记」状态（1=置顶优先复习）
+router.patch('/wrong-questions/:id/star', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params
+    const userId = req.user.id
+    const starred = req.body?.starred ? 1 : 0
+    await pool.execute(
+      'UPDATE t_wrong_question SET starred = ? WHERE id = ? AND user_id = ?',
+      [starred, id, userId]
+    )
+    res.json({ success: true, data: { starred } })
+  } catch (err) {
+    console.error('[wrong-questions.star]', err)
+    sendError(res, 'INTERNAL_ERROR')
+  }
+})
+
+// ─── GET /api/quiz/wrong-practice ──────────────────────────────────────────
+// 员工端：错题库练习专用。返回当前用户错题库题目（practice 模式，带答案+解析）。
+// 支持筛选：?type=single|multiple|judgment  &  ?materialId=NN  &  ?minWrong=N（错≥N次）
+// 注意：必须在 /:materialId 之前注册，否则 'wrong-practice' 会被动态段吞掉。
+router.get('/wrong-practice', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.id
+    const { type, materialId, minWrong } = req.query
+
+    let sql = `
+      SELECT w.id, w.material_id, w.question_id, w.wrong_times, w.starred,
+              m.title AS material_title,
+              q.id AS qid, q.material_id AS q_material_id, q.type, q.question, q.options, q.answer, q.analysis, q.score
+       FROM t_wrong_question w
+       JOIN t_material m ON m.id = w.material_id
+       JOIN t_question q  ON q.id = w.question_id
+       WHERE w.user_id = ?`
+    const params = [userId]
+    if (type && ['single', 'multiple', 'judgment'].includes(type)) {
+      sql += ' AND q.type = ?'
+      params.push(type)
+    }
+    if (materialId && /^\d+$/.test(String(materialId))) {
+      sql += ' AND w.material_id = ?'
+      params.push(Number(materialId))
+    }
+    if (minWrong && /^\d+$/.test(String(minWrong)) && Number(minWrong) > 0) {
+      sql += ' AND w.wrong_times >= ?'
+      params.push(Number(minWrong))
+    }
+    sql += ' ORDER BY w.starred DESC, w.last_wrong_at DESC'
+
+    const [rows] = await pool.execute(sql, params)
+    const questions = rows.map(r => ({
+      id:            r.qid,
+      type:          r.type,
+      question:      r.question,
+      options:       parseOptions(r.options),
+      score:         r.score,
+      materialId:    r.q_material_id,
+      correctAnswer: r.answer,
+      analysis:      r.analysis,
+    }))
+    res.json({
+      success: true,
+      data: {
+        materialId: 'wrong',
+        title: '错题练习',
+        mode: QUIZ_MODES.PRACTICE,
+        timeLimit: 0,
+        passScore: 60,
+        totalScore: questions.reduce((s, q) => s + (q.score || 0), 0),
+        questions,
+      },
+    })
+  } catch (err) {
+    console.error('[wrong-practice]', err)
+    sendError(res, 'INTERNAL_ERROR')
+  }
+})
+
+// ─── POST /api/quiz/wrong-practice/submit ──────────────────────────────────
+// 员工端：提交错题练习。判分后形成闭环：答对→从错题库移除；答错→累加错误次数。
+// 不写入正式成绩记录（t_record），仅用于错题复习。
+// 注意：必须在 /:materialId/submit 之前注册。
+router.post('/wrong-practice/submit', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.id
+    const { answers, mode = QUIZ_MODES.PRACTICE } = req.body
+    if (!Array.isArray(answers) || !answers.length) {
+      return sendError(res, 'EMPTY_ANSWERS')
+    }
+
+    const qids = [...new Set(answers.map(a => a.questionId).filter(Boolean))]
+    const placeholders = qids.map(() => '?').join(',')
+    const [questions] = await pool.execute(
+      `SELECT id, material_id, type, question, options, answer, analysis, score FROM t_question WHERE id IN (${placeholders})`,
+      qids
+    )
+    const qMap = {}
+    questions.forEach(q => { qMap[q.id] = q })
+
+    let totalScore = 0
+    let maxScore = 0
+    const graded = []
+    for (const qa of answers) {
+      const q = qMap[qa.questionId]
+      if (!q) continue
+      maxScore += q.score
+      const isCorrect = normalizeAnswer(q.type, q.answer, qa.answer)
+      const earned = isCorrect ? q.score : 0
+      if (isCorrect) totalScore += earned
+      graded.push({
+        questionId: q.id,
+        type: q.type,
+        question: q.question,
+        options: parseOptions(q.options),
+        correctAnswer: q.answer,
+        userAnswer: qa.answer,
+        isCorrect,
+        score: earned,
+        analysis: q.analysis,
+      })
+    }
+
+    // 闭环：答对移除，答错累加（批量，避免逐题 await 的 N+1 性能悬崖）
+    const correctQids = []
+    const wrongRows = []
+    for (const item of graded) {
+      const q = qMap[item.questionId]
+      if (!q) continue
+      if (item.isCorrect) {
+        correctQids.push(item.questionId)
+      } else {
+        wrongRows.push([userId, q.material_id, item.questionId, mode])
+      }
+    }
+    if (correctQids.length) {
+      const ph = correctQids.map(() => '?').join(',')
+      await pool.execute(
+        `DELETE FROM t_wrong_question WHERE user_id = ? AND question_id IN (${ph})`,
+        [userId, ...correctQids]
+      )
+    }
+    if (wrongRows.length) {
+      const valPh = wrongRows.map(() => '(?,?,?,?,1,NOW())').join(',')
+      const params = []
+      for (const r of wrongRows) params.push(...r)
+      await pool.execute(
+        `INSERT INTO t_wrong_question (user_id, material_id, question_id, mode, wrong_times, last_wrong_at)
+         VALUES ${valPh}
+         ON DUPLICATE KEY UPDATE wrong_times = wrong_times + 1, last_wrong_at = NOW(), mode = VALUES(mode)`,
+        params
+      )
+    }
+
+    res.json({
+      success: true,
+      data: {
+        score: totalScore,
+        maxScore,
+        passScore: 60,
+        passRate: maxScore > 0 ? Math.round(totalScore / maxScore * 100) : 0,
+        passed: maxScore > 0 ? Math.round(totalScore / maxScore * 100) >= 60 : false,
+        mode,
+        gradedList: graded,
+      },
+    })
+  } catch (err) {
+    console.error('[wrong-practice.submit]', err)
+    sendError(res, 'INTERNAL_ERROR')
+  }
+})
+
 // ─── GET /api/quiz/list ─────────────────────────────────────────────────────
 // 获取员工"培训"列表（已发布 + 目标人群匹配，含完成状态/分数 + 配置字段下发）
 router.get('/list', authMiddleware, async (req, res) => {
@@ -213,7 +441,8 @@ router.get('/:materialId', authMiddleware, async (req, res) => {
 
     // 1) 题库存在性 & 发布态
     const [[material]] = await pool.execute(
-      `SELECT id, title, status, time_limit, pass_score, mode, attempt_limit, shuffle, category_id, ai_grading
+      `SELECT id, title, status, time_limit, pass_score, mode, attempt_limit, shuffle, category_id, ai_grading,
+              exam_single_num, exam_multiple_num, exam_judgment_num
        FROM t_material WHERE id = ?`,
       [materialId]
     )
@@ -230,7 +459,37 @@ router.get('/:materialId', authMiddleware, async (req, res) => {
     )
     if (!questions.length) return sendError(res, 'NO_ENABLED_QUESTIONS')
 
-    const parsed = questions.map(q => {
+    // 3) 考试模式：按题库配置的题型抽题数随机抽取（配置全 0 或缺省则取全部）
+    //    学习/练习模式返回全量，便于系统学习。
+    let finalQuestions = questions
+    if (mode === QUIZ_MODES.EXAM) {
+      const cfg = {
+        single:   Number(material.exam_single_num)   || 0,
+        multiple: Number(material.exam_multiple_num) || 0,
+        judgment: Number(material.exam_judgment_num) || 0,
+      }
+      const hasCfg = cfg.single > 0 || cfg.multiple > 0 || cfg.judgment > 0
+      if (hasCfg) {
+        const byType = { single: [], multiple: [], judgment: [] }
+        for (const q of questions) {
+          if (byType[q.type]) byType[q.type].push(q)
+        }
+        const pick = (arr, n) => {
+          if (!arr.length) return []
+          const shuffled = [...arr].sort(() => Math.random() - 0.5)
+          return n > 0 ? shuffled.slice(0, Math.min(n, arr.length)) : arr
+        }
+        finalQuestions = [
+          ...pick(byType.single,   cfg.single),
+          ...pick(byType.multiple, cfg.multiple),
+          ...pick(byType.judgment, cfg.judgment),
+        ].sort(() => Math.random() - 0.5) // 整体随机排序，避免题型块状分布
+        // 抽题后题量可能少于题库总量，更新下发总量提示
+        console.log(`[quiz.detail] exam 抽题：配置(${cfg.single}/${cfg.multiple}/${cfg.judgment}) 实际抽 ${finalQuestions.length}/${questions.length}`)
+      }
+    }
+
+    const parsed = finalQuestions.map(q => {
       const item = {
         id:        q.id,
         type:      q.type,
@@ -373,6 +632,38 @@ router.post('/:materialId/submit', authMiddleware, async (req, res) => {
       graded.push(item)
     }
 
+    // ── 错题本写入：答错 upsert（累计 +1），答对移出（视为已掌握）──
+    // 批量处理：避免「逐题 await pool.execute」导致大题量（上千题）时提交耗时
+    // 随题量线性增长（N+1 查询），手机端极易顶破前端 15s 超时 → 误入离线队列 → 错题不落库。
+    // 改为 2 条批量 SQL：答对一次性 DELETE；答错一次性多值 INSERT ... ON DUPLICATE KEY UPDATE。
+    const correctQids = []
+    const wrongRows = []
+    for (const item of graded) {
+      if (item.isCorrect) {
+        correctQids.push(item.questionId)
+      } else {
+        wrongRows.push([userId, Number(materialId), item.questionId, mode])
+      }
+    }
+    if (correctQids.length) {
+      const ph = correctQids.map(() => '?').join(',')
+      await pool.execute(
+        `DELETE FROM t_wrong_question WHERE user_id = ? AND question_id IN (${ph})`,
+        [userId, ...correctQids]
+      )
+    }
+    if (wrongRows.length) {
+      const valPh = wrongRows.map(() => '(?,?,?,?,1,NOW())').join(',')
+      const params = []
+      for (const r of wrongRows) params.push(...r)
+      await pool.execute(
+        `INSERT INTO t_wrong_question (user_id, material_id, question_id, mode, wrong_times, last_wrong_at)
+         VALUES ${valPh}
+         ON DUPLICATE KEY UPDATE wrong_times = wrong_times + 1, last_wrong_at = NOW(), mode = VALUES(mode)`,
+        params
+      )
+    }
+
     // 覆盖式写入（先删后插）
     await pool.execute(
       'DELETE FROM t_record WHERE user_id = ? AND material_id = ?',
@@ -400,7 +691,9 @@ router.post('/:materialId/submit', authMiddleware, async (req, res) => {
         passRate:  maxScore > 0 ? Math.round(totalScore / maxScore * 100) : 0,
         passed:    maxScore > 0 ? Math.round(totalScore / maxScore * 100) >= passScore : false,
         mode,
-        gradedList: graded,
+        // 注：gradedList 仅在「错题练习」提交后由 ResultPage 内联展示时使用；
+        // 普通提交的成绩回顾统一走 GET /:materialId/result，故此处不再下发整卷 gradedList，
+        // 避免大题量（上千题）响应体膨胀导致手机端接收超时。
       },
     })
   } catch (err) {

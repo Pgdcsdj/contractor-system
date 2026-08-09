@@ -112,9 +112,18 @@
             <span class="fr-name">{{ f.catalog_name }}</span>
             <a class="fr-link" :href="f.cos_url" target="_blank" rel="noopener"><Icon name="file" :size="14" /> {{ f.sys_name }}</a>
             <span class="fr-meta">录入：{{ f.uploader_name }} · {{ fmt(f.uploaded_at) }}</span>
+            <button class="mini-btn" @click="pickFileReplace(f)"><Icon name="loop" :size="13" /> 换</button>
+            <button class="mini-btn" @click="openEditFile(f)"><Icon name="pencil" :size="13" /> 改</button>
             <button class="mini-btn danger" @click="delFile(f)"><Icon name="x" :size="13" /> 删</button>
           </div>
           <div v-if="!fileRows.length" class="empty-mini">该项目暂无上传文件</div>
+        </div>
+        <div class="add-bar">
+          <select v-model="addFrm.catalog_id" class="form-input add-select">
+            <option value="">选择资料项后增补…</option>
+            <option v-for="c in activeCatalogs" :key="c.id" :value="c.id">{{ c.category }} / {{ c.item_name }}</option>
+          </select>
+          <button class="mini-btn primary" :disabled="!addFrm.catalog_id" @click="pickFileAdd">＋ 增补文件</button>
         </div>
         <div class="modal-actions"><button class="btn btn-outline" @click="showFiles = false">关闭</button></div>
       </div>
@@ -145,11 +154,38 @@
         </div>
       </div>
     </div>
+
+    <!-- 编辑文件信息弹窗 -->
+    <div v-if="showFileForm" class="modal-overlay" @click.self="showFileForm = false">
+      <div class="modal">
+        <h3>编辑文件信息</h3>
+        <div class="edit-form">
+          <div class="form-group">
+            <label>资料项</label>
+            <select v-model="fileFrm.catalog_id" class="form-input">
+              <option v-for="c in activeCatalogs" :key="c.id" :value="c.id">{{ c.category }} / {{ c.item_name }}</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>原文件名</label>
+            <input v-model="fileFrm.original_name" class="form-input" />
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-outline" @click="showFileForm = false">取消</button>
+          <button class="btn btn-primary" @click="saveFileInfo" :disabled="savingFile">
+            <Icon v-if="savingFile" name="loop" :size="16" class="spin" /> 保存
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 隐藏 file input 已改为每次操作动态创建（见 pickFile），无需模板固定 input -->
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { request } from '@/utils/request'
 import Icon from '@/components/Icon.vue'
 
@@ -171,8 +207,15 @@ const frm = ref({ id: null, category: '', item_name: '', freq: '', required_type
 const showFiles = ref(false)
 const curPkg = ref(null)
 const fileRows = ref([])
+const fileInput = ref(null)
+const fileAction = ref(null)       // { type: 'replace', id } | { type: 'add' }
+const showFileForm = ref(false)
+const savingFile = ref(false)
+const fileFrm = ref({ id: null, catalog_id: '', original_name: '' })
+const addFrm = ref({ catalog_id: '' })
 
 const activeCount = computed(() => catalogAll.value.filter(c => c.is_active).length)
+const activeCatalogs = computed(() => catalogAll.value.filter(c => c.is_active))
 
 function fmt(iso) {
   if (!iso) return '—'
@@ -229,13 +272,122 @@ async function exportExcel() {
   }
 }
 
-async function viewFiles(r) {
-  curPkg.value = r
+async function refreshFiles() {
+  if (!curPkg.value) return
   try {
-    const res = await request.get(`/api/contractor-docs/admin/packages/${r.id}/files`)
+    const res = await request.get(`/api/contractor-docs/admin/packages/${curPkg.value.id}/files`)
     fileRows.value = res.data.data || []
   } catch { fileRows.value = [] }
+}
+
+// 弹窗内的任何文件改动（换/改/删/增补）都会影响台账行的「开工门槛/动态维护」计数，
+// 同步刷新台账列表，避免用户在弹窗里改完发现台账数据"没变化"。
+async function refreshLedgerAfterEdit() {
+  try { await fetchLedger() } catch {}
+}
+
+async function viewFiles(r) {
+  curPkg.value = r
+  addFrm.value = { catalog_id: '' }
+  await refreshFiles()
   showFiles.value = true
+}
+
+// 关闭文件弹窗时兜底再刷一次台账，避免任何修改路径没触发 refreshLedgerAfterEdit 时的台账旧值
+watch(showFiles, async (v) => {
+  if (!v && curPkg.value) { try { await fetchLedger() } catch {} }
+})
+
+// 动态创建隐藏 file input（避开 display:none 共享 input 在某些浏览器/扩展下的兼容问题）
+let activeInput = null
+// 用浏览器原生 XHR 直接发 multipart，避免 axios 在某些环境下对 FormData/file 的字段丢失
+function xhrSend(method, url, fd) {
+  const token = localStorage.getItem('tnb_admin_token') || ''
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open(method, url)
+    xhr.setRequestHeader('Authorization', 'Bearer ' + token)
+    xhr.timeout = 300000
+    xhr.onload = () => {
+      let body = xhr.responseText
+      let parsed = null
+      try { parsed = JSON.parse(body) } catch {}
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve({ data: parsed })
+      } else {
+        const errMsg = (parsed && parsed.error) || body || '请求失败'
+        reject({ response: { data: parsed || { error: errMsg } }, message: errMsg })
+      }
+    }
+    xhr.onerror = () => reject({ response: { data: { error: '网络错误' } }, message: '网络错误' })
+    xhr.ontimeout = () => reject({ response: { data: { error: '请求超时' } }, message: '请求超时' })
+    xhr.send(fd)
+  })
+}
+function pickFile(action) {
+  if (activeInput) { activeInput.remove(); activeInput = null }
+  const input = document.createElement('input')
+  input.type = 'file'
+  input.accept = '.pdf,.jpg,.jpeg,.doc,.docx,.xlsx,.xls'
+  input.style.position = 'absolute'
+  input.style.left = '-9999px'
+  input.style.width = '1px'
+  input.style.height = '1px'
+  input.style.opacity = '0'
+  document.body.appendChild(input)
+  activeInput = input
+  input.addEventListener('change', async () => {
+    const file = input.files && input.files[0]
+    console.log('[contractorDoc] pickFile change fired, file =', file && { name: file.name, size: file.size, type: file.type })
+    input.remove()
+    activeInput = null
+    if (!file) return
+    if (action.type === 'replace') {
+      const fd = new FormData(); fd.append('file', file)
+      try {
+        await xhrSend('PUT', `/api/contractor-docs/admin/files/${action.id}`, fd)
+        await refreshFiles()
+        await refreshLedgerAfterEdit()
+      } catch (err) { alert('替换失败：' + (err.response?.data?.error || err.message)) }
+    } else if (action.type === 'add') {
+      if (!addFrm.value.catalog_id) { alert('请先选择资料项'); return }
+      const fd = new FormData()
+      fd.append('file', file)
+      fd.append('catalog_id', addFrm.value.catalog_id)
+      console.log('[contractorDoc] add fd entries:', [...fd.entries()].map(([k, v]) => k + '=' + (v instanceof File ? `File(${v.name},${v.size})` : v)))
+      try {
+        await xhrSend('POST', `/api/contractor-docs/admin/packages/${curPkg.value.id}/files`, fd)
+        addFrm.value = { catalog_id: '' }
+        await refreshFiles()
+        await refreshLedgerAfterEdit()
+      } catch (err) { alert('增补失败：' + (err.response?.data?.error || err.message)) }
+    }
+  })
+  input.click()
+}
+function pickFileReplace(f) { pickFile({ type: 'replace', id: f.id }) }
+function pickFileAdd() { pickFile({ type: 'add' }) }
+function openEditFile(f) {
+  fileFrm.value = {
+    id: f.id, catalog_id: f.catalog_id, original_name: f.original_name,
+    _orig_catalog_id: f.catalog_id, _orig_name: f.original_name,
+  }
+  showFileForm.value = true
+}
+async function saveFileInfo() {
+  const body = {}
+  if (String(fileFrm.value.catalog_id) !== String(fileFrm.value._orig_catalog_id)) body.catalog_id = fileFrm.value.catalog_id
+  const newName = String(fileFrm.value.original_name || '').trim()
+  if (newName !== String(fileFrm.value._orig_name || '').trim()) body.original_name = newName
+  if (!Object.keys(body).length) { showFileForm.value = false; return }
+  savingFile.value = true
+  try {
+    await request.patch(`/api/contractor-docs/admin/files/${fileFrm.value.id}`, body)
+    showFileForm.value = false
+    await refreshFiles()
+    await refreshLedgerAfterEdit()
+  } catch (err) { alert('保存失败：' + (err.response?.data?.error || err.message)) }
+  finally { savingFile.value = false }
 }
 
 async function delFile(f) {
@@ -243,22 +395,16 @@ async function delFile(f) {
   try {
     await request.delete(`/api/contractor-docs/admin/files/${f.id}`)
     fileRows.value = fileRows.value.filter(x => x.id !== f.id)
+    await refreshLedgerAfterEdit()
   } catch (e) { alert('删除失败：' + (e.response?.data?.error || e.message)) }
 }
 
 async function delPackage(r) {
-  if (!confirm(`删除项目「${r.project_name}」及其全部资料？此操作不可恢复。`)) return
+  if (!confirm(`删除项目「${r.project_name}」及其全部资料文件？此操作不可恢复。`)) return
   try {
-    // 后台无整包删除接口，逐文件删后前端移除（管理端清理）
-    const res = await request.get(`/api/contractor-docs/admin/packages/${r.id}/files`)
-    const files = res.data.data || []
-    for (const f of files) {
-      await request.delete(`/api/contractor-docs/admin/files/${f.id}`)
-    }
-    // 包记录：用管理端 export 不提供删包；这里直接调用隐患表风格的删除不便，改为保留空包
+    await request.delete(`/api/contractor-docs/admin/packages/${r.id}`)
     rows.value = rows.value.filter(x => x.id !== r.id)
-    alert('已清理该项目下全部资料文件（项目记录保留）。如需彻底删除请联系开发。')
-  } catch (e) { alert('清理失败：' + (e.response?.data?.error || e.message)) }
+  } catch (e) { alert('删除失败：' + (e.response?.data?.error || e.message)) }
 }
 
 function openAdd() {
@@ -368,7 +514,13 @@ onMounted(() => { loadUnits(); fetchLedger(); fetchCatalog() })
 .fr-link:hover { text-decoration: underline; }
 .fr-meta { font-size: 11.5px; color: var(--c-text-3); }
 .mini-btn { display: inline-flex; align-items: center; gap: 3px; font-size: 12px; padding: 5px 9px; border-radius: var(--r-sm); border: 1px solid var(--c-border-strong); background: var(--c-surface); color: var(--c-text-2); cursor: pointer; }
+.mini-btn:hover { border-color: var(--c-blue-600); color: var(--c-blue-600); }
 .mini-btn.danger:hover { border-color: var(--c-danger); color: var(--c-danger); }
+.mini-btn.primary { background: var(--c-blue-600); border-color: var(--c-blue-600); color: #fff; }
+.mini-btn.primary:hover { background: var(--c-blue-700); color: #fff; }
+.mini-btn.primary:disabled { opacity: .5; cursor: not-allowed; }
+.add-bar { display: flex; gap: 8px; align-items: center; margin-top: 12px; padding: 10px 12px; background: var(--c-surface-2); border-radius: var(--r); }
+.add-select { flex: 1; min-width: 0; }
 .empty-mini { font-size: 13px; color: var(--c-text-3); text-align: center; padding: 24px; }
 .spin { animation: spin .9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg) } }

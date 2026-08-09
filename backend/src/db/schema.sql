@@ -196,5 +196,24 @@ CREATE TABLE IF NOT EXISTS t_hazard (
   KEY `idx_last_overdue` (`last_overdue_notify_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='隐患主表（闭环）';
 
+-- ─── AI 出题日志表（图片题两阶段流水线的可复现日志）──────────────────────────────
+CREATE TABLE IF NOT EXISTS t_ai_question_log (
+  id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  material_id INT UNSIGNED NOT NULL DEFAULT 0 COMMENT '素材ID',
+  doc_type VARCHAR(30) NOT NULL DEFAULT 'image_violation' COMMENT '文档类型',
+  provider VARCHAR(30) NOT NULL DEFAULT '' COMMENT 'AI Provider',
+  vision_model VARCHAR(80) NOT NULL DEFAULT '' COMMENT 'Vision模型',
+  text_model VARCHAR(80) NOT NULL DEFAULT '' COMMENT '文本模型',
+  image_count TINYINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '输入图片数',
+  question_count TINYINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '生成有效题数',
+  raw_response MEDIUMTEXT COMMENT 'AI原始返回',
+  parse_error TEXT COMMENT '解析/校验错误信息',
+  fallback_used TINYINT NOT NULL DEFAULT 0 COMMENT '是否降级为文字题',
+  duration_ms INT UNSIGNED NOT NULL DEFAULT 0 COMMENT '耗时毫秒',
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_material_id (material_id),
+  KEY idx_created_at (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='AI出题日志表';
+
 -- ─── 完成提示 ───────────────────────────────────────────────────────────────────
 SELECT '✅ TNB-Training 数据库表结构初始化完成' AS result;

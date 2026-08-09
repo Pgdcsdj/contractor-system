@@ -45,7 +45,8 @@
       <div class="section-header">
         <h3>我的隐患列表</h3>
         <div class="header-actions">
-          <button class="btn btn-outline import-btn" type="button" @click="showImport = true">批量导入</button>
+          <button class="btn btn-outline import-btn" type="button" @click="openNormalImport">批量导入</button>
+          <button class="btn btn-primary import-btn" type="button" @click="openVideoImport">视频督查导入</button>
           <div class="filter-bar">
             <select v-model="statusFilter" class="filter-select" @change="fetchList">
               <option value="">全部状态</option>
@@ -66,6 +67,7 @@
               <th>隐患排查项目</th>
               <th>责任单位</th>
               <th>场所</th>
+              <th>问题描述</th>
               <th>等级</th>
               <th>状态</th>
               <th>上报时间</th>
@@ -74,10 +76,10 @@
           </thead>
           <tbody>
             <tr v-if="loading">
-              <td colspan="8" class="empty-cell"><div class="spinner" style="margin:0 auto"></div></td>
+              <td colspan="9" class="empty-cell"><div class="spinner" style="margin:0 auto"></div></td>
             </tr>
             <tr v-else-if="list.length === 0">
-              <td colspan="8" class="empty-cell">暂无隐患记录</td>
+              <td colspan="9" class="empty-cell">暂无隐患记录</td>
             </tr>
             <tr
               v-for="h in list"
@@ -89,6 +91,7 @@
               <td class="cell-invest">{{ h.hazard_investigation_item || '-' }}</td>
               <td>{{ h.unit_name || '-' }}</td>
               <td>{{ h.location || '-' }}</td>
+              <td class="cell-desc">{{ h.description || '-' }}</td>
               <td><span :class="['badge', levelBadge(h.hazard_level)]">{{ h.hazard_level || '-' }}</span></td>
               <td>
                 <span :class="['badge', statusBadge(h.status)]">{{ statusLabel(h.status) }}</span>
@@ -113,7 +116,12 @@
     </div>
 
     <!-- 隐患批量导入弹窗（复用管理员端组件，调用走安全员 token） -->
-    <HazardImportModal :visible="showImport" @close="showImport = false" @imported="onImported" />
+    <HazardImportModal
+      :visible="showImport"
+      :import-type="importTypeForModal"
+      @close="showImport = false"
+      @imported="onImported"
+    />
 
     <!-- 详情抽屉 -->
     <transition name="fade">
@@ -138,6 +146,16 @@
                 <dd class="detail-value">{{ item.value }}</dd>
               </div>
             </dl>
+
+            <div v-if="detailLoading" class="detail-photos-loading">加载照片中…</div>
+            <div v-else-if="detailPhotos.report.length" class="detail-photos">
+              <h4 class="photos-title">上报照片</h4>
+              <div class="photo-grid">
+                <a v-for="p in detailPhotos.report" :key="p.id" :href="p.photo_url" target="_blank" class="photo-item">
+                  <img :src="p.photo_url" alt="上报照片" loading="lazy" />
+                </a>
+              </div>
+            </div>
           </div>
           <footer class="drawer-foot">
             <button class="btn btn-outline" type="button" @click="closeDetail">关闭</button>
@@ -270,6 +288,7 @@ import {
   updateHazard,
   getContractorUnits,
   getHazardDict,
+  getHazardDetail,
 } from '@/api/hazard'
 import HazardImportModal from '@/views/admin/components/HazardImportModal.vue'
 import { statusLabel, statusBadge, levelBadge } from '@/utils/hazardStatus'
@@ -283,9 +302,25 @@ const page = ref(1)
 const pageSize = 15
 const statusFilter = ref('')
 const showImport = ref(false)
+// 传给导入弹窗的预选导入类型：'' = 弹窗内自由选（兜底）；'ledger' = 普通台账导入（锁定）；'video_supervision' = 视频督查导入（锁定）
+const importTypeForModal = ref('')
+
+/** 打开普通台账导入弹窗（导入类型锁定为普通台账）。 */
+function openNormalImport() {
+  importTypeForModal.value = 'ledger'
+  showImport.value = true
+}
+
+/** 打开视频督查导入弹窗（隐患排查项目为空的行默认填「视频督查」）。 */
+function openVideoImport() {
+  importTypeForModal.value = 'video_supervision'
+  showImport.value = true
+}
 
 // 详情抽屉
 const detail = ref(null)
+const detailLoading = ref(false)
+const detailPhotos = ref({ report: [], rectify: [] })
 
 // 编辑弹窗
 const showEdit = ref(false)
@@ -386,8 +421,22 @@ const detailPlain = computed(() => {
   return rows.map(([label, value]) => ({ label, value: value || '-' }))
 })
 
-function openDetail(h) {
+async function openDetail(h) {
   detail.value = h
+  detailLoading.value = true
+  detailPhotos.value = { report: [], rectify: [] }
+  try {
+    const res = await getHazardDetail(h.id)
+    const data = res.data?.data
+    if (data) {
+      detail.value = data
+      detailPhotos.value = data.photos || { report: [], rectify: [] }
+    }
+  } catch (e) {
+    console.error('加载隐患详情照片失败', e)
+  } finally {
+    detailLoading.value = false
+  }
 }
 function closeDetail() {
   detail.value = null
@@ -552,6 +601,7 @@ onMounted(() => {
 .data-table { min-width: 960px; }
 .data-table tbody tr.clickable { cursor: pointer; }
 .cell-invest { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cell-desc { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--c-text); }
 .col-action { white-space: nowrap; text-align: center; }
 .action-link.danger { color: var(--c-danger); }
 .action-link.danger:hover { background: var(--c-danger-bg); }
@@ -583,6 +633,12 @@ onMounted(() => {
 .detail-list { display: flex; flex-direction: column; gap: 14px; margin: 0; }
 .detail-row { display: flex; flex-direction: column; gap: 4px; }
 .detail-label { font-size: 12px; color: var(--c-text-3); }
+.detail-photos { margin-top: 22px; }
+.photos-title { font-size: 13px; font-weight: 700; color: var(--c-text); margin-bottom: 10px; }
+.photo-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+.photo-item { display: block; border-radius: 8px; overflow: hidden; border: 1px solid var(--c-border); background: var(--c-bg); }
+.photo-item img { width: 100%; height: 120px; object-fit: cover; display: block; }
+.detail-photos-loading { margin-top: 18px; font-size: 13px; color: var(--c-text-3); }
 .detail-value { font-size: 14px; color: var(--c-text); white-space: pre-wrap; word-break: break-word; margin: 0; }
 .drawer-foot {
   padding: 16px 24px; border-top: 1px solid var(--c-border);

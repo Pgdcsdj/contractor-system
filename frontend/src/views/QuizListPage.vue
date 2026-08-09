@@ -21,6 +21,16 @@
 
     <!-- 培训列表（每个题库一张卡片，含 学习/练习/考试 三个入口） -->
     <div v-else class="material-list">
+      <!-- 错题库入口 -->
+      <div class="wrong-entry card" @click="$router.push('/wrong-questions')">
+        <span class="wrong-icon">❌</span>
+        <div>
+          <p class="wrong-title">我的错题库</p>
+          <p class="wrong-desc">查看学习中答错的题，重点复习</p>
+        </div>
+        <span class="wrong-arrow">›</span>
+      </div>
+
       <section
         v-for="m in materials"
         :key="m.trainingId"
@@ -218,6 +228,16 @@ function goReview(m) {
 .btn-sm { padding: 6px 12px; font-size: 12px; width: auto; }
 
 .hint { font-size: 12px; color: var(--text-secondary); margin-top: 6px; }
+
+/* 错题库入口 */
+.wrong-entry {
+  display: flex; align-items: center; gap: 12px; cursor: pointer;
+  background: #fff7f7; border: 1px solid #fbd5d5; margin: 8px 0 4px;
+}
+.wrong-icon { font-size: 26px; }
+.wrong-title { font-weight: 600; font-size: 15px; }
+.wrong-desc { font-size: 12px; color: var(--text-secondary); }
+.wrong-arrow { font-size: 24px; color: var(--text-secondary); margin-left: auto; }
 
 /* 离线待上传 */
 .pending-card {

@@ -28,6 +28,16 @@
         </div>
       </div>
 
+      <div class="exam-config">
+        <h3>🎯 考试抽题配置</h3>
+        <p class="hint">规定考试中各题型随机抽取数量（题库题目通常 &gt;100 道，避免一次考完全部）。留空或填 0 表示考该题型全部题目。</p>
+        <div class="config-row">
+          <label>单选题 <input type="number" min="0" v-model="examSingle" placeholder="0" /></label>
+          <label>多选题 <input type="number" min="0" v-model="examMultiple" placeholder="0" /></label>
+          <label>判断题 <input type="number" min="0" v-model="examJudgment" placeholder="0" /></label>
+        </div>
+      </div>
+
       <div class="form-actions">
         <button class="btn btn-outline" @click="$router.back()">取消</button>
         <button class="btn btn-primary" @click="handleImport" :disabled="!selectedFile || importing">
@@ -60,6 +70,9 @@ const fileInput = ref(null)
 const selectedFile = ref(null)
 const importing = ref(false)
 const result = ref(null)
+const examSingle = ref(0)
+const examMultiple = ref(0)
+const examJudgment = ref(0)
 
 const templateUrl = computed(() => `/api/admin/quiz-import/template`)
 
@@ -73,6 +86,9 @@ async function handleImport() {
     const fd = new FormData()
     fd.append('file', selectedFile.value)
     fd.append('material_id', materialId)
+    fd.append('exam_single_num', Number(examSingle.value) || 0)
+    fd.append('exam_multiple_num', Number(examMultiple.value) || 0)
+    fd.append('exam_judgment_num', Number(examJudgment.value) || 0)
     const res = await request.post('/api/admin/quiz-import/import', fd, {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
@@ -96,6 +112,11 @@ async function handleImport() {
 .file-upload { padding: 6px 14px; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; font-size: 13px; color: var(--primary); }
 .file-upload:hover { background: #e8f0fe; }
 .btn-sm { padding: 5px 12px; font-size: 12px; }
+.exam-config { margin: 20px 0; padding: 14px; background: #f8faff; border: 1px solid var(--border); border-radius: 10px; }
+.exam-config h3 { font-size: 14px; margin-bottom: 6px; }
+.config-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+.config-row label { display: flex; flex-direction: column; font-size: 12px; color: var(--text-secondary); gap: 4px; flex: 1; min-width: 90px; }
+.config-row input { padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 14px; width: 100%; box-sizing: border-box; }
 .form-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
 .result-box { margin-top: 16px; padding: 14px; border-radius: 8px; font-size: 14px; }
 .result-box.has-fail { background: #fce8e6; }

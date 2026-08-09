@@ -23,11 +23,13 @@ const path = require('path')
 const { pool } = require('../db/db')
 const { resolveRecorderContext } = require('./permission')
 const { LEVELS } = require('../constants/hazardStates')
+const { extractImages, matchImagesToRows } = require('./xlsxImageExtractor')
+const { uploadAndBind } = require('./hazardPhotoImport')
 
 // ─── 规范字段 → 列名别名（命中优先级：越靠前越优先；buildMapping 中长别名优先）──
 const IMPORT_FIELDS = [
   { key: 'unit_name', aliases: ['单位', '承包商单位', '直属单位', '参建单位', '施工单位', '责任单位', '所属单位', '隐患单位', '承包单位', '作业单位', '施工方', '承包方'] },
-  { key: 'location', aliases: ['场所站点', '位置', '站点', '场所', '地点', '部位', '区域', '点位', '施工部位', '点位名称', '站点名', '位置点', '井场', '检查地点', '检查位置', '施工位置', '井场位置', '检查点位'] },
+  { key: 'location', aliases: ['场所站点', '位置', '站点', '场所', '地点', '部位', '区域', '点位', '施工部位', '点位名称', '站点名', '位置点', '井场', '检查地点', '检查位置', '施工位置', '井场位置', '检查点位', '检查场站'] },
   { key: 'hazard_level', aliases: ['隐患等级', '等级', '危险等级', '风险等级', '隐患级别', '不符合等级', '不符合级别', '问题等级'] },
   { key: 'description', aliases: ['问题描述', '隐患描述', '存在问题', '描述', '隐患内容', '隐患情况', '问题', '情况说明', '隐患简述', '不符合描述', '问题隐患', '不符合项', '隐患表述', '存在问题描述', '问题说明', '不符合情况', '隐患事实'] },
   { key: 'rectify_measures', aliases: ['整改措施', '整改方案', '防范措施', '治理措施', '整改要求', '整改内容', '整改举措', '治理方案', '整改办法'] },
@@ -534,11 +536,16 @@ async function cleanRow(row, mapping, ctx) {
   rec.status = status
   rec.rectify_status = status === 'closed' ? '已完成' : status === 'rectifying' ? '整改中' : '未整改'
 
-  // 隐患排查项目 = sheet 标题（多 sheet 覆盖列值；单 sheet 优先列值，空回退 sheet 名）
+  // 隐患排查项目
   let invItem = getVal('hazard_investigation_item')
-  if (sheetNames.length === 1) {
+  // 视频督查导入：列值为空时默认填「视频督查」（优先于 sheet 名回退；行内已显式填写则保留行内值）
+  if (ctx.importType === 'video_supervision') {
+    if (!invItem) invItem = '视频督查'
+  } else if (sheetNames.length === 1) {
+    // 普通导入：单 sheet 优先列值，空回退 sheet 名
     if (!invItem) invItem = sheetName
   } else {
+    // 多 sheet：直接取 sheet 名
     invItem = sheetName
   }
   rec.hazard_investigation_item = invItem
@@ -556,7 +563,9 @@ async function cleanRow(row, mapping, ctx) {
  * 解析整个工作簿为结构化预览数据（preview / commit 共用，保证两次解析一致）。
  * @returns {Promise<{summary,sheets,rows,mapping,warnings}>}
  */
-async function parseWorkbook(buffer, originalname = '') {
+async function parseWorkbook(buffer, originalname = '', opts = {}) {
+  // 导入类型（''=普通台账导入，'video_supervision'=视频督查导入），透传给 cleanRow 做默认值兜底
+  const importType = (opts && opts.importType) || ''
   const wb = readWorkbook(buffer, originalname)
   const sheetNames = wb.SheetNames || []
 
@@ -617,7 +626,7 @@ async function parseWorkbook(buffer, originalname = '') {
 
       const rowNo = headerIdx + i + 2 // 1-based 绝对行号
       const { rec, errors, warnings: rowWarnings } = await cleanRow(row, mapping, {
-        unitMap, unitList, bdRows, bhRows, sheetName, sheetNames,
+        unitMap, unitList, bdRows, bhRows, sheetName, sheetNames, importType,
       })
 
       let rowStatus
@@ -685,6 +694,49 @@ async function parseWorkbook(buffer, originalname = '') {
     echo[k] = firstMapping[k] >= 0 ? k : null
   })
 
+  // ─── 视频督查导入：解析 xlsx 内嵌截图锚点（纯内存，快；不传 COS）───
+  // 仅在 video_supervision + .xlsx 时启用（设计 §7.3 / D5 / D6）：
+  //   ledger / .xls / .csv 走原逻辑，零行为变更。
+  let imageStats = null
+  let imageBinding = null
+  if (importType === 'video_supervision' && /\.xlsx$/i.test(originalname)) {
+    try {
+      const extracted = await extractImages(buffer, sheetNames)
+      const { byRowKey, orphans, warnings: matchWarnings } = matchImagesToRows(
+        extracted.images,
+        rows
+      )
+      const perRow = {}
+      let matched = 0
+      for (const [rowKey, imgs] of byRowKey) {
+        perRow[rowKey] = imgs.length
+        matched += imgs.length
+      }
+      imageStats = {
+        total: extracted.images.length,
+        matched,
+        orphan: orphans.length,
+        anchorMode: extracted.anchorMode,
+        perRow,
+      }
+      if (matchWarnings.length) {
+        for (const w of matchWarnings) {
+          if (warnings.length < 100 && !warnings.includes(w)) warnings.push(w)
+        }
+      }
+      if (orphans.length) {
+        const msg = `有 ${orphans.length} 张截图未能定位到隐患行，已忽略（不入库）`
+        if (warnings.length < 100 && !warnings.includes(msg)) warnings.push(msg)
+      }
+      imageBinding = { byRowKey, orphans }
+    } catch (e) {
+      const msg = '截图解析失败（已忽略，不影响隐患导入）：' + (e && e.message ? e.message : '未知错误')
+      if (warnings.length < 100 && !warnings.includes(msg)) warnings.push(msg)
+      imageStats = { total: 0, matched: 0, orphan: 0, anchorMode: 'none', perRow: {} }
+      imageBinding = { byRowKey: new Map(), orphans: [] }
+    }
+  }
+
   return {
     summary: { totalSheets: sheetNames.length, totalRows, valid, error, skippedClosed },
     sheets,
@@ -692,6 +744,9 @@ async function parseWorkbook(buffer, originalname = '') {
     mapping: echo,
     warnings,
     notes: allNotes,
+    // 视频督查截图解析结果（普通导入为 null）
+    imageStats,
+    imageBinding,
   }
 }
 
@@ -700,8 +755,9 @@ async function parseWorkbook(buffer, originalname = '') {
  * @param {Buffer} buffer 文件 buffer
  * @param {object} admin  JWT 解析出的 admin（preview 暂不需要，保留签名一致）
  */
-async function previewImport(buffer, admin) {
-  const parsed = await parseWorkbook(buffer)
+async function previewImport(buffer, admin, opts = {}) {
+  // D7：把 originalname 透传下去，parseWorkbook 才能按扩展名判断是否走截图解析
+  const parsed = await parseWorkbook(buffer, (opts && opts.originalname) || '', opts)
   return {
     previewToken: 'ignored',
     summary: parsed.summary,
@@ -710,6 +766,8 @@ async function previewImport(buffer, admin) {
     mapping: parsed.mapping,
     warnings: parsed.warnings,
     notes: parsed.notes || [],
+    // 视频督查截图统计（普通导入为 null；老前端不读不报错，向后兼容 §7.9）
+    imageStats: parsed.imageStats || null,
   }
 }
 
@@ -733,9 +791,11 @@ async function genCode(conn) {
  * @param {object} admin
  * @param {string} filename
  */
-async function commitImport(buffer, admin, filename = '') {
-  const parsed = await parseWorkbook(buffer)
-  const validRows = parsed.rows.filter((r) => r.status === 'valid').map((r) => r.data)
+async function commitImport(buffer, admin, filename = '', opts = {}) {
+  // filename 即 req.file.originalname（multer 传入），用于扩展名判断（D7）
+  const parsed = await parseWorkbook(buffer, filename, opts)
+  // D3 修复：保留完整行对象（含 sheetName/rowNo），以便回收 insertId 并关联截图
+  const validRowObjs = parsed.rows.filter((r) => r.status === 'valid')
   const failList = parsed.rows
     .filter((r) => r.status !== 'valid')
     .map((r) => ({
@@ -747,19 +807,15 @@ async function commitImport(buffer, admin, filename = '') {
           : '已闭环（D3），跳过导入',
     }))
 
-  // ─── 门禁（容错策略）：存在校验错误行（status==='error'）则整批拒绝 ───
-  // 仅 error 行触发门禁；skippedClosed（已闭环 D3）不触发门禁。
-  // 门禁命中时根本不开启事务、不落库任何行（含 valid 行一并拒绝），库零变更。
-  if (parsed.summary.error > 0) {
-    const e = new Error('存在校验错误行，已整批拒绝，请修正 Excel 后重新上传')
-    e.rejected = true
-    e.failList = failList
-    throw e
-  }
+  // 容错策略（D-FIX）：跳过校验错误行，只导入有效行（status === 'valid'）。
+  // 已闭环行（skippedClosed）仍不导入，并计入 failList 供日志与前端展示。
+  // 不再整批拒绝：error 行进入 failList，valid 行正常落库，库发生有效变更。
 
   let conn = null
   let inserted = 0
   let failAtRow = null
+  // D3：事务内回收 rowKey -> 新隐患 id，供事务提交后截图关联使用
+  const rowKeyToHazardId = new Map()
   try {
     conn = await pool.getConnection()
     await conn.beginTransaction()
@@ -773,10 +829,11 @@ async function commitImport(buffer, admin, filename = '') {
          recorder_id, recorder_name, recorder_unit_id, recorder_unit_name, deleted_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, ?, ?, ?, ?, ?, NULL)`
 
-    for (const rec of validRows) {
+    for (const r of validRowObjs) {
+      const rec = r.data
       const hazard_code = await genCode(conn)
       const planFinish = rec.plan_finish_time ? rec.plan_finish_time : null
-      await conn.execute(INSERT_SQL, [
+      const [ins] = await conn.execute(INSERT_SQL, [
         hazard_code,
         rec.contractor_unit_id ? Number(rec.contractor_unit_id) : null,
         rec.unit_name || '',
@@ -799,6 +856,8 @@ async function commitImport(buffer, admin, filename = '') {
         recorderCtx.recorder_unit_id,
         recorderCtx.recorder_unit_name,
       ])
+      // ★ 回收 insertId，按 rowKey 关联（与 parseWorkbook 的 rowNo 同基准 §7.1）
+      rowKeyToHazardId.set(`${r.sheetName}#${r.rowNo}`, ins.insertId)
       inserted++
     }
 
@@ -817,6 +876,35 @@ async function commitImport(buffer, admin, filename = '') {
     )
 
     await conn.commit()
+
+    // ★ 事务已提交；以下截图上传 + 落库失败绝不回退隐患（弱一致 / 尽力而为，设计 §3.5）。
+    // 隐患成功导入是主价值，截图可后续用现有 POST /api/hazard/photo/upload 手工补。
+    let photoResult = { uploaded: 0, failed: 0, orphan: 0, warnings: [] }
+    try {
+      if (parsed.imageBinding && parsed.imageBinding.byRowKey && parsed.imageBinding.byRowKey.size > 0) {
+        const r = await uploadAndBind(
+          parsed.imageBinding.byRowKey,
+          rowKeyToHazardId,
+          { orphan: parsed.imageStats ? parsed.imageStats.orphan : 0 }
+        )
+        photoResult = {
+          uploaded: r.uploaded,
+          failed: r.failed,
+          orphan: r.orphan,
+          warnings: r.warnings,
+        }
+      } else if (parsed.imageStats) {
+        photoResult.orphan = parsed.imageStats.orphan || 0
+      }
+    } catch (e) {
+      photoResult = {
+        uploaded: 0,
+        failed: 0,
+        orphan: parsed.imageStats ? parsed.imageStats.orphan : 0,
+        warnings: ['截图关联失败（不影响隐患导入）：' + (e && e.message ? e.message : '未知错误')],
+      }
+    }
+
     return {
       importLogId: logRes.insertId,
       summary: {
@@ -828,6 +916,8 @@ async function commitImport(buffer, admin, filename = '') {
       failList,
       warnings: parsed.warnings,
       rollback: false,
+      // 视频督查截图关联结果（普通导入为 {uploaded:0,...}，向后兼容 §7.9）
+      photoResult,
     }
   } catch (e) {
     failAtRow = e && e.rowNo != null ? e.rowNo : null

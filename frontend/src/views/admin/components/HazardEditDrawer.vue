@@ -154,7 +154,7 @@ function onUnitChange() {
 async function loadOptions() {
   try {
     const [uRes, lRes] = await Promise.all([getContractorUnits(), getHazardDict('level')])
-    units.value = uRes.data?.data || []
+    units.value = uRes.data?.data?.list || uRes.data?.data || []
     levels.value = lRes.data?.data || []
   } catch {
     /* 静默：下拉选项缺失不影响编辑 */

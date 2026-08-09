@@ -12,6 +12,10 @@
  *   - ASSIGN（分派）    ：@整改反馈人(责任人) + 安全环保室 + 甲方联系人
  *   - VERIFY（验收）    ：@安全环保室 + 甲方联系人
  *   - OVERDUE / WEEKLY  ：保持原逻辑（超期升级 @ 见 hazardScheduler）
+ *   - WEEKLY_EXCEL（未整改隐患周报）：每周三 01:00 由 scheduler 发送，Excel 传 COS，正文统计 + 下载链接。
+ *
+ * 注：模块三已停用 REPORT / ASSIGN / VERIFY / WEEKLY / DIGEST 的即时与每日摘要通知
+ *    （hazardLoop.fireNotify 白名单 + hazardScheduler 注释停用），模板保留便于回退。
  */
 
 const { pool } = require('../../db/db')
@@ -208,6 +212,35 @@ function buildDailyDigestMsg({ date, count, hazards, atMobiles }) {
   }
 }
 
+/**
+ * 未整改隐患周报（每周三 01:00 由 scheduler 发送：Excel 传 COS，正文统计 + 下载链接）
+ * @param {Object} param
+ * @param {string} param.date          日期 YYYY-MM-DD
+ * @param {number} param.count         未整改隐患总数
+ * @param {number} param.overdueCount  其中已超期数
+ * @param {string} param.url           COS 上的 Excel 下载链接
+ * @param {string[]} param.atMobiles   需 @ 的手机号（mergeMobiles 归一去空去重）
+ * @returns {{msgtype:string,title:string,content:string,atMobiles:string[]}}
+ */
+function buildWeeklyExcelMsg({ date, count, overdueCount, url, atMobiles = [] }) {
+  const lines = [
+    '## 📊 未整改隐患周报',
+    `**统计日期**：${date}`,
+    `- 未整改隐患总数：**${count}** 条`,
+    `- 已超期：**${overdueCount}** 条`,
+    '',
+    `[点此下载未整改隐患周报.xlsx](${url})`,
+    '',
+    '> 请各业务口负责人督促相关单位尽快完成整改，超期隐患将每日滚动提醒。',
+  ]
+  return {
+    msgtype: 'markdown',
+    title: '未整改隐患周报',
+    content: lines.join('\n\n'),
+    atMobiles: mergeMobiles(atMobiles),
+  }
+}
+
 // ─── 审计落库（表结构与 migrations/002_dingtalk_notify_log.sql 对应）───────────
 async function logNotify({ event, receiver, content, status, errmsg }) {
   try {
@@ -226,7 +259,7 @@ async function logNotify({ event, receiver, content, status, errmsg }) {
 
 /**
  * 按事件类型发送隐患通知
- * @param {'ASSIGN'|'VERIFY'|'OVERDUE'|'OVERDUE_DIGEST'|'WEEKLY'|'REPORT'|'DIGEST'} event
+ * @param {'ASSIGN'|'VERIFY'|'OVERDUE'|'OVERDUE_DIGEST'|'WEEKLY'|'REPORT'|'DIGEST'|'WEEKLY_EXCEL'} event
  * @param {Object} payload 各事件对应的字段（见上方 build* 函数）
  * @returns {Promise<{ok:boolean}>}
  */
@@ -240,6 +273,7 @@ async function sendHazardNotification(event, payload = {}) {
     case 'OVERDUE_DIGEST': msg = buildOverdueDigestMsg(payload); break
     case 'WEEKLY':  msg = buildWeeklyMsg(payload);  break
     case 'DIGEST':  msg = buildDailyDigestMsg(payload);  break
+    case 'WEEKLY_EXCEL': msg = buildWeeklyExcelMsg(payload); break
     default: throw new Error('未知事件类型: ' + event)
   }
 
@@ -265,4 +299,5 @@ module.exports = {
   buildOverdueDigestMsg,
   buildWeeklyMsg,
   buildDailyDigestMsg,
+  buildWeeklyExcelMsg,
 }

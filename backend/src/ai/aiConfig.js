@@ -33,11 +33,12 @@ const PROVIDERS = {
     name: '硅基流动 (SiliconFlow)',
     baseUrl: 'https://api.siliconflow.cn/v1',
     models: {
-      chat: 'deepseek-ai/DeepSeek-V3',         // DeepSeek V3，同等质量
+      chat: 'deepseek-ai/DeepSeek-V3.2',       // 文本出题/修复主力模型
+      chatV3: 'deepseek-ai/DeepSeek-V3',       // 旧版 V3（保留备选，config.models.question='chatV3' 可回退）
       reasoner: 'deepseek-ai/DeepSeek-R1',     // DeepSeek R1，推理模型
       qwen: 'Qwen/Qwen2.5-72B-Instruct',       // Qwen，免费额度多
       yi: '01ai/Yi-34B',                       // 零一万物备选
-      vision: 'Qwen/Qwen2-VL-72B-Instruct',    // 视觉模型，支持看图
+      vision: 'THUDM/GLM-4.5V',                // 视觉模型（GLM-4.5V，SiliconFlow 在售；Qwen2-VL 已下架）
     },
     supportsVision: true,
     supportsStructuredOutput: false,

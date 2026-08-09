@@ -54,6 +54,18 @@
         </div>
       </div>
 
+      <!-- ①.5 按题型正确率 -->
+      <div v-if="typeStats.length" class="type-stats card">
+        <div class="type-stats-title">📊 按题型正确率</div>
+        <div v-for="s in typeStats" :key="s.type" class="type-stat-row">
+          <span class="ts-label">{{ s.label }}</span>
+          <div class="ts-bar">
+            <div class="ts-fill" :style="{ width: s.rate + '%', background: s.rate >= 60 ? '#34a853' : '#ea4335' }"></div>
+          </div>
+          <span class="ts-num">{{ s.correct }}/{{ s.total }}（{{ s.rate }}%）</span>
+        </div>
+      </div>
+
       <!-- ② 操作按钮 -->
       <div class="result-actions">
         <button class="btn btn-outline" @click="$router.replace('/quiz')">
@@ -156,10 +168,12 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { MODE_LABELS, QUIZ_MODES, isRevealing } from '@/utils/quizModes'
+import { useQuizStore } from '@/stores/quiz'
 
 const route  = useRoute()
 const router = useRouter()
-const trainingId = parseInt(route.params.trainingId)
+const quizStore = useQuizStore()
+const trainingId = route.params.trainingId  // 数字字符串 或 'wrong'（错题练习）
 
 const loading = ref(true)
 const result  = ref(null)
@@ -184,6 +198,13 @@ const wrongCount = computed(() =>
 )
 
 onMounted(async () => {
+  // 错题练习结果：直接来自 store 暂存（不落 t_record，无接口可查）
+  if (trainingId === 'wrong') {
+    const wr = quizStore.lastWrongResult
+    if (wr) result.value = buildWrongResult(wr)
+    loading.value = false
+    return
+  }
   try {
     const res = await fetch(`/api/quiz/${trainingId}/result`, {
       headers: { Authorization: `Bearer ${localStorage.getItem('tnb_token')}` },
@@ -196,6 +217,54 @@ onMounted(async () => {
     console.error('[ResultPage] 加载失败', err)
   }
   loading.value = false
+})
+
+// 将错题练习提交结果构造为标准 result 结构，复用逐题回顾模板
+function buildWrongResult(wr) {
+  const reviewList = (wr.gradedList || []).map(g => ({
+    id:           g.questionId,
+    type:         g.type,
+    question:     g.question,
+    imageUrl:     null,
+    options:      g.options,
+    correctAnswer: g.correctAnswer,
+    userAnswer:   g.userAnswer,
+    isCorrect:    g.isCorrect,
+    score:        g.score,
+    earnedScore:  g.score,
+    analysis:     g.analysis,
+  }))
+  return {
+    score:       wr.score,
+    maxScore:    wr.maxScore,
+    passScore:   wr.passScore ?? 60,
+    passRate:    wr.passRate ?? 0,
+    passed:      wr.passed ?? false,
+    mode:        wr.mode || QUIZ_MODES.PRACTICE,
+    submittedAt: new Date().toISOString(),
+    durationSec: 0,
+    reviewList,
+  }
+}
+
+// 按题型聚合正确率（纯前端统计，用于成绩页分布条）
+const typeStats = computed(() => {
+  const list = result.value?.reviewList
+  if (!list || !list.length) return []
+  const map = {}
+  for (const r of list) {
+    if (!map[r.type]) map[r.type] = { type: r.type, total: 0, correct: 0 }
+    map[r.type].total++
+    if (r.isCorrect) map[r.type].correct++
+  }
+  const label = { single: '单选', choice: '单选', multiple: '多选', multi: '多选', judgment: '判断', essay: '简答', subjective: '简答' }
+  return Object.values(map).map(s => ({
+    type: s.type,
+    label: label[s.type] || s.type,
+    total: s.total,
+    correct: s.correct,
+    rate: s.total > 0 ? Math.round(s.correct / s.total * 100) : 0,
+  }))
 })
 
 function formatTime(iso) {
@@ -308,6 +377,16 @@ function retakeQuiz() {
 .score-info h2.fail { color: var(--danger); }
 .score-desc { font-size: 13px; color: var(--text-secondary); margin-bottom: 6px; }
 .record-meta { font-size: 12px; color: var(--text-secondary); }
+
+/* 按题型正确率分布 */
+.type-stats { padding: 14px 16px; margin: 0 12px 4px; }
+.type-stats-title { font-size: 14px; font-weight: 600; margin-bottom: 10px; }
+.type-stat-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; font-size: 13px; }
+.type-stat-row:last-child { margin-bottom: 0; }
+.ts-label { width: 36px; flex-shrink: 0; color: var(--text-secondary); }
+.ts-bar { flex: 1; height: 10px; background: #eef1f5; border-radius: 999px; overflow: hidden; }
+.ts-fill { height: 100%; border-radius: 999px; transition: width .8s ease; }
+.ts-num { width: 96px; text-align: right; flex-shrink: 0; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
 
 /* 操作按钮 */
 .result-actions {

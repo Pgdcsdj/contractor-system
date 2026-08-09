@@ -34,6 +34,10 @@ const { startSchedulers } = require('./services/hazardScheduler')
 const backupService       = require('./services/backupService')
 const dingtalkRoutes       = require('./routes/dingtalk')        // 钉钉 OAuth 桥接 → Memos 个人工作日志
 const contractorDocRoutes   = require('./routes/contractorDoc')   // 承包商开工资料电子化上报（需求 C）
+const qualityRoutes         = require('./routes/quality')         // 出题质量量化校验与追踪
+
+// ─── 系统版本常量（与前端 src/version.js 保持一致）─────────────────────
+const { APP_VERSION, BUILD_DATE } = require('./version')
 
 const app  = express()
 const PORT = process.env.PORT || 3000
@@ -521,6 +525,162 @@ async function autoMigrate() {
       console.log('[migrate] ✅ t_material.mode 字段添加完成')
     }
 
+    // 9.5 考试随机抽题配置：各题型抽取数量（0 = 全抽，不限制）
+    //     导入题库时在 QuizImportPage 设定；考试模式按此从题库随机抽取，避免大题库全考。
+    for (const col of [
+      { name: 'exam_single_num',   ddl: "ALTER TABLE t_material ADD COLUMN exam_single_num   INT NOT NULL DEFAULT 0 COMMENT '考试随机抽单选题数，0=全抽'" },
+      { name: 'exam_multiple_num', ddl: "ALTER TABLE t_material ADD COLUMN exam_multiple_num INT NOT NULL DEFAULT 0 COMMENT '考试随机抽多选题数，0=全抽'" },
+      { name: 'exam_judgment_num', ddl: "ALTER TABLE t_material ADD COLUMN exam_judgment_num INT NOT NULL DEFAULT 0 COMMENT '考试随机抽判断题数，0=全抽'" },
+    ]) {
+      if (!(await ensureColumn('t_material', col.name))) {
+        console.log(`[migrate] 正在添加 t_material.${col.name} 字段...`)
+        await pool.execute(col.ddl)
+        console.log(`[migrate] ✅ t_material.${col.name} 字段添加完成`)
+      }
+    }
+
+    // ── 10. 出题质量量化校验与追踪机制 ──────────────────────────────────
+    //     10.1 t_question 质量标注列（5 列）
+    //     10.2 t_material.source_keypoints（源文档关键点缓存）
+    //     10.3 t_quality_config / t_question_revision_log / t_quality_report
+    //     全部用 ensureColumn / CREATE TABLE IF NOT EXISTS 守卫，可重复执行。
+    const questionQualityCols = [
+      {
+        name: 'difficulty',
+        ddl: "ALTER TABLE t_question ADD COLUMN difficulty TINYINT NOT NULL DEFAULT 3 COMMENT '难度 1-5'",
+      },
+      {
+        name: 'bloom_level',
+        ddl: "ALTER TABLE t_question ADD COLUMN bloom_level VARCHAR(10) NOT NULL DEFAULT '理解' COMMENT 'Bloom 认知层级: 识记/理解/应用'",
+      },
+      {
+        name: 'knowledge_points',
+        ddl: "ALTER TABLE t_question ADD COLUMN knowledge_points TEXT DEFAULT NULL COMMENT '知识点标签 JSON 数组'",
+      },
+      {
+        name: 'source_keypoints',
+        ddl: "ALTER TABLE t_question ADD COLUMN source_keypoints TEXT DEFAULT NULL COMMENT '源文档依据要点 JSON 数组'",
+      },
+      {
+        name: 'quality_round',
+        ddl: "ALTER TABLE t_question ADD COLUMN quality_round INT NOT NULL DEFAULT 1 COMMENT '所属出题轮次（每次重新生成 +1）'",
+      },
+    ]
+    for (const col of questionQualityCols) {
+      if (!(await ensureColumn('t_question', col.name))) {
+        console.log(`[migrate] 正在添加 t_question.${col.name} 字段...`)
+        await pool.execute(col.ddl)
+        console.log(`[migrate] ✅ t_question.${col.name} 字段添加完成`)
+      }
+    }
+
+    if (!(await ensureColumn('t_material', 'source_keypoints'))) {
+      console.log('[migrate] 正在添加 t_material.source_keypoints 字段...')
+      await pool.execute(
+        "ALTER TABLE t_material ADD COLUMN source_keypoints MEDIUMTEXT DEFAULT NULL COMMENT '源文档关键点缓存 JSON 数组（覆盖率校验用）'"
+      )
+      console.log('[migrate] ✅ t_material.source_keypoints 字段添加完成')
+    }
+
+    // 质量校验配置表：material_id 为 NULL + is_default=1 表示全局默认配置
+    //   列定义与 services/qualityService.js 的 getConfig / saveConfig 严格对齐
+    await ensureTable(`
+      CREATE TABLE IF NOT EXISTS t_quality_config (
+        id            INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        material_id   INT UNSIGNED DEFAULT NULL COMMENT '素材ID；NULL 表示全局默认',
+        name          VARCHAR(80)  NOT NULL DEFAULT '' COMMENT '配置名称',
+        config_json   TEXT         DEFAULT NULL COMMENT '配置内容 JSON',
+        is_default    TINYINT      NOT NULL DEFAULT 0 COMMENT '1=全局默认配置',
+        created_at    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        KEY idx_material (material_id),
+        KEY idx_is_default (is_default)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='出题质量校验配置'
+    `)
+
+    // 题目修订留痕表
+    //   列定义与 qualityService.logRevision / getRevisionHistory 严格对齐
+    await ensureTable(`
+      CREATE TABLE IF NOT EXISTS t_question_revision_log (
+        id            BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        material_id   INT UNSIGNED NOT NULL COMMENT '素材ID',
+        round_no      INT          NOT NULL DEFAULT 0 COMMENT '出题轮次',
+        operator_id   INT UNSIGNED NOT NULL DEFAULT 0 COMMENT '操作人ID',
+        operator_name VARCHAR(40)  NOT NULL DEFAULT '' COMMENT '操作人名称',
+        op_type       VARCHAR(20)  NOT NULL DEFAULT 'EDIT' COMMENT 'GENERATE/RETRY/EDIT/DELETE/ADD/ENRICH',
+        op_content    VARCHAR(255) NOT NULL DEFAULT '' COMMENT '操作摘要',
+        reason        TEXT         DEFAULT NULL COMMENT '修订原因',
+        before_json   MEDIUMTEXT   DEFAULT NULL COMMENT '变更前快照 JSON',
+        after_json    MEDIUMTEXT   DEFAULT NULL COMMENT '变更后快照 JSON',
+        created_at    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        KEY idx_material (material_id),
+        KEY idx_material_round (material_id, round_no)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='题目修订留痕'
+    `)
+
+    // 质量报告表（每次校验落一条，取最新一条展示）
+    //   列定义与 qualityService.runQualityCheck / getLatestReport 严格对齐
+    await ensureTable(`
+      CREATE TABLE IF NOT EXISTS t_quality_report (
+        id               BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        material_id      INT UNSIGNED   NOT NULL COMMENT '素材ID',
+        round_no         INT            NOT NULL DEFAULT 0 COMMENT '校验时的轮次',
+        report_json      MEDIUMTEXT     DEFAULT NULL COMMENT '完整报告 JSON',
+        coverage_pct     DECIMAL(5,2)   NOT NULL DEFAULT 0 COMMENT '源文档覆盖率 %',
+        consistency_pass TINYINT        NOT NULL DEFAULT 0 COMMENT '整卷一致性是否通过 0/1',
+        quality_score    SMALLINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '综合质量分 0-100',
+        created_at       TIMESTAMP      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        KEY idx_material (material_id),
+        KEY idx_material_created (material_id, created_at)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='出题质量报告'
+    `)
+
+    // 10.4 错题表：员工在学习/练习/考试中答错的题，用于错题库重点学习
+    //     唯一键 (user_id, question_id) 保证每人每题仅一条；答对后移出。
+    await ensureTable(`
+      CREATE TABLE IF NOT EXISTS t_wrong_question (
+        id            BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        user_id       INT UNSIGNED NOT NULL COMMENT '员工ID',
+        material_id   INT UNSIGNED NOT NULL COMMENT '题库ID',
+        question_id   INT UNSIGNED NOT NULL COMMENT '题目ID',
+        mode          VARCHAR(20)  NOT NULL DEFAULT 'exam' COMMENT '作答模式: study/practice/exam',
+        wrong_times   INT UNSIGNED NOT NULL DEFAULT 1 COMMENT '累计答错次数',
+        last_wrong_at TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '最近一次答错时间',
+        created_at    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_user_question (user_id, question_id),
+        KEY idx_user (user_id),
+        KEY idx_material (material_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='员工错题记录'
+    `)
+
+    // 10.5 错题库「重点标记」列（错题练习优先复习）
+    if (!(await ensureColumn('t_wrong_question', 'starred'))) {
+      await pool.execute(
+        "ALTER TABLE t_wrong_question ADD COLUMN starred TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否重点标记(1=置顶优先复习)'"
+      )
+    }
+
+    // 种子：全局默认质量配置（仅当不存在时写入）
+    const [defaultCfgRows] = await pool.execute(
+      'SELECT id FROM t_quality_config WHERE material_id IS NULL AND is_default = 1 LIMIT 1'
+    )
+    if (!defaultCfgRows.length) {
+      const seedCfg = JSON.stringify({
+        expectedCount: 10,
+        typeDistribution: { single: 0.4, multiple: 0.3, judgment: 0.2, essay: 0.1 },
+        difficultyHistogram: { 1: 0.1, 2: 0.2, 3: 0.4, 4: 0.2, 5: 0.1 },
+        bloomDistribution: { 识记: 0.3, 理解: 0.5, 应用: 0.2 },
+        coverageThreshold: 0.8,
+        kpMinCount: 5,
+      })
+      await pool.execute(
+        'INSERT INTO t_quality_config (material_id, name, config_json, is_default) VALUES (NULL, ?, ?, 1)',
+        ['全局默认质量配置', seedCfg]
+      )
+      console.log('[migrate] ✅ 已写入全局默认质量校验配置')
+    }
+    console.log('[migrate] ✅ 出题质量校验相关表结构已就绪')
+
     console.log('[migrate] ✅ 隐患闭环相关表结构已就绪')
   } catch (err) {
     console.error('[migrate] 自动迁移失败:', err.message)
@@ -561,6 +721,7 @@ app.use('/api/account', accountRoutes)                    // 账号管理（admi
 app.use('/api/data',    dataManageRoutes)                 // 数据备份/导出（admin/superadmin）
 app.use('/api/dingtalk', dingtalkRoutes)                   // 钉钉 OAuth 桥接 → Memos 个人工作日志（T01/T02）
 app.use('/api/contractor-docs', contractorDocRoutes)        // 承包商开工资料电子化上报（需求 C）
+app.use('/api/quality', qualityRoutes)                      // 出题质量量化校验与追踪
 
 // ─── 定时备份（每周日 23:00）────────────────────────────────────────────────
 // P1：服务进程内 node-cron；失败仅 console.error + 写审计日志（未建），不阻塞主进程。
@@ -578,7 +739,12 @@ try {
 
 // 健康检查
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString(), version: '1.0.0' })
+  res.json({ status: 'ok', timestamp: new Date().toISOString(), version: APP_VERSION })
+})
+
+// 系统版本（公开，无需鉴权）
+app.get('/api/version', (req, res) => {
+  res.json({ version: APP_VERSION, buildDate: BUILD_DATE })
 })
 
 // ─── 域名落地页（根路径指向 landing.html）────────────────────────

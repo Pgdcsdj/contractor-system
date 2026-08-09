@@ -26,6 +26,7 @@
         <thead>
           <tr>
             <th>培训标题</th>
+            <th>分类</th>
             <th>类型</th>
             <th>题目数</th>
             <th>及格分</th>
@@ -72,6 +73,12 @@
                   @click="$router.push('/admin/trainings/' + t.id + '/import')"
                 >
                   导入
+                </button>
+                <button
+                  class="action-link quality"
+                  @click="$router.push('/admin/quality/' + t.id)"
+                >
+                  质量
                 </button>
                 <button
                   v-if="t.status === 'pending' && t.total_questions > 0"
@@ -389,6 +396,8 @@ async function initPublish() {
 .action-link.success:hover { background: #e6f4ea; }
 .action-link.qrcode { color: #1a73e8; }
 .action-link.qrcode:hover { background: #e8f0fe; }
+.action-link.quality { color: #7b1fa2; }
+.action-link.quality:hover { background: #f3e5f5; }
 .action-link.warning { color: #e37400; }
 .action-link.warning:hover { background: #fef7e0; }
 .action-link.danger { color: var(--danger); }

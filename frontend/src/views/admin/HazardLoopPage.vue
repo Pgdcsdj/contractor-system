@@ -22,14 +22,32 @@
       <div class="toolbar">
         <div class="search-wrap">
           <input v-model="filters.keyword" class="filter-input" placeholder="搜索单位 / 分类 / 责任人…" @input="onFilterChange" />
-          <select v-model="filters.contractor_unit_id" class="filter-input" @change="onFilterChange">
+          <select v-model="filters.unit_name" class="filter-input" @change="onFilterChange">
             <option value="">全部单位</option>
-            <option v-for="u in units" :key="u.id" :value="u.id">{{ u.unit_name }}</option>
+            <option v-for="u in units" :key="u.value" :value="u.value">{{ u.label }}</option>
           </select>
           <select v-model="filters.level" class="filter-input" @change="onFilterChange">
             <option value="">全部等级</option>
             <option v-for="l in levels" :key="l.code" :value="l.name">{{ l.name }}</option>
           </select>
+          <div class="multi-select" :class="{ open: investigationOpen }" ref="investigationSelectRef">
+            <div class="multi-select-trigger" @click="investigationOpen = !investigationOpen">
+              <span v-if="filters.investigationItems.length === 0" class="placeholder">隐患项目</span>
+              <span v-else class="selected-text">{{ investigationSelectedText }}</span>
+              <span class="arrow">▼</span>
+            </div>
+            <div v-if="investigationOpen" class="multi-select-panel">
+              <label class="multi-option all-option">
+                <input type="checkbox" :checked="isAllInvestigationSelected" @change="toggleAllInvestigation" />
+                <span>全部</span>
+              </label>
+              <label v-for="o in investigationItemOptions" :key="o.value" class="multi-option">
+                <input type="checkbox" :value="o.value" v-model="filters.investigationItems" @change="onFilterChange" />
+                <span>{{ o.label }}</span>
+              </label>
+              <div v-if="investigationItemOptions.length === 0" class="multi-empty">暂无数据</div>
+            </div>
+          </div>
         </div>
         <div class="toolbar-right">
           <span class="total-count">共 {{ total }} 条</span>
@@ -168,7 +186,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted, watch } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue'
 import Icon from '@/components/Icon.vue'
 import HazardDetailDrawer from '@/views/admin/components/HazardDetailDrawer.vue'
 import { statusLabel, statusBadge, levelBadge } from '@/utils/hazardStatus'
@@ -177,9 +195,11 @@ import {
   getHazardDetail,
   getHazardDict,
   getContractorUnits,
+  getHazardsUnitNames,
   triggerOverdueNotify,
   deleteHazards,
 } from '@/api/hazard'
+import { getInvestigationItems } from '@/api/safety'
 
 const statusFlow = [
   { key: 'reported', label: '已上报', en: 'Reported', icon: 'hazard' },
@@ -200,7 +220,7 @@ const tabs = [
 ]
 
 const activeTab = ref('all')
-const filters = reactive({ keyword: '', contractor_unit_id: '', level: '' })
+const filters = reactive({ keyword: '', unit_name: '', level: '', investigationItems: [] })
 const page = ref(1)
 const pageSize = 15
 
@@ -210,6 +230,9 @@ const summary = ref({ byStatus: {}, overdue: 0 })
 const loading = ref(false)
 const units = ref([])
 const levels = ref([])
+const investigationItemOptions = ref([])
+const investigationOpen = ref(false)
+const investigationSelectRef = ref(null)
 
 const selectedIds = ref([])
 const notifying = ref(false)
@@ -245,13 +268,45 @@ function fmtDate(v) {
 
 function buildParams() {
   const p = { page: page.value, pageSize }
-  if (filters.contractor_unit_id) p.contractor_unit_id = filters.contractor_unit_id
+  if (filters.unit_name) p.unit_name = filters.unit_name
   if (filters.level) p.level = filters.level
+  if (filters.investigationItems.length) p.hazard_investigation_item = filters.investigationItems.join(',')
   const kw = filters.keyword.trim()
   if (kw) p.keyword = kw
   if (activeTab.value === 'overdue') p.is_overdue = '1'
   else if (activeTab.value !== 'all') p.status = activeTab.value
   return p
+}
+
+const investigationSelectedText = computed(() => {
+  if (filters.investigationItems.length === 0) return '隐患项目'
+  if (filters.investigationItems.length === investigationItemOptions.value.length) return '全部'
+  const names = filters.investigationItems.map((v) =>
+    investigationItemOptions.value.find((o) => o.value === v)?.label || v
+  )
+  return names.join('、')
+})
+
+const isAllInvestigationSelected = computed(() => {
+  return (
+    investigationItemOptions.value.length > 0 &&
+    filters.investigationItems.length === investigationItemOptions.value.length
+  )
+})
+
+function toggleAllInvestigation() {
+  if (isAllInvestigationSelected.value) {
+    filters.investigationItems = []
+  } else {
+    filters.investigationItems = investigationItemOptions.value.map((o) => o.value)
+  }
+  onFilterChange()
+}
+
+function onDocumentClick(e) {
+  if (investigationSelectRef.value && !investigationSelectRef.value.contains(e.target)) {
+    investigationOpen.value = false
+  }
 }
 
 async function fetchList() {
@@ -371,16 +426,27 @@ async function handleOverdueNotify() {
 
 async function loadFilterOptions() {
   try {
-    const [uRes, lRes] = await Promise.all([
-      getContractorUnits(),
+    const [uRes, lRes, itemRes] = await Promise.all([
+      getHazardsUnitNames(),
       getHazardDict('level'),
+      getInvestigationItems(),
     ])
-    units.value = uRes.data?.data || []
+    units.value = (uRes.data?.data?.list || []).map((x) => ({ value: x.unit_name, label: x.unit_name }))
     levels.value = lRes.data?.data || []
+    // /api/data/investigation-items 返回 { data: { list: [...] } }（字符串数组）
+    const itemList = itemRes?.data?.data?.list || itemRes?.data?.data || []
+    investigationItemOptions.value = itemList.map((name) => ({ value: name, label: name }))
   } catch { /* 静默 */ }
 }
 
-onMounted(() => { loadFilterOptions(); fetchList() })
+onMounted(() => {
+  loadFilterOptions()
+  fetchList()
+  document.addEventListener('click', onDocumentClick)
+})
+onUnmounted(() => {
+  document.removeEventListener('click', onDocumentClick)
+})
 </script>
 
 <style scoped>
@@ -414,6 +480,40 @@ onMounted(() => { loadFilterOptions(); fetchList() })
   font-size: 14px; background: var(--c-surface); min-width: 140px;
 }
 .filter-input:focus { outline: none; border-color: var(--c-blue-600); }
+
+/* 多选下拉（隐患项目） */
+.multi-select { position: relative; min-width: 160px; }
+.multi-select-trigger {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  width: 100%; min-height: 38px; padding: 8px 12px;
+  border: 1px solid var(--c-border-strong); border-radius: var(--r);
+  background: var(--c-surface); color: var(--c-text); font-size: 14px;
+  cursor: pointer; transition: border-color .15s ease;
+}
+.multi-select-trigger:hover { border-color: var(--c-blue-600); }
+.multi-select.open .multi-select-trigger { border-color: var(--c-blue-600); }
+.multi-select-trigger .placeholder { color: var(--c-text-3); }
+.multi-select-trigger .selected-text {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.multi-select-trigger .arrow { font-size: 10px; color: var(--c-text-3); transition: transform .15s ease; }
+.multi-select.open .arrow { transform: rotate(180deg); }
+.multi-select-panel {
+  position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 100;
+  max-height: 240px; overflow-y: auto;
+  background: var(--c-surface); border: 1px solid var(--c-border); border-radius: var(--r);
+  box-shadow: var(--shadow-lg); padding: 6px 0;
+}
+.multi-option {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; font-size: 13px; color: var(--c-text);
+  cursor: pointer; transition: background .12s ease;
+}
+.multi-option:hover { background: var(--c-blue-50); }
+.multi-option input[type="checkbox"] { width: 15px; height: 15px; flex-shrink: 0; cursor: pointer; }
+.multi-option.all-option { font-weight: 600; border-bottom: 1px solid var(--c-border); margin-bottom: 4px; padding-bottom: 10px; }
+.multi-empty { padding: 12px; font-size: 12px; color: var(--c-text-3); text-align: center; }
+
 .toolbar-right { display: flex; align-items: center; gap: 12px; }
 .total-count { font-size: 13px; color: var(--c-text-2); white-space: nowrap; }
 .toolbar-right .btn { width: auto; }

@@ -13,6 +13,8 @@
  * 响应：{ success:true, data } / { success:false, error }
  * 钉钉通知：fire-and-forget，先提交 DB 状态变更，再 try/catch 调 sendHazardNotification，
  *          通知失败仅 console.error，不回滚状态、不让接口 500。
+ * 模块三：fireNotify 仅放行「超期」通知（OVERDUE / OVERDUE_DIGEST），
+ *          上报/分派/验收即时通知一律静默跳过；手动超期通知（L628）不经白名单，保留。
  */
 
 const express = require('express')
@@ -76,7 +78,12 @@ const HAZARD_COLUMNS = [
 const OVERDUE_EXPR = `CASE WHEN status <> 'closed' AND plan_finish_time IS NOT NULL AND plan_finish_time < NOW() THEN 1 ELSE 0 END`
 
 // ─── 钉钉通知 fire-and-forget ────────────────────────────────────────────────
+// 模块三：只保留「超期」通知（自动超期扫描 OVERDUE_DIGEST / 手动超期走 L628 直调 sendHazardNotification）。
+// 上报(REPORT)/分派(ASSIGN)/验收(VERIFY) 即时通知一律在白名单外静默跳过（不打日志）。
+const NOTIFY_EVENTS = ['OVERDUE', 'OVERDUE_DIGEST']
+
 async function fireNotify(event, payload) {
+  if (!NOTIFY_EVENTS.includes(event)) return // 白名单外静默跳过
   try {
     await sendHazardNotification(event, payload)
   } catch (e) {
@@ -212,7 +219,12 @@ router.post('/import', requireAdminOrSafety, importUpload.single('file'), async 
     return res.status(400).json({ success: false, error: '请上传 .xlsx / .xls / .csv 文件' })
   }
   try {
-    const data = await importService.previewImport(req.file.buffer, req.admin)
+    // import_type 来自 multipart 普通字段（''=普通台账导入，'video_supervision'=视频督查导入）
+    // D7：透传 originalname，使 parseWorkbook 能按扩展名判断是否走截图解析
+    const data = await importService.previewImport(req.file.buffer, req.admin, {
+      importType: req.body && req.body.import_type,
+      originalname: req.file.originalname,
+    })
     res.json({ success: true, data })
   } catch (err) {
     console.error('[hazard import preview]', err && err.message ? err.message : err)
@@ -226,7 +238,9 @@ router.post('/import/confirm', requireAdminOrSafety, importUpload.single('file')
     return res.status(400).json({ success: false, error: '请上传 .xlsx / .xls / .csv 文件' })
   }
   try {
-    const data = await importService.commitImport(req.file.buffer, req.admin, req.file.originalname)
+    const data = await importService.commitImport(req.file.buffer, req.admin, req.file.originalname, {
+      importType: req.body && req.body.import_type,
+    })
     res.json({ success: true, data })
   } catch (err) {
     // 门禁拒绝：存在校验错误行，整批拒绝，库零变更（未开启事务，无回退动作）。
@@ -303,9 +317,11 @@ router.get('/', adminAuth, async (req, res) => {
   const {
     status = '',
     contractor_unit_id = '',
+    unit_name = '',
     level = '',
     keyword = '',
     is_overdue = '',
+    hazard_investigation_item = '',
     page = 1,
     pageSize = 20,
   } = req.query
@@ -314,11 +330,27 @@ router.get('/', adminAuth, async (req, res) => {
   const safePageSize = Math.min(100, Math.max(1, Number(pageSize) || 20))
   const offset = (safePage - 1) * safePageSize
 
+  // 隐患排查项目多选筛选：支持「a,b,c」逗号串或重复 query 参数数组
+  let investigationItems = []
+  if (hazard_investigation_item) {
+    const raw = Array.isArray(hazard_investigation_item)
+      ? hazard_investigation_item
+      : String(hazard_investigation_item).split(',').map((s) => s.trim())
+    investigationItems = raw.filter(Boolean)
+  }
+
   // 列表筛选（含 status / is_overdue 切换）
   const where = []
   const params = []
   if (contractor_unit_id) { where.push('contractor_unit_id = ?'); params.push(Number(contractor_unit_id)) }
+  if (unit_name) { where.push('unit_name = ?'); params.push(unit_name) }
   if (level) { where.push('hazard_level = ?'); params.push(level) }
+  if (investigationItems.length) {
+    const inPh = investigationItems.map(() => '?').join(', ')
+    where.push(`hazard_investigation_item IN (${inPh})`)
+    params.push(...investigationItems)
+  }
+
   if (keyword) {
     where.push('(unit_name LIKE ? OR description LIKE ? OR responsible_person LIKE ?)')
     params.push(`%${keyword}%`, `%${keyword}%`, `%${keyword}%`)
@@ -340,7 +372,13 @@ router.get('/', adminAuth, async (req, res) => {
   const sumWhere = []
   const sumParams = []
   if (contractor_unit_id) { sumWhere.push('contractor_unit_id = ?'); sumParams.push(Number(contractor_unit_id)) }
+  if (unit_name) { sumWhere.push('unit_name = ?'); sumParams.push(unit_name) }
   if (level) { sumWhere.push('hazard_level = ?'); sumParams.push(level) }
+  if (investigationItems.length) {
+    const inPh = investigationItems.map(() => '?').join(', ')
+    sumWhere.push(`hazard_investigation_item IN (${inPh})`)
+    sumParams.push(...investigationItems)
+  }
   if (keyword) {
     sumWhere.push('(unit_name LIKE ? OR description LIKE ? OR responsible_person LIKE ?)')
     sumParams.push(`%${keyword}%`, `%${keyword}%`, `%${keyword}%`)
@@ -389,6 +427,26 @@ router.get('/', adminAuth, async (req, res) => {
   } catch (err) {
     console.error('[hazard list]', err.message)
     res.status(500).json({ success: false, error: '隐患列表查询失败：' + err.message })
+  }
+})
+
+// ─── GET /api/hazards/unit-names —— 责任单位去重列表（用于闭环页「全部单位」下拉）──
+// ⚠ 必须定义在 router.get('/:id') 之前，否则会被 :id 占位符吞掉。
+// 返回隐患表中实际出现的、非空的 unit_name 去重列表，按出现次数降序、名称升序。
+router.get('/unit-names', adminAuth, async (req, res) => {
+  try {
+    const [rows] = await pool.execute(
+      `SELECT unit_name, COUNT(*) AS cnt
+         FROM t_hazard
+        WHERE deleted_at IS NULL AND unit_name IS NOT NULL AND unit_name <> ''
+        GROUP BY unit_name
+        ORDER BY cnt DESC, unit_name ASC`
+    )
+    const list = rows.map((r) => ({ unit_name: r.unit_name, cnt: r.cnt || 0 }))
+    res.json({ success: true, data: { list } })
+  } catch (err) {
+    console.error('[hazard unit-names]', err.message)
+    res.status(500).json({ success: false, error: '责任单位列表查询失败：' + err.message })
   }
 })
 
@@ -921,5 +979,8 @@ router.patch('/:id/verify', adminAuth, async (req, res) => {
     res.status(500).json({ success: false, error: '验收失败：' + err.message })
   }
 })
+
+// ─── 测试钩子（仅供本地/服务器自验脚本调用，不影响 Express 路由行为）────────────
+router.fireNotify = fireNotify
 
 module.exports = router

@@ -154,7 +154,7 @@
       </aside>
     </section>
 
-    <input ref="fileInputRef" type="file" accept=".pdf,.jpg,.jpeg,.doc,.docx" style="display:none" @change="onFilePicked" />
+    <input ref="fileInputRef" type="file" accept=".pdf,.jpg,.jpeg,.doc,.docx,.xlsx,.xls" style="display:none" @change="onFilePicked" />
 
     <div v-if="detailOpen" class="modal-mask" @click.self="closeDetail">
       <div class="modal">
@@ -388,7 +388,7 @@ function triggerReplace(fileId) {
 
 function validateFile(file) {
   const ext = file.name.split('.').pop().toLowerCase()
-  if (!['pdf', 'jpg', 'jpeg', 'doc', 'docx'].includes(ext)) { showError('仅支持 PDF / JPG / DOC / DOCX 格式'); return false }
+  if (!['pdf', 'jpg', 'jpeg', 'doc', 'docx', 'xlsx', 'xls'].includes(ext)) { showError('仅支持 PDF / 图片 / Word / Excel 格式'); return false }
   if (file.size > 20 * 1024 * 1024) { showError('单个文件不得超过 20MB'); return false }
   return true
 }

@@ -55,6 +55,10 @@
           <Icon name="settings" :size="20" class="nav-icon" />
           <span v-if="!sidebarCollapsed" class="nav-label">隐患模块设置</span>
         </router-link>
+        <router-link to="/admin/data" class="nav-item">
+          <Icon name="inbox" :size="20" class="nav-icon" />
+          <span v-if="!sidebarCollapsed" class="nav-label">数据管理</span>
+        </router-link>
 
         <!-- 分组三：开工资料 -->
         <div v-if="!sidebarCollapsed" class="nav-group-title">开工资料</div>
@@ -66,11 +70,6 @@
         <router-link to="/admin/accounts" class="nav-item">
           <Icon name="users" :size="20" class="nav-icon" />
           <span v-if="!sidebarCollapsed" class="nav-label">账号管理</span>
-        </router-link>
-
-        <router-link to="/admin/data" class="nav-item">
-          <Icon name="inbox" :size="20" class="nav-icon" />
-          <span v-if="!sidebarCollapsed" class="nav-label">数据管理</span>
         </router-link>
       </nav>
 

@@ -97,11 +97,35 @@ function buildAOA(rows, fields) {
   return data
 }
 
-// ─── backupNow：全量备份 ───────────────────────────────────────────────────
+// ─── 通用：构建单 Sheet 的 AOA 数据 ─────────────────────────────────────────
+// colDefs: [{ key, header, map?, date?, raw?(row) }]
+function buildSheetAOA(rows, colDefs) {
+  const data = [colDefs.map((c) => c.header)]
+  for (const r of rows) {
+    data.push(
+      colDefs.map((c) => {
+        if (c.raw) return c.raw(r)
+        if (c.map) return c.map(r[c.key])
+        if (c.date) return fmtDateTime(r[c.key])
+        const v = r[c.key]
+        if (v == null) return ''
+        if (typeof v === 'object') return JSON.stringify(v)
+        return v
+      })
+    )
+  }
+  return data
+}
+
+// ─── backupNow：全量备份（多 Sheet：隐患 + 培训 + 开工资料）─────────────────
+// 注意：容器内 /app 只读，不能落盘。改为直接返回 buffer，由接口触发浏览器下载。
 async function backupNow() {
-  ensureBackupsDir()
-  const [rows] = await pool.query(
-    `SELECT hazard_code, unit_name, hazard_level, description, location, hazard_investigation_item,
+  const wb = XLSX.utils.book_new()
+  let totalCount = 0
+
+  // ── Sheet 1：隐患数据（含照片 URL 文本列）──
+  const [hazards] = await pool.query(
+    `SELECT id, hazard_code, unit_name, hazard_level, description, location, hazard_investigation_item,
             responsible_person, status, recorder_name, recorder_unit_name,
             plan_finish_time, created_at, closed_at,
             CASE WHEN status <> 'closed' AND plan_finish_time IS NOT NULL AND plan_finish_time < NOW() THEN 1 ELSE 0 END AS is_overdue
@@ -109,11 +133,9 @@ async function backupNow() {
       WHERE deleted_at IS NULL
       ORDER BY id DESC`
   )
-
-  // 照片 URL 作为文本列（设计 §8.7：照片以 URL 文本列呈现）
   let photoMap = {}
-  if (rows.length) {
-    const ids = rows.map((r) => r.id).filter(Boolean)
+  if (hazards.length) {
+    const ids = hazards.map((r) => r.id).filter(Boolean)
     if (ids.length) {
       const [photos] = await pool.query(
         'SELECT hazard_id, photo_url FROM t_hazard_photo WHERE hazard_id IN (?)',
@@ -125,8 +147,7 @@ async function backupNow() {
       })
     }
   }
-
-  const backupCols = [
+  const hazardCols = [
     { key: 'hazard_code', header: '隐患编号' },
     { key: 'unit_name', header: '责任单位' },
     { key: 'hazard_level', header: '隐患等级' },
@@ -143,26 +164,178 @@ async function backupNow() {
     { key: 'is_overdue', header: '是否超期', map: (v) => (v ? '是' : '否') },
     { key: 'photo_urls', header: '照片URL' },
   ]
-  const headerRow = backupCols.map((c) => c.header)
-  const data = [headerRow]
-  for (const r of rows) {
-    const photoUrls = (photoMap[r.id] || []).join('\n')
-    data.push(backupCols.map((c) => {
-      if (c.key === 'photo_urls') return photoUrls
-      if (c.map) return c.map(r[c.key])
-      if (c.date) return fmtDateTime(r[c.key])
-      return r[c.key] == null ? '' : r[c.key]
-    }))
-  }
+  const hazardData = buildSheetAOA(hazards, hazardCols).map((row, i) => {
+    if (i === 0) return row
+    const r = hazards[i - 1]
+    return row.map((cell, ci) => (hazardCols[ci].key === 'photo_urls' ? (photoMap[r.id] || []).join('\n') : cell))
+  })
+  wb.SheetNames.push('隐患数据')
+  wb.Sheets['隐患数据'] = XLSX.utils.aoa_to_sheet(hazardData)
+  totalCount += hazards.length
 
-  const filename = `hazard_backup_${ts()}.xlsx`
-  const filepath = path.join(BACKUPS_DIR, filename)
-  const wb = XLSX.utils.book_new()
-  wb.SheetNames.push('隐患备份')
-  wb.Sheets['隐患备份'] = XLSX.utils.aoa_to_sheet(data)
-  XLSX.writeFile(wb, filepath)
+  // ── 培训：材料 / 题库 / 人员 / 答题记录 ──
+  const MAT_STATUS = { 0: '待审核', 1: '已发布', 2: '待审核', 3: '已驳回' }
+  const [materials] = await pool.query('SELECT id, title, file_type, file_size, category_id, mode, status, ai_status, question_cnt, pass_score, time_limit, exam_single_num, exam_multiple_num, exam_judgment_num, target_type, target_value, created_by, created_at, content_text FROM t_material ORDER BY id')
+  const materialCols = [
+    { key: 'id', header: 'ID' },
+    { key: 'title', header: '标题' },
+    { key: 'file_type', header: '文件类型' },
+    { key: 'file_size', header: '文件大小(字节)' },
+    { key: 'category_id', header: '分类ID' },
+    { key: 'mode', header: '培训模式' },
+    { key: 'status', header: '状态', map: (v) => MAT_STATUS[v] ?? v },
+    { key: 'ai_status', header: 'AI生成状态' },
+    { key: 'question_cnt', header: '题目数' },
+    { key: 'pass_score', header: '及格分' },
+    { key: 'time_limit', header: '时长(分)' },
+    { key: 'exam_single_num', header: '考试单选抽题' },
+    { key: 'exam_multiple_num', header: '考试多选抽题' },
+    { key: 'exam_judgment_num', header: '考试判断抽题' },
+    { key: 'target_type', header: '适用对象类型' },
+    { key: 'target_value', header: '适用对象', raw: (r) => (r.target_value ? JSON.stringify(r.target_value) : '') },
+    { key: 'created_by', header: '创建人ID' },
+    { key: 'created_at', header: '创建时间', date: true },
+    { key: 'content_text', header: '内容文本' },
+  ]
+  wb.SheetNames.push('培训材料')
+  wb.Sheets['培训材料'] = XLSX.utils.aoa_to_sheet(buildSheetAOA(materials, materialCols))
+  totalCount += materials.length
 
-  return { filename, count: rows.length, filepath }
+  const [questions] = await pool.query('SELECT id, material_id, type, question, image_url, options, answer, analysis, score, sort_order, status, difficulty, bloom_level, knowledge_points, created_at FROM t_question ORDER BY id')
+  const questionCols = [
+    { key: 'id', header: 'ID' },
+    { key: 'material_id', header: '材料ID' },
+    { key: 'type', header: '题型' },
+    { key: 'question', header: '题干' },
+    { key: 'image_url', header: '图片URL' },
+    { key: 'options', header: '选项', raw: (r) => (r.options ? JSON.stringify(r.options) : '') },
+    { key: 'answer', header: '正确答案' },
+    { key: 'analysis', header: '解析' },
+    { key: 'score', header: '分值' },
+    { key: 'sort_order', header: '排序' },
+    { key: 'status', header: '状态', map: (v) => (v == 1 ? '启用' : '停用') },
+    { key: 'difficulty', header: '难度' },
+    { key: 'bloom_level', header: '布鲁姆层次' },
+    { key: 'knowledge_points', header: '知识点' },
+    { key: 'created_at', header: '创建时间', date: true },
+  ]
+  wb.SheetNames.push('培训题库')
+  wb.Sheets['培训题库'] = XLSX.utils.aoa_to_sheet(buildSheetAOA(questions, questionCols))
+  totalCount += questions.length
+
+  const [users] = await pool.query('SELECT id, name, id_card, unit, supervising_unit, phone, status, contractor_unit_id, dingtalk_userid, created_at FROM t_user ORDER BY id')
+  const userCols = [
+    { key: 'id', header: 'ID' },
+    { key: 'name', header: '姓名' },
+    { key: 'id_card', header: '身份证号' },
+    { key: 'unit', header: '单位' },
+    { key: 'supervising_unit', header: '监管单位' },
+    { key: 'phone', header: '电话' },
+    { key: 'status', header: '状态', map: (v) => (v == 1 ? '启用' : '停用') },
+    { key: 'contractor_unit_id', header: '承包商单位ID' },
+    { key: 'dingtalk_userid', header: '钉钉ID' },
+    { key: 'created_at', header: '创建时间', date: true },
+  ]
+  wb.SheetNames.push('培训人员')
+  wb.Sheets['培训人员'] = XLSX.utils.aoa_to_sheet(buildSheetAOA(users, userCols))
+  totalCount += users.length
+
+  const [records] = await pool.query('SELECT id, user_id, material_id, answers, score, max_score, duration_sec, mode, attempt_no, is_offline, submitted_at FROM t_record ORDER BY id')
+  const recordCols = [
+    { key: 'id', header: 'ID' },
+    { key: 'user_id', header: '用户ID' },
+    { key: 'material_id', header: '材料ID' },
+    { key: 'answers', header: '作答', raw: (r) => (r.answers ? JSON.stringify(r.answers) : '') },
+    { key: 'score', header: '得分' },
+    { key: 'max_score', header: '满分' },
+    { key: 'duration_sec', header: '用时(秒)' },
+    { key: 'mode', header: '模式' },
+    { key: 'attempt_no', header: '第几次' },
+    { key: 'is_offline', header: '是否离线', map: (v) => (v ? '是' : '否') },
+    { key: 'submitted_at', header: '提交时间', date: true },
+  ]
+  wb.SheetNames.push('培训答题记录')
+  wb.Sheets['培训答题记录'] = XLSX.utils.aoa_to_sheet(buildSheetAOA(records, recordCols))
+  totalCount += records.length
+
+  // ── 开工资料：目录 / 资料包 / 文件 ──
+  const [docCatalog] = await pool.query('SELECT id, category, item_name, freq, required_type, sort_order, is_active, created_at FROM t_doc_catalog ORDER BY id')
+  const docCatalogCols = [
+    { key: 'id', header: 'ID' },
+    { key: 'category', header: '类别' },
+    { key: 'item_name', header: '资料项名称' },
+    { key: 'freq', header: '频率' },
+    { key: 'required_type', header: '类型', map: (v) => (v === 'gate' ? '入场必交' : '动态') },
+    { key: 'sort_order', header: '排序' },
+    { key: 'is_active', header: '启用', map: (v) => (v ? '是' : '否') },
+    { key: 'created_at', header: '创建时间', date: true },
+  ]
+  wb.SheetNames.push('开工资料目录')
+  wb.Sheets['开工资料目录'] = XLSX.utils.aoa_to_sheet(buildSheetAOA(docCatalog, docCatalogCols))
+  totalCount += docCatalog.length
+
+  const [docPackage] = await pool.query('SELECT id, unit_name, unit_short, project_name, reporter_name, reporter_phone, status, created_at, updated_at FROM t_doc_package ORDER BY id')
+  const docPackageCols = [
+    { key: 'id', header: 'ID' },
+    { key: 'unit_name', header: '单位名称' },
+    { key: 'unit_short', header: '单位简称' },
+    { key: 'project_name', header: '项目名称' },
+    { key: 'reporter_name', header: '上报人' },
+    { key: 'reporter_phone', header: '上报人电话' },
+    { key: 'status', header: '状态', map: (v) => ({ 0: '待审核', 1: '已通过', 2: '已驳回' }[v] ?? v) },
+    { key: 'created_at', header: '创建时间', date: true },
+    { key: 'updated_at', header: '更新时间', date: true },
+  ]
+  wb.SheetNames.push('开工资料包')
+  wb.Sheets['开工资料包'] = XLSX.utils.aoa_to_sheet(buildSheetAOA(docPackage, docPackageCols))
+  totalCount += docPackage.length
+
+  const [docFile] = await pool.query('SELECT id, package_id, catalog_id, catalog_name, category, original_name, sys_name, cos_key, cos_url, file_ext, file_size, uploader_name, uploader_phone, uploaded_at FROM t_doc_file ORDER BY id')
+  const docFileCols = [
+    { key: 'id', header: 'ID' },
+    { key: 'package_id', header: '资料包ID' },
+    { key: 'catalog_id', header: '资料目录ID' },
+    { key: 'catalog_name', header: '资料项名称' },
+    { key: 'category', header: '类别' },
+    { key: 'original_name', header: '原文件名' },
+    { key: 'sys_name', header: '系统文件名' },
+    { key: 'cos_key', header: 'COS路径' },
+    { key: 'cos_url', header: 'COS链接' },
+    { key: 'file_ext', header: '扩展名' },
+    { key: 'file_size', header: '文件大小(字节)' },
+    { key: 'uploader_name', header: '上传人' },
+    { key: 'uploader_phone', header: '上传人电话' },
+    { key: 'uploaded_at', header: '上传时间', date: true },
+  ]
+  wb.SheetNames.push('开工资料文件')
+  wb.Sheets['开工资料文件'] = XLSX.utils.aoa_to_sheet(buildSheetAOA(docFile, docFileCols))
+  totalCount += docFile.length
+
+  // ── 承包商单位 ──
+  const [units] = await pool.query('SELECT id, unit_name, short_name, supervising_unit, contact_name, contact_phone, safety_officer_name, safety_officer_phone, party_a_division, party_a_contact_name, party_a_contact_phone, is_active, created_at FROM t_contractor_unit ORDER BY id')
+  const unitCols = [
+    { key: 'id', header: 'ID' },
+    { key: 'unit_name', header: '单位名称' },
+    { key: 'short_name', header: '简称' },
+    { key: 'supervising_unit', header: '监管单位' },
+    { key: 'contact_name', header: '联系人' },
+    { key: 'contact_phone', header: '联系电话' },
+    { key: 'safety_officer_name', header: '安全员' },
+    { key: 'safety_officer_phone', header: '安全员电话' },
+    { key: 'party_a_division', header: '甲方部门' },
+    { key: 'party_a_contact_name', header: '甲方联系人' },
+    { key: 'party_a_contact_phone', header: '甲方联系电话' },
+    { key: 'is_active', header: '启用', map: (v) => (v ? '是' : '否') },
+    { key: 'created_at', header: '创建时间', date: true },
+  ]
+  wb.SheetNames.push('承包商单位')
+  wb.Sheets['承包商单位'] = XLSX.utils.aoa_to_sheet(buildSheetAOA(units, unitCols))
+  totalCount += units.length
+
+  const filename = `full_backup_${ts()}.xlsx`
+  const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' })
+
+  return { filename, count: totalCount, buffer }
 }
 
 // ─── exportReport：选字段 / 周报 / 月报导出 ─────────────────────────────────

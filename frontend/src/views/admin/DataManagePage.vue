@@ -17,27 +17,9 @@
           <p class="backup-info">记录数：<strong>{{ lastBackup.count }}</strong> 条</p>
           <p class="backup-info">备份时间：<strong>{{ lastBackup.time }}</strong></p>
         </div>
-        <div v-if="backups.length > 0" class="backup-history">
+        <div class="backup-history">
           <h4>历史备份</h4>
-          <table class="data-table">
-            <thead>
-              <tr>
-                <th>文件名</th>
-                <th>记录数</th>
-                <th>备份时间</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="b in backups" :key="b.id || b.filename">
-                <td class="mono">{{ b.filename }}</td>
-                <td>{{ b.count || '-' }}</td>
-                <td class="mono" style="font-size:12px">{{ fmtDate(b.created_at) }}</td>
-              </tr>
-              <tr v-if="backups.length === 0">
-                <td colspan="3" class="empty-cell">暂无备份记录</td>
-              </tr>
-            </tbody>
-          </table>
+          <p class="backup-hint">点击「立即备份」将直接下载到本地电脑。备份包含全部业务数据，分 Sheet 存放：隐患、培训材料、培训题库、培训人员、培训答题记录、开工资料目录/资料包/文件、承包商单位。</p>
         </div>
       </div>
     </div>
@@ -149,6 +131,9 @@
           <button class="btn btn-outline" @click="handleExport('monthly')" :disabled="exporting">
             导出月报
           </button>
+          <button class="btn btn-outline" @click="handleExportUnclosedWeekly" :disabled="unclosedExporting">
+            {{ unclosedExporting ? '导出中…' : '未整改隐患周报' }}
+          </button>
         </div>
       </div>
     </div>
@@ -208,7 +193,7 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
-import { triggerBackup, exportHazards, listBackups, getInvestigationItems } from '@/api/safety'
+import { triggerBackup, exportHazards, listBackups, getInvestigationItems, getUnclosedWeeklyExcel } from '@/api/safety'
 import { getHazardDict, getImportLogs } from '@/api/hazard'
 
 const RANGE_OPTIONS = [
@@ -251,6 +236,7 @@ const customStart = ref('')
 const customEnd = ref('')
 const selectedFields = ref(FIELD_OPTIONS.map((f) => f.value))
 const exporting = ref(false)
+const unclosedExporting = ref(false)
 
 // 导出筛选条件
 const filterInvestigationItem = ref([])
@@ -369,18 +355,49 @@ function deselectAllFields() {
 async function handleBackup() {
   backingUp.value = true
   try {
-    const res = await triggerBackup()
-    const data = res.data?.data || res.data
-    const now = new Date()
-    lastBackup.value = {
-      filename: data.filename || 'unknown',
-      count: data.count || 0,
-      time: fmtDate(now.toISOString()),
+    const adminToken = localStorage.getItem('tnb_admin_token')
+    if (!adminToken) {
+      showToast('登录已失效，请重新登录后备份', 'error')
+      backingUp.value = false
+      return
     }
-    showToast('备份成功', 'success')
-    loadBackups()
+    // 优先走浏览器原生下载通道（GET + window.open），规避部分手机 webview 对 blob + <a download> 支持不可靠的问题
+    const dlUrl = `/api/data/backup-file?token=${encodeURIComponent(adminToken)}`
+    const win = window.open(dlUrl, '_blank')
+    if (win) {
+      const now = new Date()
+      const p = (n) => String(n).padStart(2, '0')
+      const fileDate = `${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}_${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}`
+      lastBackup.value = {
+        filename: `full_backup_${fileDate}.xlsx`,
+        count: '生成中',
+        time: fmtDate(now.toISOString()),
+      }
+      showToast('备份已生成，正在下载…', 'success')
+      backingUp.value = false
+      return
+    }
+    // 弹窗被拦截时降级：沿用 blob 方式
+    const res = await triggerBackup()
+    const blob = new Blob([res.data], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    })
+    const url = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    const now = new Date()
+    const p = (n) => String(n).padStart(2, '0')
+    const fileDate = `${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}_${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}`
+    link.setAttribute('download', `full_backup_${fileDate}.xlsx`)
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    window.URL.revokeObjectURL(url)
+    const count = res.headers?.['x-backup-count'] || '-'
+    lastBackup.value = { filename: `full_backup_${fileDate}.xlsx`, count, time: fmtDate(now.toISOString()) }
+    showToast(`备份成功，共 ${count} 条记录`, 'success')
   } catch (e) {
-    showToast(e.response?.data?.error || '备份失败', 'error')
+    showToast(e.response?.data?.error || e.message || '备份失败', 'error')
   } finally {
     backingUp.value = false
   }
@@ -439,6 +456,33 @@ async function handleExport(type) {
     showToast(e.response?.data?.error || '导出失败', 'error')
   } finally {
     exporting.value = false
+  }
+}
+
+// ─── 未整改隐患周报导出（模块三：独立于字段/时间筛选，直接下载全量未整改清单）────────
+async function handleExportUnclosedWeekly() {
+  unclosedExporting.value = true
+  try {
+    const res = await getUnclosedWeeklyExcel()
+    const blob = new Blob([res.data], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    })
+    const url = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    const now = new Date()
+    const p = (n) => String(n).padStart(2, '0')
+    const fileDate = `${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}`
+    link.setAttribute('download', `未整改隐患周报_${fileDate}.xlsx`)
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    window.URL.revokeObjectURL(url)
+    showToast('未整改隐患周报导出成功', 'success')
+  } catch (e) {
+    showToast(e.response?.data?.error || '导出失败', 'error')
+  } finally {
+    unclosedExporting.value = false
   }
 }
 

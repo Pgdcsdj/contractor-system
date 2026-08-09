@@ -85,7 +85,7 @@ router.post('/import', adminAuth, upload.single('file'), async (req, res) => {
     if (rows.length < 2) return res.status(400).json({ error: '文件为空' })
     if (!rows[0] || rows[0][0] !== '题型') return res.status(400).json({ error: '模板格式不对，请先下载模板' })
 
-    const { material_id } = req.body
+    const { material_id, exam_single_num, exam_multiple_num, exam_judgment_num } = req.body
     if (!material_id) return res.status(400).json({ error: '请指定目标题库ID' })
 
     // 检查题库是否存在
@@ -159,9 +159,16 @@ router.post('/import', adminAuth, upload.single('file'), async (req, res) => {
     )
     // 导入完成后置为「待审核」(status=2)，由管理员发布闸门控制可见性
     const MATERIAL_STATUS_AFTER = 2
+    // 考试随机抽题配置：导入时由前端指定（0=全抽）
+    const examSingle = Math.max(0, Number(exam_single_num) || 0)
+    const examMultiple = Math.max(0, Number(exam_multiple_num) || 0)
+    const examJudgment = Math.max(0, Number(exam_judgment_num) || 0)
     await pool.execute(
-      'UPDATE t_material SET question_cnt = ?, status = ?, ai_status = 2 WHERE id = ?',
-      [cnt, MATERIAL_STATUS_AFTER, material_id]
+      `UPDATE t_material
+       SET question_cnt = ?, status = ?, ai_status = 2,
+           exam_single_num = ?, exam_multiple_num = ?, exam_judgment_num = ?
+       WHERE id = ?`,
+      [cnt, MATERIAL_STATUS_AFTER, examSingle, examMultiple, examJudgment, material_id]
     )
 
     const fail = failList.length

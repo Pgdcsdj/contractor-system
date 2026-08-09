@@ -37,6 +37,12 @@ const routes = [
     component: () => import('@/views/OfflineRecordsPage.vue'),
     meta: { requiresAuth: true },
   },
+  {
+    path: '/wrong-questions',
+    name: 'WrongQuestions',
+    component: () => import('@/views/WrongQuestionsPage.vue'),
+    meta: { requiresAuth: true },
+  },
   // ── 安全员工作台路由（模块 A）──────────────────────────────────────────
   {
     path: '/safety/login',
@@ -174,6 +180,11 @@ const routes = [
         path: 'contractor-docs',
         name: 'ContractorDocs',
         component: () => import('@/views/admin/ContractorDocManage.vue'),
+      },
+      {
+        path: 'quality/:id',
+        name: 'QualityCheck',
+        component: () => import('@/views/admin/QualityCheckPage.vue'),
       },
     ],
   },

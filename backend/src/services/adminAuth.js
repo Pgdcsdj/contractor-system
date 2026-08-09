@@ -44,8 +44,8 @@ async function adminLogin(username, password) {
   }
 
   const [rows] = await pool.execute(
-    'SELECT id, username, password, role, status FROM t_admin WHERE username = ? LIMIT 1',
-    [username.trim()]
+    'SELECT id, username, real_name, password, role, status FROM t_admin WHERE username = ? OR real_name = ? LIMIT 1',
+    [username.trim(), username.trim()]
   )
 
   if (!rows.length) {

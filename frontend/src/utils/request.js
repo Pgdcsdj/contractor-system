@@ -14,6 +14,7 @@ const ADMIN_API_PREFIXES = [
   '/api/account',   // ← 账号管理（admin/superadmin）
   '/api/data',      // ← 数据备份/导出（admin/superadmin）
   '/api/contractor-docs', // ← 承包商开工资料（admin/superadmin）
+  '/api/quality',   // ← 出题质量量化校验与追踪（admin/superadmin）
 ]
 
 const request = axios.create({
@@ -38,7 +39,19 @@ request.interceptors.request.use((config) => {
   // 上传 / AI 出题类请求放宽超时：大文件 + COS 上传 + 模型响应耗时，
   // 默认 15s 易被 axios 主动掐断，表现为「上传失败」。与 nginx proxy_read_timeout(300s) 对齐，
   // 避免前端先于网关掐断。其他请求保持 15s。
-  if (config.url && /\/upload|preview-ai|confirm-questions/.test(config.url)) {
+  // 质量校验类接口（check/enrich/keypoints/export）内部会多次调用大模型，
+  // 与出题接口同样放宽到 300s，避免 15s 超时导致「校验失败」误报。
+  // 数据备份/导出（/api/data/backup、/api/data/export）需全表扫描 + 拼装多 Sheet，
+  // 实测生成 4.5MB 文件约 9~15s，手机端网络下极易顶破 15s 默认超时，
+  // 故一并放宽到 300s，避免误报「备份失败」。
+  // 答题提交（/api/quiz/.../submit、/api/quiz/wrong-practice/submit）同理：
+  // 大题量（上千题）提交时服务端需逐题评分 + 错题闭环写入，且返回体含整卷 gradedList，
+  // 手机端网络下整体耗时可逼近 15s，超时会被 axios 掐断并误入离线队列（错题不落库）。
+  // 故将答题提交类接口也放宽到 300s，与 nginx proxy_read_timeout 对齐。
+  if (
+    config.url &&
+    /\/upload|preview-ai|confirm-questions|\/api\/quality\/|\/api\/data\/|\/api\/quiz\//.test(config.url)
+  ) {
     config.timeout = 300000
   }
   return config

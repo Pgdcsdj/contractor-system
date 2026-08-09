@@ -1,0 +1,54 @@
+sequenceDiagram
+    participant U as 安全员
+    participant M as HazardImportModal.vue
+    participant W as xlsxCompress.worker
+    participant API as hazardLoop.js
+    participant IS as importService
+    participant EX as xlsxImageExtractor
+    participant HP as hazardPhotoImport
+    participant COS as cosUpload(COS)
+    participant DB as MySQL
+
+    U->>M: 选择 xlsx（含大量截图，8.7MB）
+    M->>W: compressXlsxImages(file)
+    W->>W: fflate.unzipSync → 定位 xl/media/*
+    loop 每张图 / 最多 3 轮降级
+        W->>W: createImageBitmap → OffscreenCanvas → JPEG
+    end
+    W->>W: fflate.zipSync（media=Store, xml=L6）
+    W-->>M: {file: 4.2MB, imageCount:12, overLimit:false}
+    alt overLimit
+        M-->>U: 「压缩后仍 5.4MB，请拆分为多个文件分批导入」并中止
+    end
+
+    M->>API: POST /import (FormData: 压缩后 file, import_type)
+    API->>IS: previewImport(buffer, admin, {importType, originalname})
+    IS->>IS: parseWorkbook → rows[{sheetName,rowNo,data}]
+    IS->>EX: extractImages(buffer, sheetNames)
+    EX-->>IS: images[{sheetName,anchorRow,buffer}]
+    IS->>EX: matchImagesToRows(images, rows)
+    EX-->>IS: {byRowKey, orphans}
+    IS-->>M: {rows, summary, imageStats}   %% 不传 COS
+    M-->>U: 预览表格：每行显示「截图 N 张」+ orphan 告警
+
+    U->>M: 点击「确认导入」
+    M->>API: POST /import/confirm (同一压缩后 file)
+    API->>IS: commitImport(buffer, admin, originalname, {importType})
+    IS->>DB: BEGIN
+    loop 每个 valid 行
+        IS->>DB: INSERT t_hazard → insertId
+        IS->>IS: rowKeyToHazardId.set(`sheet#rowNo`, insertId)
+    end
+    IS->>DB: INSERT t_import_log
+    IS->>DB: COMMIT
+    Note over IS,HP: ★ 事务已提交，以下失败不回退隐患
+    IS->>HP: uploadAndBind(byRowKey, rowKeyToHazardId)
+    par 并发 4
+        HP->>COS: uploadFile(buf, `sheet#rowNo_seq.jpg`, 'hazards/import')
+        COS-->>HP: {url, key}
+    end
+    HP->>DB: INSERT t_hazard_photo (hazard_id, photo_url, 'report') VALUES ?
+    HP->>DB: UPDATE t_hazard SET photo_url=首图 WHERE photo_url=''
+    HP-->>IS: {uploaded:10, failed:0, orphan:2}
+    IS-->>M: {summary, failList, photoResult}
+    M-->>U: 「导入 10 条，关联截图 10 张，2 张未定位已忽略」

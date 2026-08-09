@@ -1,0 +1,71 @@
+classDiagram
+    class xlsxImageCompress {
+        <<frontend util>>
+        +compressXlsxImages(file, onProgress) CompressResult
+        -shouldProcess(file) boolean
+        -compressOne(bytes, profile) Uint8Array
+        -repack(entries) Uint8Array
+    }
+    class CompressResult {
+        +File file
+        +number originalSize
+        +number finalSize
+        +number imageCount
+        +number rounds
+        +boolean overLimit
+        +boolean skipped
+    }
+    class HazardImportModal {
+        <<Vue SFC>>
+        -Ref~File~ fileRef
+        -Ref~CompressResult~ compressInfo
+        -Ref~object~ compressProgress
+        +handleParse() void
+        +handleConfirm() void
+    }
+    class xlsxImageExtractor {
+        <<backend service>>
+        +extractImages(buffer, sheetNames) ExtractedImages
+        +matchImagesToRows(images, rows) MatchResult
+        -parseCellImages(zip) Map
+        -parseDrawings(zip, sheetNames) ExtractedImage[]
+        -resolveSheetPaths(zip) Map
+    }
+    class ExtractedImage {
+        +string sheetName
+        +number anchorRow
+        +string entryName
+        +string ext
+        +number size
+        +Buffer buffer
+        +number seq
+    }
+    class hazardPhotoImport {
+        <<backend service>>
+        +uploadAndBind(byRowKey, rowKeyToHazardId) PhotoResult
+        -limitedMap(list, n, fn) Promise
+    }
+    class importService {
+        <<backend service>>
+        +previewImport(buffer, admin, opts) Preview
+        +commitImport(buffer, admin, filename, opts) Report
+        +parseWorkbook(buffer, originalname, opts) Parsed
+    }
+    class cosUpload {
+        <<existing>>
+        +uploadFile(buffer, filename, subdir) UrlKey
+    }
+    class t_hazard_photo {
+        <<MySQL table>>
+        +int hazard_id
+        +varchar photo_url
+        +varchar photo_type
+    }
+
+    HazardImportModal --> xlsxImageCompress : 上传前调用
+    xlsxImageCompress ..> CompressResult : 产出
+    importService --> xlsxImageExtractor : 仅 video_supervision + .xlsx
+    xlsxImageExtractor ..> ExtractedImage : 产出
+    importService --> hazardPhotoImport : commit 事务提交后
+    hazardPhotoImport --> cosUpload : 并发 4
+    hazardPhotoImport --> t_hazard_photo : 批量 INSERT

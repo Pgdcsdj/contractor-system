@@ -4,7 +4,7 @@
  * 设计要点：
  *   - 公开端（免登录）：承包商按"工程/项目"建包 → 树状目录逐项上传 PDF/JPG。
  *   - 录入人身份以「录入人姓名 + 电话」留痕，用于本人删除/修改自校验（无登录态兜底）。
- *   - 单文件 ≤20MB，支持 PDF / JPG（含 jpeg）/ DOC / DOCX。
+ *   - 单文件 ≤20MB，支持 PDF / JPG（含 jpeg）/ DOC / DOCX / Excel（.xlsx / .xls）。
  *   - 文件名自动按规则生成：[承包商简称]-[资料分类]-[日期].[ext]
  *   - 管理端（admin/superadmin）：目录维护 + 跨单位齐全度查看 + 台账导出。
  *   - 不做到期提醒（用户明确剔除）。
@@ -40,15 +40,15 @@ function assertOwner(req, res) {
   return true
 }
 
-// ─── 上传中间件（内存存储，10MB，PDF/JPG）───────────────────────────────────
-const ALLOWED_EXT = ['pdf', 'jpg', 'jpeg', 'doc', 'docx']
+// ─── 上传中间件（内存存储，20MB，PDF / JPG / Word / Excel）─────────────────
+const ALLOWED_EXT = ['pdf', 'jpg', 'jpeg', 'doc', 'docx', 'xlsx', 'xls']
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 20 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     const ext = file.originalname.split('.').pop().toLowerCase()
     if (ALLOWED_EXT.includes(ext)) cb(null, true)
-    else cb(new Error('仅支持 PDF / JPG / DOC / DOCX 格式'))
+    else cb(new Error('仅支持 PDF / 图片 / Word / Excel 格式'))
   },
 })
 
@@ -68,6 +68,64 @@ function sanitize(s) {
 function ymd(d = new Date()) {
   const p = (n) => String(n).padStart(2, '0')
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}`
+}
+
+// ─── 公共上传/替换逻辑（公开端本人操作与管理端代管共用，行为一致）────────────
+// 上传新文件：查包/资料项 → 生成系统名 → COS 上传 → INSERT → 触包更新时间。
+// 抛错统一带 { status }，调用方按 status 返回对应 HTTP 码。
+async function createFileRecord({ package_id, catalog_id, buffer, originalname, uploader_name, uploader_phone }) {
+  const [pkg] = await pool.execute('SELECT id, unit_short, unit_name FROM t_doc_package WHERE id = ?', [package_id])
+  if (!pkg.length) throw Object.assign(new Error('项目不存在'), { status: 400 })
+  const [cat] = await pool.execute('SELECT id, item_name, category FROM t_doc_catalog WHERE id = ? AND is_active = 1', [catalog_id])
+  if (!cat.length) throw Object.assign(new Error('资料项不存在或已停用'), { status: 400 })
+
+  const ext = originalname.split('.').pop().toLowerCase()
+  const short = sanitize(pkg[0].unit_short || pkg[0].unit_name)
+  const catName = sanitize(cat[0].category)
+  const sysName = `${short}-${catName}-${ymd()}.${ext}`
+
+  let cos
+  try {
+    cos = await uploadFile(buffer, sysName, 'contractor-docs')
+  } catch (ce) {
+    console.error('[contractorDoc] COS 上传失败', ce.message)
+    throw Object.assign(new Error('文件存储失败，请稍后重试'), { status: 500 })
+  }
+
+  const [r] = await pool.execute(
+    `INSERT INTO t_doc_file
+      (package_id, catalog_id, catalog_name, category, original_name, sys_name, cos_key, cos_url, file_ext, file_size, uploader_name, uploader_phone)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [package_id, catalog_id, cat[0].item_name, cat[0].category, originalname, sysName,
+     cos.key, cos.url, ext, buffer.length, uploader_name, uploader_phone]
+  )
+  await pool.execute('UPDATE t_doc_package SET updated_at = NOW() WHERE id = ?', [package_id])
+  return { id: r.insertId, sys_name: sysName, cos_url: cos.url }
+}
+
+// 替换文件：新文件上传 COS → 删除旧 COS 对象 → UPDATE 记录 → 触包更新时间。
+async function replaceFileRecord(docFile, buffer, originalname) {
+  const ext = originalname.split('.').pop().toLowerCase()
+  const [pkg] = await pool.execute('SELECT unit_short, unit_name FROM t_doc_package WHERE id = ?', [docFile.package_id])
+  const [cat] = await pool.execute('SELECT item_name, category FROM t_doc_catalog WHERE id = ?', [docFile.catalog_id])
+  const short = sanitize(pkg[0] ? (pkg[0].unit_short || pkg[0].unit_name) : '')
+  const catName = sanitize(cat[0] ? cat[0].category : '')
+  const sysName = `${short}-${catName}-${ymd()}.${ext}`
+
+  let cos
+  try {
+    cos = await uploadFile(buffer, sysName, 'contractor-docs')
+  } catch (ce) {
+    console.error('[contractorDoc] COS 上传失败', ce.message)
+    throw Object.assign(new Error('文件存储失败，请稍后重试'), { status: 500 })
+  }
+  try { await deleteFile(docFile.cos_key) } catch (e) { console.error('[contractorDoc] 旧文件删除失败(忽略)', e.message) }
+  await pool.execute(
+    `UPDATE t_doc_file SET original_name=?, sys_name=?, cos_key=?, cos_url=?, file_ext=?, file_size=? WHERE id=?`,
+    [originalname, sysName, cos.key, cos.url, ext, buffer.length, docFile.id]
+  )
+  await pool.execute('UPDATE t_doc_package SET updated_at = NOW() WHERE id = ?', [docFile.package_id])
+  return { id: docFile.id, sys_name: sysName, cos_url: cos.url }
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -214,37 +272,15 @@ router.post('/files', upload.single('file'), uploadGuard, async (req, res) => {
     if (!uploader_name || !uploader_phone) {
       return res.status(400).json({ success: false, error: '请填写录入人姓名与电话（用于本人留痕）' })
     }
-    const [pkg] = await pool.execute('SELECT id, unit_short, unit_name FROM t_doc_package WHERE id = ?', [package_id])
-    if (!pkg.length) return res.status(400).json({ success: false, error: '项目不存在' })
-    const [cat] = await pool.execute('SELECT id, item_name, category FROM t_doc_catalog WHERE id = ? AND is_active = 1', [catalog_id])
-    if (!cat.length) return res.status(400).json({ success: false, error: '资料项不存在' })
-
-    const ext = req.file.originalname.split('.').pop().toLowerCase()
-    const short = sanitize(pkg[0].unit_short || pkg[0].unit_name)
-    const catName = sanitize(cat[0].category)
-    const sysName = `${short}-${catName}-${ymd()}.${ext}`
-
-    let cos
-    try {
-      cos = await uploadFile(req.file.buffer, sysName, 'contractor-docs')
-    } catch (ce) {
-      console.error('[contractorDoc] COS 上传失败', ce.message)
-      return res.status(500).json({ success: false, error: '文件存储失败，请稍后重试' })
-    }
-
-    const [r] = await pool.execute(
-      `INSERT INTO t_doc_file
-        (package_id, catalog_id, catalog_name, category, original_name, sys_name, cos_key, cos_url, file_ext, file_size, uploader_name, uploader_phone)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [package_id, catalog_id, cat[0].item_name, cat[0].category, req.file.originalname, sysName,
-       cos.key, cos.url, ext, req.file.size, uploader_name, uploader_phone]
-    )
-    // 触包更新时间
-    await pool.execute('UPDATE t_doc_package SET updated_at = NOW() WHERE id = ?', [package_id])
-    res.json({ success: true, data: { id: r.insertId, sys_name: sysName, cos_url: cos.url } })
+    const data = await createFileRecord({
+      package_id, catalog_id,
+      buffer: req.file.buffer, originalname: req.file.originalname,
+      uploader_name, uploader_phone,
+    })
+    res.json({ success: true, data })
   } catch (e) {
     console.error('[contractorDoc] upload file', e.message)
-    res.status(500).json({ success: false, error: '上传失败' })
+    res.status(e.status || 500).json({ success: false, error: e.message || '上传失败' })
   }
 })
 
@@ -268,27 +304,11 @@ router.put('/files/:id', loadOwnFile, upload.single('file'), uploadGuard, async 
     const ok = assertOwner(req, res)
     if (ok !== true) return
     if (!req.file) return res.status(400).json({ success: false, error: '请选择新文件' })
-    const ext = req.file.originalname.split('.').pop().toLowerCase()
-    const [pkg] = await pool.execute('SELECT unit_short, unit_name FROM t_doc_package WHERE id = ?', [req.docFile.package_id])
-    const [cat] = await pool.execute('SELECT item_name, category FROM t_doc_catalog WHERE id = ?', [req.docFile.catalog_id])
-    const short = sanitize(pkg[0] ? (pkg[0].unit_short || pkg[0].unit_name) : '')
-    const catName = sanitize(cat[0] ? cat[0].category : '')
-    const sysName = `${short}-${catName}-${ymd()}.${ext}`
-    let cos
-    try { cos = await uploadFile(req.file.buffer, sysName, 'contractor-docs') } catch (ce) {
-      console.error('[contractorDoc] COS 上传失败', ce.message)
-      return res.status(500).json({ success: false, error: '文件存储失败，请稍后重试' })
-    }
-    try { await deleteFile(req.docFile.cos_key) } catch (e) { console.error('[contractorDoc] 旧文件删除失败(忽略)', e.message) }
-    await pool.execute(
-      `UPDATE t_doc_file SET original_name=?, sys_name=?, cos_key=?, cos_url=?, file_ext=?, file_size=? WHERE id=?`,
-      [req.file.originalname, sysName, cos.key, cos.url, ext, req.file.size, req.docFile.id]
-    )
-    await pool.execute('UPDATE t_doc_package SET updated_at = NOW() WHERE id = ?', [req.docFile.package_id])
-    res.json({ success: true, data: { id: req.docFile.id, sys_name: sysName, cos_url: cos.url } })
+    const data = await replaceFileRecord(req.docFile, req.file.buffer, req.file.originalname)
+    res.json({ success: true, data })
   } catch (e) {
     console.error('[contractorDoc] replace file', e.message)
-    res.status(500).json({ success: false, error: '替换失败' })
+    res.status(e.status || 500).json({ success: false, error: e.message || '替换失败' })
   }
 })
 
@@ -411,6 +431,87 @@ router.delete('/admin/files/:id', requireRole('admin', 'superadmin'), async (req
     await pool.execute('DELETE FROM t_doc_file WHERE id = ?', [id])
     res.json({ success: true })
   } catch (e) { res.status(500).json({ success: false, error: '删除失败' }) }
+})
+
+// 管理端删除整包 —— 连包带全部文件（COS + DB）一并删除，刷新后不再残留
+router.delete('/admin/packages/:id', requireRole('admin', 'superadmin'), async (req, res) => {
+  try {
+    const id = Number(req.params.id)
+    const [pkgs] = await pool.execute('SELECT id FROM t_doc_package WHERE id = ?', [id])
+    if (!pkgs.length) return res.status(404).json({ success: false, error: '项目不存在' })
+    const [files] = await pool.execute('SELECT id, cos_key FROM t_doc_file WHERE package_id = ?', [id])
+    for (const f of files) {
+      try { await deleteFile(f.cos_key) } catch (e) { console.error('[contractorDoc] 删除包内文件 COS 失败(忽略)', e.message) }
+    }
+    if (files.length) await pool.execute('DELETE FROM t_doc_file WHERE package_id = ?', [id])
+    await pool.execute('DELETE FROM t_doc_package WHERE id = ?', [id])
+    res.json({ success: true, data: { removed_files: files.length } })
+  } catch (e) {
+    console.error('[contractorDoc] delete package', e.message)
+    res.status(500).json({ success: false, error: '删除失败' })
+  }
+})
+
+// 管理端替换文件 —— 不管谁录的，管理员均可替换文件内容（绕过本人校验）
+router.put('/admin/files/:id', requireRole('admin', 'superadmin'), loadOwnFile, upload.single('file'), uploadGuard, async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ success: false, error: '请选择新文件' })
+    const data = await replaceFileRecord(req.docFile, req.file.buffer, req.file.originalname)
+    res.json({ success: true, data })
+  } catch (e) {
+    console.error('[contractorDoc] admin replace file', e.message)
+    res.status(e.status || 500).json({ success: false, error: e.message || '替换失败' })
+  }
+})
+
+// 管理端修改文件信息 —— 换资料项 / 改原文件名（不管谁录的）
+router.patch('/admin/files/:id', requireRole('admin', 'superadmin'), loadOwnFile, async (req, res) => {
+  try {
+    const { catalog_id, original_name } = req.body || {}
+    if (catalog_id === undefined && original_name === undefined) {
+      return res.status(400).json({ success: false, error: '无可更新字段' })
+    }
+    const sets = [], params = []
+    if (original_name !== undefined) {
+      const name = String(original_name || '').trim()
+      if (!name) return res.status(400).json({ success: false, error: '原文件名不能为空' })
+      sets.push('original_name = ?'); params.push(name)
+    }
+    if (catalog_id !== undefined) {
+      const cid = Number(catalog_id)
+      const [cat] = await pool.execute('SELECT id, item_name, category FROM t_doc_catalog WHERE id = ? AND is_active = 1', [cid])
+      if (!cat.length) return res.status(400).json({ success: false, error: '资料项不存在或已停用' })
+      sets.push('catalog_id = ?', 'catalog_name = ?', 'category = ?')
+      params.push(cid, cat[0].item_name, cat[0].category)
+    }
+    params.push(req.docFile.id)
+    await pool.execute(`UPDATE t_doc_file SET ${sets.join(', ')} WHERE id = ?`, params)
+    await pool.execute('UPDATE t_doc_package SET updated_at = NOW() WHERE id = ?', [req.docFile.package_id])
+    res.json({ success: true })
+  } catch (e) {
+    console.error('[contractorDoc] admin patch file', e.message)
+    res.status(500).json({ success: false, error: '更新失败' })
+  }
+})
+
+// 管理端增补文件 —— 帮承包商补录（留痕管理员，不管原来谁录的）
+router.post('/admin/packages/:id/files', requireRole('admin', 'superadmin'), upload.single('file'), uploadGuard, async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ success: false, error: '请选择文件' })
+    const packageId = Number(req.params.id)
+    const catalog_id = Number(req.body.catalog_id)
+    if (!catalog_id) return res.status(400).json({ success: false, error: '请选择资料项' })
+    const adminName = (req.admin && req.admin.username) || '管理员'
+    const data = await createFileRecord({
+      package_id: packageId, catalog_id,
+      buffer: req.file.buffer, originalname: req.file.originalname,
+      uploader_name: adminName, uploader_phone: adminName,
+    })
+    res.json({ success: true, data })
+  } catch (e) {
+    console.error('[contractorDoc] admin add file', e.message)
+    res.status(e.status || 500).json({ success: false, error: e.message || '上传失败' })
+  }
 })
 
 // 台账导出 Excel（汇总表 + 明细表）

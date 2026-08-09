@@ -42,6 +42,8 @@ export const useQuizStore = defineStore('quiz', () => {
   const currentQuiz = ref(null)
   const answers = ref({})
   const timeLeft = ref(0)
+  // 错题练习提交后的结果（供 ResultPage 内联展示，不落 t_record）
+  const lastWrongResult = ref(null)
 
   // ── 加载待答列表（已下发 mode / time_limit / pass_score / attempt_limit / completed 等）──
   async function fetchQuizList() {
@@ -83,14 +85,22 @@ export const useQuizStore = defineStore('quiz', () => {
     }
   }
 
-  // ── 获取题目（支持 mode：study/practice/exam）──
-  async function fetchQuiz(trainingId, mode) {
+  // ── 获取题目（支持 mode：study/practice/exam；trainingId='wrong' 为错题练习）──
+  async function fetchQuiz(trainingId, mode, extra = {}) {
+    const isWrong = trainingId === 'wrong'
     const params = {}
     if (mode && Object.values(QUIZ_MODES).includes(mode)) {
       params.mode = mode
     }
+    if (isWrong) {
+      // 错题练习：透传筛选条件（type/materialId/minWrong）
+      for (const k of ['type', 'materialId', 'minWrong']) {
+        if (extra[k] !== undefined && extra[k] !== '' && extra[k] !== null) params[k] = extra[k]
+      }
+    }
     try {
-      const res = await request.get(`/api/quiz/${trainingId}`, { params })
+      const url = isWrong ? '/api/quiz/wrong-practice' : `/api/quiz/${trainingId}`
+      const res = await request.get(url, { params })
       const d = res.data.data
       const quizData = {
         materialId:   d.materialId ?? Number(trainingId),
@@ -126,6 +136,11 @@ export const useQuizStore = defineStore('quiz', () => {
     answers.value = {}
   }
 
+  // 暂存错题练习提交结果（供 ResultPage 内联展示）
+  function setLastWrongResult(d) {
+    lastWrongResult.value = d
+  }
+
   // ── 提交答题（支持 mode / attemptNo / durationSec）──
   async function submitQuiz(trainingId, opts = {}) {
     const {
@@ -145,16 +160,25 @@ export const useQuizStore = defineStore('quiz', () => {
         answer: serializeAnswer(ans),
       })),
     }
-    payload.answerHash = hashAnswers(answers.value, submitTime)
-
     try {
-      const res = await request.post(`/api/quiz/${trainingId}/submit`, payload)
+      const isWrong = trainingId === 'wrong'
+      const url = isWrong ? '/api/quiz/wrong-practice/submit' : `/api/quiz/${trainingId}/submit`
+      // 签名移入 try：即使签名/序列化异常也要走明确报错，不能静默"离线假成功"
+      payload.answerHash = hashAnswers(answers.value, submitTime)
+      const res = await request.post(url, payload)
       // 提交成功后清空本地答案
       answers.value = {}
       currentQuiz.value = null
+      if (isWrong) setLastWrongResult(res.data?.data || null)
       return { ok: true, data: res.data }
     } catch (err) {
-      // 网络失败 -> 写入离线待上传队列（保持既有离线逻辑）
+      // 服务器已响应（HTTP 错误）→ 明确报错，不假装离线成功
+      if (err && err.response) {
+        console.error('[提交被服务器拒绝]', err.response?.status, err.response?.data)
+        return { ok: false, offline: false, error: err.response?.data?.error || `提交失败（服务器 ${err.response.status}）` }
+      }
+      // 网络层失败（超时/断网/无响应）→ 写入离线待上传队列（保留既有离线逻辑），
+      // 但返回 offline 标记，由页面明确提示"未上传成功"，不再静默跳转假装成功
       try {
         const db = await getOfflineDb()
         await db.addPendingRecord({
@@ -166,7 +190,7 @@ export const useQuizStore = defineStore('quiz', () => {
       } catch (e) {
         console.warn('[离线存储失败]', e)
       }
-      return { ok: false, offline: true }
+      return { ok: false, offline: true, error: err?.message || '网络异常' }
     }
   }
 
@@ -180,7 +204,7 @@ export const useQuizStore = defineStore('quiz', () => {
   }
 
   return {
-    quizzes, currentQuiz, answers, timeLeft,
-    fetchQuizList, fetchQuiz, setAnswer, resetAnswers, submitQuiz,
+    quizzes, currentQuiz, answers, timeLeft, lastWrongResult,
+    fetchQuizList, fetchQuiz, setAnswer, resetAnswers, submitQuiz, setLastWrongResult,
   }
 })

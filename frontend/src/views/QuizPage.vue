@@ -26,8 +26,8 @@
       <span>加载题目中…</span>
     </div>
 
-    <!-- 加载失败 -->
-    <div v-else-if="errorMsg" class="error-state">
+    <!-- 加载失败（仅题库未加载成功时整页报错；提交失败仍停留答题页由 submit-error 提示） -->
+    <div v-else-if="errorMsg && !quiz" class="error-state">
       <div class="icon">⚠️</div>
       <p>{{ errorMsg }}</p>
       <button class="btn btn-primary" @click="$router.go(0)">刷新重试</button>
@@ -35,9 +35,15 @@
 
     <!-- 答题区 -->
     <div v-else-if="quiz" class="quiz-body">
+      <!-- 提交失败/网络异常提示条（提交未成功时明确告知，避免"假成功"） -->
+      <p v-if="errorMsg" class="submit-error">{{ errorMsg }}</p>
+      <!-- 学习/练习模式：本次答错题数提醒（让"点交卷入库"不可能被错过） -->
+      <p v-if="isRevealMode && wrongAnsweredCount > 0" class="wrong-hint">
+        ⚠️ 本次练习已答错 <b>{{ wrongAnsweredCount }}</b> 题，记得点右下角「交卷」录入错题库
+      </p>
       <!-- 题目卡片 -->
-      <div class="question-card">
-        <div class="question-index">
+      <div class="question-card" style="background:#fff; color:#0f172a;">
+        <div class="question-index" style="color:#475569;">
           第 {{ currentIndex + 1 }} 题 · {{ questionTypeLabel }}
           <span class="badge badge-warning" style="margin-left:6px">{{ currentQuestion.score }}分</span>
         </div>
@@ -52,7 +58,8 @@
           <button class="image-modal-close" @click="showImageModal = false">✕</button>
         </div>
 
-        <div class="question-text">{{ currentQuestion.question }}</div>
+        <div class="question-text" v-if="currentQuestion.question" style="color:#0f172a; background:#fff;">{{ currentQuestion.question }}</div>
+        <div v-else class="question-empty">⚠️ 题目内容为空（id={{ currentQuestion.id }}）</div>
 
         <!-- 多选题已选数量提示 -->
         <div v-if="isMultiple" class="multi-hint">
@@ -61,6 +68,7 @@
 
         <!-- 单选题 -->
         <div v-if="currentQuestion.type === 'single' || currentQuestion.type === 'choice'" class="options">
+          <div v-if="!hasOptions" class="question-empty">⚠️ 该单选题暂无选项</div>
           <div
             v-for="(opt, idx) in currentQuestion.options"
             :key="idx"
@@ -74,6 +82,7 @@
 
         <!-- 多选题 -->
         <div v-else-if="currentQuestion.type === 'multiple' || currentQuestion.type === 'multi'" class="options">
+          <div v-if="!hasOptions" class="question-empty">⚠️ 该多选题暂无选项</div>
           <div
             v-for="(opt, idx) in currentQuestion.options"
             :key="idx"
@@ -114,6 +123,11 @@
           </p>
         </div>
 
+        <!-- 题型未识别兜底 -->
+        <div v-else class="question-empty">
+          ⚠️ 题型数据异常：{{ currentQuestion.type || '空' }}（id={{ currentQuestion.id }}）
+        </div>
+
         <!-- 答案解析（学习/练习模式，作答后展示） -->
         <div v-if="revealActive" class="reveal-block">
           <div class="reveal-answer">
@@ -135,6 +149,7 @@
 
         <button v-if="currentIndex < questions.length - 1" class="btn btn-primary" @click="nextQuestion">
           下一题 →
+          <span v-if="isKeyShortcutMode" class="kbd-hint">（空格键）</span>
         </button>
         <button
           v-else-if="mode === QUIZ_MODES.STUDY"
@@ -161,12 +176,24 @@
           :key="q.id"
           :class="['q-dot', {
             active: idx === currentIndex,
-            answered: !!quizStore.answers[q.id],
+            answered: !!quizStore.answers[q.id] && !isRight(q) && !isWrong(q),
+            right: isRight(q),
+            wrong: isWrong(q),
             current: idx === currentIndex
           }]"
           @click="currentIndex = idx"
         ></div>
       </div>
+
+      <!-- 常驻交卷按钮：任意时刻可提交，避免大题量需翻到最后一题才能交卷 -->
+      <button
+        v-if="quiz && !submitting"
+        class="btn float-submit"
+        :class="mode === QUIZ_MODES.STUDY ? 'btn-success' : 'btn-primary'"
+        @click="mode === QUIZ_MODES.STUDY ? handleFinishStudy() : handleSubmit()"
+      >
+        {{ mode === QUIZ_MODES.STUDY ? '完成学习' : '交卷' }}
+      </button>
     </div>
   </div>
 </template>
@@ -195,28 +222,28 @@ const resumed = ref(false)
 
 // 当前有效模式（请求/回退得到的 study|practice|exam）
 const mode = ref(QUIZ_MODES.EXAM)
-// 已用时（秒），所有模式统一累加；限时模式据此推导倒计时
+// 已用时（秒），所有模式统一累加；仅考试模式据此推导倒计时
 const elapsedSec = ref(0)
-const practiceExpired = ref(false)
 // 提交次数（练习可反复提交，用于后端记录 attemptNo）
 const attemptNo = ref(1)
 let timerInterval = null
 
-const trainingId = parseInt(route.params.id)
+const trainingId = route.params.id  // 数字字符串 或 'wrong'（错题练习）
 
 // ── 模式相关计算 ──────────────────────────────────────────────
 const isRevealMode = computed(() => isRevealing(mode.value))
 
-// 顶部计时文案
+// 顶部计时文案：学习/练习仅累计用时（永不过期）；仅考试显示倒计时
 const timerText = computed(() => {
-  if (mode.value === QUIZ_MODES.STUDY) return '用时 ' + formatTime(elapsedSec.value)
-  if (practiceExpired.value) return '已超时'
+  if (mode.value === QUIZ_MODES.STUDY || mode.value === QUIZ_MODES.PRACTICE) {
+    return '用时 ' + formatTime(elapsedSec.value)
+  }
   const limit = (quiz.value?.timeLimit || 0) * 60
   return formatTime(Math.max(0, limit - elapsedSec.value))
 })
 const timerWarning = computed(() => {
-  if (mode.value === QUIZ_MODES.STUDY) return false
-  if (practiceExpired.value) return true
+  // 学习/练习永不过期、无警告；仅考试最后 60 秒变红提醒
+  if (mode.value !== QUIZ_MODES.EXAM) return false
   const limit = (quiz.value?.timeLimit || 0) * 60
   return limit - elapsedSec.value < 60
 })
@@ -240,8 +267,47 @@ const hasAnsweredCurrent = computed(() => {
   return ans != null && ans !== ''
 })
 
+// 某题是否答错（仅学习/练习模式有即时反馈；比对用户答案与正确答案）
+// 用于底部进度圆点显示红色（答错的题一目了然，便于重点复习）
+function isWrong(q) {
+  if (!isRevealMode.value) return false
+  const ans = quizStore.answers[q.id]
+  if (ans == null || ans === '') return false
+  const correct = q.correctAnswer
+  if (correct == null) return false
+  const norm = (s) => String(s ?? '').toUpperCase().replace(/\s/g, '')
+  if (q.type === 'multiple') {
+    const a = norm(ans).split('').sort().join('')
+    const b = norm(correct).split('').sort().join('')
+    return a.length > 0 && a !== b
+  }
+  return norm(ans) !== norm(correct)
+}
+
+// 某题是否答对（仅学习/练习模式有即时反馈；用于底部进度圆点显示绿色）
+function isRight(q) {
+  if (!isRevealMode.value) return false
+  const ans = quizStore.answers[q.id]
+  if (ans == null || ans === '') return false
+  const correct = q.correctAnswer
+  if (correct == null) return false
+  const norm = (s) => String(s ?? '').toUpperCase().replace(/\s/g, '')
+  if (q.type === 'multiple') {
+    const a = norm(ans).split('').sort().join('')
+    const b = norm(correct).split('').sort().join('')
+    return a.length > 0 && a === b
+  }
+  return norm(ans) === norm(correct)
+}
+
 // 学习/练习模式下，作答后显示答案与解析
 const revealActive = computed(() => isRevealMode.value && hasAnsweredCurrent.value)
+
+// 本次练习已答错的题数（用于提醒"点交卷入库"，仅学习/练习模式，避免考试模式剧透）
+const wrongAnsweredCount = computed(() => {
+  if (!isRevealMode.value) return 0
+  return questions.value.filter(q => quizStore.answers[q.id] && isWrong(q)).length
+})
 
 // ── 选项状态辅助 ──────────────────────────────────────────────
 function letterOf(key) {
@@ -313,6 +379,14 @@ const isMultiple = computed(() => {
   return t === 'multiple' || t === 'multi'
 })
 
+// 当前客观题是否有非空选项（兼容对象/数组）
+const hasOptions = computed(() => {
+  const opts = currentQuestion.value?.options
+  if (Array.isArray(opts)) return opts.length > 0
+  if (opts && typeof opts === 'object') return Object.keys(opts).length > 0
+  return false
+})
+
 // 多选题已选数量（用于「已选 X 项」提示）
 const multiSelectedCount = computed(() => {
   const q = currentQuestion.value
@@ -356,6 +430,24 @@ function nextQuestion() {
   if (currentIndex.value < questions.value.length - 1) currentIndex.value++
 }
 
+// ── 空格键快捷跳题（仅学习/练习模式） ────────────────────────────
+const isKeyShortcutMode = computed(() => mode.value === QUIZ_MODES.STUDY || mode.value === QUIZ_MODES.PRACTICE)
+
+function onGlobalKeydown(e) {
+  if (e.code !== 'Space' && e.key !== ' ') return
+  const t = e.target
+  // 输入框/文本域/可编辑区域聚焦时不触发（简答题输入空格不应跳题）
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return
+  // 聚焦在按钮上时交给浏览器原生行为（避免空格被双重触发而连跳两题）
+  if (t && t.tagName === 'BUTTON') return
+  // 图片放大弹层打开时不触发
+  if (showImageModal.value) return
+  if (!isKeyShortcutMode.value) return
+  if (currentIndex.value >= questions.value.length - 1) return
+  e.preventDefault()
+  nextQuestion()
+}
+
 // ── 计时器 ────────────────────────────────────────────────────
 function startTimer() {
   if (timerInterval) clearInterval(timerInterval)
@@ -363,16 +455,13 @@ function startTimer() {
     elapsedSec.value++
     // 每 5 秒持久化一次，降低 localStorage 写入频率
     if (elapsedSec.value % 5 === 0) persistProgress()
-    if (mode.value !== QUIZ_MODES.STUDY) {
+    // 仅考试模式限时：倒计时归零自动交卷；学习/练习只累计用时，永不过期
+    if (mode.value === QUIZ_MODES.EXAM) {
       const limit = (quiz.value?.timeLimit || 0) * 60
       if (limit > 0 && elapsedSec.value >= limit) {
         clearInterval(timerInterval)
         timerInterval = null
-        if (mode.value === QUIZ_MODES.EXAM) {
-          handleSubmit() // 考试倒计时归零自动交卷
-        } else {
-          practiceExpired.value = true // 练习超时仅提示，不自动交卷
-        }
+        handleSubmit() // 考试倒计时归零自动交卷
       }
     }
   }, 1000)
@@ -402,6 +491,7 @@ watch(() => quizStore.answers, () => persistProgress(), { deep: true })
 async function handleSubmit() {
   if (submitting.value) return
   submitting.value = true
+  errorMsg.value = ''
   if (timerInterval) { clearInterval(timerInterval); timerInterval = null }
 
   const result = await quizStore.submitQuiz(trainingId, {
@@ -412,12 +502,17 @@ async function handleSubmit() {
 
   submitting.value = false
 
-  if (result.ok || result.offline) {
+  if (result.ok) {
     clearProgress(trainingId, mode.value) // 提交成功清除断点
     attemptNo.value += 1
-    router.replace(result.offline ? `/result/${trainingId}?offline=1` : `/result/${trainingId}`)
+    router.replace(`/result/${trainingId}`)
+  } else if (result.offline) {
+    // 网络失败：保留断点、恢复计时、明确提示，不静默跳转（避免"假成功"导致错题不记录）
+    startTimer()
+    errorMsg.value = '⚠️ 提交失败（网络异常），答案未上传服务器，错题不会被记录。请检查网络后点击「交卷」重试。'
   } else {
-    errorMsg.value = '提交失败，请检查网络后重试'
+    startTimer()
+    errorMsg.value = result.error || '提交失败，请检查网络后重试'
   }
 }
 
@@ -425,16 +520,25 @@ async function handleSubmit() {
 async function handleFinishStudy() {
   if (submitting.value) return
   submitting.value = true
+  errorMsg.value = ''
   if (timerInterval) { clearInterval(timerInterval); timerInterval = null }
 
-  await quizStore.submitQuiz(trainingId, {
+  const result = await quizStore.submitQuiz(trainingId, {
     mode: mode.value,
     attemptNo: attemptNo.value,
     durationSec: elapsedSec.value,
   })
-  clearProgress(trainingId, mode.value)
   submitting.value = false
-  router.replace('/quiz')
+
+  if (result.ok) {
+    clearProgress(trainingId, mode.value)
+    router.replace('/quiz')
+  } else {
+    startTimer()
+    errorMsg.value = result.offline
+      ? '⚠️ 提交失败（网络异常），学习进度已保留。请检查网络后点击「完成学习」重试。'
+      : (result.error || '提交失败，请检查网络后重试')
+  }
 }
 
 // 返回/退出：保存进度并提示可继续作答
@@ -454,7 +558,12 @@ onMounted(async () => {
     // 运行模式严格取自路由 ?mode=，非法/缺失值由 normalizeMode 兜底为 exam；
     // 不依赖素材默认 mode（解决"默认模式"与"运行时模式"被混淆的根因）。
     mode.value = normalizeMode(route.query.mode, QUIZ_MODES.EXAM)
-    const data = await quizStore.fetchQuiz(trainingId, mode.value)
+    // 错题练习模式：透传筛选条件（来自错题库页「练习筛选结果」）
+    const extra = {}
+    if (route.query.type) extra.type = route.query.type
+    if (route.query.materialId) extra.materialId = route.query.materialId
+    if (route.query.minWrong) extra.minWrong = route.query.minWrong
+    const data = await quizStore.fetchQuiz(trainingId, mode.value, extra)
     clearTimeout(timer)
 
     if (data && data.questions && data.questions.length) {
@@ -485,10 +594,12 @@ onMounted(async () => {
     clearTimeout(timer)
     loading.value = false
   }
+  window.addEventListener('keydown', onGlobalKeydown)
 })
 
 onUnmounted(() => {
   if (timerInterval) clearInterval(timerInterval)
+  window.removeEventListener('keydown', onGlobalKeydown)
 })
 </script>
 
@@ -567,18 +678,109 @@ onUnmounted(() => {
   text-align: center;
 }
 
-.quiz-body { padding-bottom: 120px; }
+.quiz-body { padding: 16px 12px 180px; }
+
+.question-card {
+  background: var(--c-surface, #fff);
+  border: 1px solid var(--c-border, #e6eaf0);
+  border-radius: var(--r-lg, 16px);
+  padding: 18px 16px;
+  min-height: 200px;
+  box-shadow: var(--shadow-sm, 0 1px 2px rgba(15,23,42,.06));
+}
+
+.question-index {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--c-text-2, #475569);
+  margin-bottom: 14px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.question-text {
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 1.7;
+  color: var(--c-text, #0f172a);
+  margin: 12px 0 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.question-empty {
+  margin-top: 14px;
+  padding: 16px;
+  border-radius: var(--r, 12px);
+  background: var(--c-warning-bg, #fbf1e0);
+  color: var(--c-warning, #c2740b);
+  font-size: 14px;
+  line-height: 1.6;
+  text-align: center;
+}
 
 .nav-btns {
   display: flex;
   gap: 10px;
   padding: 16px 12px;
   position: fixed;
-  bottom: 60px;
+  bottom: 110px;
   left: 0; right: 0;
   background: var(--bg);
+  z-index: 11;
 }
 .nav-btns .btn { flex: 1; }
+
+/* 空格键快捷提示（学习/练习模式） */
+.kbd-hint {
+  font-size: 11px;
+  font-weight: 400;
+  opacity: .85;
+  margin-left: 4px;
+}
+
+/* 提交失败提示条 */
+.submit-error {
+  margin: 10px 12px 0;
+  padding: 10px 14px;
+  background: var(--c-danger-bg, #FCE9E9);
+  color: var(--c-danger, #DC2626);
+  border: 1px solid rgba(220,38,38,.25);
+  border-radius: 10px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+/* 本次答错题数提醒（学习/练习模式） */
+.wrong-hint {
+  margin: 10px 12px 0;
+  padding: 10px 14px;
+  background: #FFF8E1;
+  color: #B7791F;
+  border: 1px solid #F6E05E;
+  border-radius: 10px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.wrong-hint b {
+  color: #C05621;
+  font-size: 15px;
+  margin: 0 2px;
+}
+
+/* 常驻交卷按钮（浮动，避免大题量需翻到最后一题才能交卷） */
+.float-submit {
+  position: fixed;
+  right: 14px;
+  bottom: 200px;
+  z-index: 90;
+  padding: 10px 22px;
+  border-radius: 999px;
+  font-weight: 600;
+  box-shadow: 0 6px 20px rgba(0,0,0,.22);
+}
 
 .q-dots {
   position: fixed;
@@ -589,7 +791,11 @@ onUnmounted(() => {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
+  justify-content: center;
   border-top: 1px solid var(--border);
+  max-height: 110px;
+  overflow-y: auto;
+  z-index: 10;
 }
 .q-dot {
   width: 28px; height: 28px;
@@ -604,6 +810,8 @@ onUnmounted(() => {
 .q-dot.active { border: 2px solid var(--primary); }
 .q-dot.answered { background: var(--primary); color: #fff; }
 .q-dot.current { background: var(--primary); color: #fff; }
+.q-dot.wrong { background: #dc2626; color: #fff; border-color: #dc2626; }
+.q-dot.right { background: #16a34a; color: #fff; border-color: #16a34a; }
 
 /* ── 选项通用基样式（整行可点、移动端防误触） ── */
 .options { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; }

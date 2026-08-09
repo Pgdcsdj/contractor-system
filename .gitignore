@@ -40,3 +40,8 @@ _*.js
 # Backup directories
 frontend/dist.bak*
 *.bak
+
+# Temp / probe / debug artifacts (not part of shippable version)
+backend/probe_*
+backend/src/__vb_run*.sh
+frontend/inject_v.js

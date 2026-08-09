@@ -62,14 +62,16 @@
             </div>
           </div>
           <div v-if="publishForm.target_type === 'specific'" class="form-group">
-            <label>搜索并选择人员</label>
-            <input v-model="userSearch" class="form-input" placeholder="输入姓名搜索…" @input="searchUsers" />
-            <div v-if="searchResults.length" class="user-select-list">
-              <label v-for="u in searchResults" :key="u.id" class="checkbox-label">
+            <label>选择人员（已加载 {{ allUsers.length }} 人，可输入姓名筛选）</label>
+            <input v-model="userSearch" class="form-input" placeholder="输入姓名筛选…" @input="filterUsers" />
+            <div v-if="filteredUsers.length" class="user-select-list">
+              <label v-for="u in filteredUsers" :key="u.id" class="checkbox-label">
                 <input type="checkbox" :value="u.id" v-model="publishForm.target_value" />
                 {{ u.name }} ({{ u.unit || '-' }})
               </label>
             </div>
+            <div v-else-if="!loadingUsers" class="user-empty">未找到匹配人员</div>
+            <div v-if="loadingUsers" class="user-empty">加载人员中…</div>
           </div>
           <div class="modal-actions">
             <button class="btn btn-outline" @click="showPublish = false">取消</button>
@@ -151,25 +153,48 @@ const publishing = ref(false)
 const categories = ref([])
 const allUnits = ref([])
 const userSearch = ref('')
-const searchResults = ref([])
+const allUsers = ref([])
+const loadingUsers = ref(false)
 const searchTimer = ref(null)
 const publishForm = ref({ category_id: null, target_type: 'all', target_value: [] })
 
+const filteredUsers = computed(() => {
+  const kw = userSearch.value.trim().toLowerCase()
+  if (!kw) return allUsers.value
+  return allUsers.value.filter(u =>
+    (u.name || '').toLowerCase().includes(kw) ||
+    (u.unit || '').toLowerCase().includes(kw) ||
+    (u.id_card || '').toLowerCase().includes(kw)
+  )
+})
+
 function onTargetTypeChange() {
   publishForm.value.target_value = []
-  searchResults.value = []
   userSearch.value = ''
+  if (publishForm.value.target_type === 'specific') {
+    loadAllUsers()
+  }
 }
 
-function searchUsers() {
+function filterUsers() {
   clearTimeout(searchTimer.value)
-  if (!userSearch.value.trim()) { searchResults.value = []; return }
-  searchTimer.value = setTimeout(async () => {
-    try {
-      const res = await request.get('/api/admin/users', { params: { keyword: userSearch.value, pageSize: 50 } })
-      searchResults.value = res.data?.data?.list || []
-    } catch { searchResults.value = [] }
-  }, 300)
+  searchTimer.value = setTimeout(() => {
+    // 本地过滤，无需后端请求
+  }, 150)
+}
+
+async function loadAllUsers() {
+  if (allUsers.value.length > 0) return
+  loadingUsers.value = true
+  try {
+    const res = await request.get('/api/admin/users', { params: { pageSize: 100 } })
+    allUsers.value = res.data?.data?.list || []
+  } catch (e) {
+    console.error('[loadAllUsers]', e)
+    allUsers.value = []
+  } finally {
+    loadingUsers.value = false
+  }
 }
 
 async function fetchCategories() {
@@ -248,6 +273,7 @@ onMounted(() => { fetchQuestions(); fetchCategories() })
 .multi-select { max-height: 160px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; padding: 8px; }
 .checkbox-label { display: flex; align-items: center; gap: 6px; padding: 4px 0; font-size: 13px; cursor: pointer; }
 .user-select-list { max-height: 200px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; padding: 8px; margin-top: 4px; }
+.user-empty { margin-top: 6px; font-size: 13px; color: var(--text-secondary); text-align: center; padding: 8px; }
 .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; }
 .info-card h2 { font-size: 18px; margin-bottom: 8px; }
 .info-row { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; font-size: 14px; color: var(--text-secondary); }

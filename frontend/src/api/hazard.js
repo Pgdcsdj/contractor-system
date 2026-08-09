@@ -15,6 +15,11 @@ export function getContractorUnits(params = {}) {
   return request.get('/api/contractor-units', { params: { pageSize: 200, ...params } })
 }
 
+/** 获取责任单位（unit_name）去重列表，用于闭环页「全部单位」下拉筛选 */
+export function getHazardsUnitNames(params = {}) {
+  return request.get('/api/hazards/unit-names', { params })
+}
+
 /** 上传单张隐患照片，返回 { url, key, photoId } */
 export function uploadHazardPhoto(file, photoType = 'report') {
   const form = new FormData()
@@ -99,9 +104,11 @@ export function deleteHazardDict(id, type) {
  *  走管理员 / 安全员 token：安全员登录后 token 同样存于 tnb_admin_token，
  *  此处显式注入，确保工作台调用 /api/hazards/import 携带正确身份（录入人归属生效）。
  *  返回预览结果（不落库），结构见设计 §D.1。 */
-export function importHazards(file) {
+export function importHazards(file, importType = '') {
   const fd = new FormData()
   fd.append('file', file)
+  // 导入类型：'' = 普通台账导入；'video_supervision' = 视频督查导入
+  if (importType) fd.append('import_type', importType)
   const token =
     localStorage.getItem('tnb_admin_token') || localStorage.getItem('tnb_token') || ''
   return request.post('/api/hazards/import', fd, {
@@ -114,9 +121,11 @@ export function importHazards(file) {
 
 /** 确认导入（事务批量落库），重新上传同一文件，后端重新解析保证一致。
  *  成功返回 §D.2 结构；事务失败返回 { success:false, error, data:{ rollback:true, failAtRow } }。 */
-export function confirmImportHazards(file) {
+export function confirmImportHazards(file, importType = '') {
   const fd = new FormData()
   fd.append('file', file)
+  // 与预览保持一致的导入类型，保证两次解析结果相同
+  if (importType) fd.append('import_type', importType)
   const token =
     localStorage.getItem('tnb_admin_token') || localStorage.getItem('tnb_token') || ''
   return request.post('/api/hazards/import/confirm', fd, {

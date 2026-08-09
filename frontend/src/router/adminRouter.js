@@ -62,6 +62,11 @@ const routes = [
         name: 'QuizImport',
         component: () => import('@/views/admin/QuizImportPage.vue'),
       },
+      {
+        path: 'quality/:id',
+        name: 'QualityCheck',
+        component: () => import('@/views/admin/QualityCheckPage.vue'),
+      },
     ],
   },
 ]

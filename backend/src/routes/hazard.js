@@ -1,8 +1,9 @@
 /**
- * 隐患模块路由（Sprint 1 / S1-4：照片上传）
+ * 隐患模块路由（Sprint 1 / S1-4：照片上传；模块三：未整改隐患周报下载）
  *
- * POST /api/hazard/photo/upload      上传隐患照片 → 存 COS → 写 t_hazard_photo
- * GET  /api/hazard/photo/:hazardId   某隐患的全部照片列表
+ * POST /api/hazard/photo/upload               上传隐患照片 → 存 COS → 写 t_hazard_photo
+ * GET  /api/hazard/photo/:hazardId            某隐患的全部照片列表
+ * GET  /api/hazard/unclosed-weekly-excel      未整改隐患周报 Excel 下载（admin/superadmin）
  *
  * 说明：
  *   - 照片存腾讯云 COS（CVM 只存 URL），与 t_material_image.url 同机制
@@ -16,6 +17,8 @@ const multer  = require('multer')
 const { pool } = require('../db/db')
 const { uploadFile } = require('../services/cosUpload')
 const { verifyAdminToken } = require('../services/adminAuth')
+const { requireRole } = require('../services/permission')
+const { buildUnclosedExcel } = require('../services/unclosedHazardReport')
 
 const router = express.Router()
 
@@ -99,6 +102,29 @@ router.get('/photo/:hazardId', adminAuth, async (req, res) => {
     [req.params.hazardId]
   )
   res.json({ success: true, data: rows })
+})
+
+// ─── GET /api/hazard/unclosed-weekly-excel —— 未整改隐患周报下载（admin/superadmin）──
+// 模块三 / 需求 3：管理后台「数据管理页」导出「未整改隐患清单」xlsx，直接返回附件。
+// 与定时周报共用 buildUnclosedExcel（同一生成逻辑），仅在后台按需触发。
+router.get('/unclosed-weekly-excel', requireRole('admin', 'superadmin'), async (req, res) => {
+  try {
+    const { buffer } = await buildUnclosedExcel(pool)
+    const now = new Date()
+    const p2 = (n) => String(n).padStart(2, '0')
+    const fileDate = `${now.getFullYear()}${p2(now.getMonth() + 1)}${p2(now.getDate())}`
+    const filename = `未整改隐患周报_${fileDate}.xlsx`
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    // RFC 5987：filename 用 ASCII 兜底，filename* 用 UTF-8 百分号编码携带中文名
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${encodeURIComponent(filename)}"; filename*=UTF-8''${encodeURIComponent(filename)}`
+    )
+    res.send(buffer)
+  } catch (err) {
+    console.error('[hazard unclosed weekly excel]', err && err.message ? err.message : err)
+    res.status(500).json({ success: false, error: '未整改隐患周报生成失败：' + (err && err.message ? err.message : '未知错误') })
+  }
 })
 
 module.exports = router

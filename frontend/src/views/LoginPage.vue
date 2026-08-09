@@ -80,6 +80,13 @@ const errorMsg = ref('')
 const pendingCount = ref(0)
 
 onMounted(async () => {
+  // 首页表单跳转带参：?name=&last4= → 预填并自动登录，直达答题
+  if (route.query.name && route.query.last4) {
+    name.value = String(route.query.name)
+    idCard.value = String(route.query.last4)
+    await handleManualLogin()
+    return
+  }
   if (auth.isLoggedIn) {
     router.replace(route.query.redirect || '/quiz')
     return
