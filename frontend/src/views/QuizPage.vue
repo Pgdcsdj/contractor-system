@@ -39,7 +39,7 @@
       <p v-if="errorMsg" class="submit-error">{{ errorMsg }}</p>
       <!-- 学习/练习模式：本次答错题数提醒（让"点交卷入库"不可能被错过） -->
       <p v-if="isRevealMode && wrongAnsweredCount > 0" class="wrong-hint">
-        ⚠️ 本次练习已答错 <b>{{ wrongAnsweredCount }}</b> 题，记得点右下角「交卷」录入错题库
+        ⚠️ 本次练习已答错 <b>{{ wrongAnsweredCount }}</b> 题，记得点底部「交卷」录入错题库
       </p>
       <!-- 题目卡片 -->
       <div class="question-card" style="background:#fff; color:#0f172a;">
@@ -147,25 +147,21 @@
           ← 上一题
         </button>
 
-        <button v-if="currentIndex < questions.length - 1" class="btn btn-primary" @click="nextQuestion">
+        <button
+          class="btn btn-primary"
+          :disabled="currentIndex >= questions.length - 1"
+          @click="nextQuestion"
+        >
           下一题 →
-          <span v-if="isKeyShortcutMode" class="kbd-hint">（空格键）</span>
         </button>
+
         <button
-          v-else-if="mode === QUIZ_MODES.STUDY"
-          class="btn btn-success"
-          :disabled="submitting"
-          @click="handleFinishStudy"
+          class="btn"
+          :class="mode === QUIZ_MODES.STUDY ? 'btn-success' : 'btn-primary'"
+          :disabled="!quiz || submitting"
+          @click="mode === QUIZ_MODES.STUDY ? handleFinishStudy() : handleSubmit()"
         >
-          {{ submitting ? '提交中…' : '完成学习' }}
-        </button>
-        <button
-          v-else
-          class="btn btn-success"
-          :disabled="submitting"
-          @click="handleSubmit"
-        >
-          {{ submitting ? '提交中…' : '提交答卷' }}
+          {{ submitButtonLabel }}
         </button>
       </div>
 
@@ -185,15 +181,6 @@
         ></div>
       </div>
 
-      <!-- 常驻交卷按钮：任意时刻可提交，避免大题量需翻到最后一题才能交卷 -->
-      <button
-        v-if="quiz && !submitting"
-        class="btn float-submit"
-        :class="mode === QUIZ_MODES.STUDY ? 'btn-success' : 'btn-primary'"
-        @click="mode === QUIZ_MODES.STUDY ? handleFinishStudy() : handleSubmit()"
-      >
-        {{ mode === QUIZ_MODES.STUDY ? '完成学习' : '交卷' }}
-      </button>
     </div>
   </div>
 </template>
@@ -432,6 +419,14 @@ function nextQuestion() {
 
 // ── 空格键快捷跳题（仅学习/练习模式） ────────────────────────────
 const isKeyShortcutMode = computed(() => mode.value === QUIZ_MODES.STUDY || mode.value === QUIZ_MODES.PRACTICE)
+
+// 提交按钮文案：随答题模式与提交状态变化（学习→完成学习 / 考试→提交答卷 / 练习→交卷）
+const submitButtonLabel = computed(() => {
+  if (submitting.value) return '提交中…'
+  if (mode.value === QUIZ_MODES.STUDY) return '完成学习'
+  if (mode.value === QUIZ_MODES.EXAM) return '提交答卷'
+  return '交卷'
+})
 
 function onGlobalKeydown(e) {
   if (e.code !== 'Space' && e.key !== ' ') return
@@ -731,15 +726,7 @@ onUnmounted(() => {
   background: var(--bg);
   z-index: 11;
 }
-.nav-btns .btn { flex: 1; }
-
-/* 空格键快捷提示（学习/练习模式） */
-.kbd-hint {
-  font-size: 11px;
-  font-weight: 400;
-  opacity: .85;
-  margin-left: 4px;
-}
+.nav-btns .btn { flex: 1; white-space: nowrap; }
 
 /* 提交失败提示条 */
 .submit-error {
@@ -768,18 +755,6 @@ onUnmounted(() => {
   color: #C05621;
   font-size: 15px;
   margin: 0 2px;
-}
-
-/* 常驻交卷按钮（浮动，避免大题量需翻到最后一题才能交卷） */
-.float-submit {
-  position: fixed;
-  right: 14px;
-  bottom: 200px;
-  z-index: 90;
-  padding: 10px 22px;
-  border-radius: 999px;
-  font-weight: 600;
-  box-shadow: 0 6px 20px rgba(0,0,0,.22);
 }
 
 .q-dots {
