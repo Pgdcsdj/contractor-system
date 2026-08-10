@@ -86,7 +86,7 @@
             <col class="c-bizhead" />
             <col class="c-loc" />
             <col class="c-desc" />
-            <col class="c-remark" />
+            <col class="c-created" />
             <col class="c-level" />
             <col class="c-person" />
             <col class="c-plan" />
@@ -105,7 +105,7 @@
               <th>业务部门负责人</th>
               <th>场所</th>
               <th>问题描述</th>
-              <th>备注</th>
+              <th>录入时间</th>
               <th>等级</th>
               <th>责任人</th>
               <th>计划完成</th>
@@ -136,7 +136,7 @@
               <td>{{ h.business_dept_head || '-' }}</td>
               <td>{{ h.location || '-' }}</td>
               <td class="desc-cell" :title="h.description">{{ h.description || '-' }}</td>
-              <td class="desc-cell" :title="h.remark">{{ h.remark || '-' }}</td>
+              <td class="mono sm" :title="fmtDate(h.created_at)">{{ fmtDate(h.created_at) }}</td>
               <td><span :class="['badge', levelBadge(h.hazard_level)]">{{ h.hazard_level || '-' }}</span></td>
               <td>{{ h.responsible_person || '-' }}</td>
               <td class="mono sm">{{ fmtDate(h.plan_finish_time) }}</td>
@@ -547,7 +547,7 @@ onUnmounted(() => {
 .data-table colgroup col.c-bizhead { min-width: 110px; }
 .data-table colgroup col.c-loc { min-width: 80px; }
 .data-table colgroup col.c-level { min-width: 70px; }
-.data-table colgroup col.c-remark { min-width: 160px; }
+.data-table colgroup col.c-created { min-width: 150px; }
 .data-table colgroup col.c-person { min-width: 80px; }
 .data-table colgroup col.c-plan { min-width: 110px; }
 .data-table colgroup col.c-status { min-width: 80px; }
