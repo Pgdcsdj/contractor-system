@@ -536,6 +536,13 @@ async function cleanRow(row, mapping, ctx) {
   rec.status = status
   rec.rectify_status = status === 'closed' ? '已完成' : status === 'rectifying' ? '整改中' : '未整改'
 
+  // 视频督查导入：录入即自动触发闭环流程，默认已完成整改并自动闭环（无需人工干预）。
+  // 需求：所有经视频督查导入的问题，落库时 status='closed' 且 closed_at=NOW()，保证可追溯。
+  if (ctx.importType === 'video_supervision') {
+    rec.status = 'closed'
+    rec.rectify_status = '已完成'
+  }
+
   // 隐患排查项目
   let invItem = getVal('hazard_investigation_item')
   // 视频督查导入：列值为空时默认填「视频督查」（优先于 sheet 名回退；行内已显式填写则保留行内值）
@@ -630,7 +637,9 @@ async function parseWorkbook(buffer, originalname = '', opts = {}) {
       })
 
       let rowStatus
-      if (rec.status === 'closed') {
+      // 普通导入的「已闭环」行视为历史已闭环，跳过不重复导入；
+      // 视频督查导入强制 status='closed' 但需正常落库（自动闭环），故不跳过
+      if (rec.status === 'closed' && importType !== 'video_supervision') {
         rowStatus = 'skippedClosed'
         sheetSkipped++
         skippedClosed++
@@ -794,6 +803,10 @@ async function genCode(conn) {
 async function commitImport(buffer, admin, filename = '', opts = {}) {
   // filename 即 req.file.originalname（multer 传入），用于扩展名判断（D7）
   const parsed = await parseWorkbook(buffer, filename, opts)
+  // 视频督查导入：自动闭环，落库时写入 closed_at = 当前时间（录入即闭环，保证可追溯）
+  const importType = (opts && opts.importType) || ''
+  const videoAutoClosed = importType === 'video_supervision'
+  const nowIso = new Date().toISOString().slice(0, 19).replace('T', ' ')
   // D3 修复：保留完整行对象（含 sheetName/rowNo），以便回收 insertId 并关联截图
   const validRowObjs = parsed.rows.filter((r) => r.status === 'valid')
   const failList = parsed.rows
@@ -825,9 +838,9 @@ async function commitImport(buffer, admin, filename = '', opts = {}) {
         (hazard_code, contractor_unit_id, unit_name, location, description, hazard_level,
          rectify_measures, responsible_person,
          plan_finish_time, business_dept, hazard_investigation_item, business_dept_head, status,
-         reported_by, reported_by_name, report_time, photo_url, rectify_status,
+         reported_by, reported_by_name, report_time, photo_url, rectify_status, closed_at,
          recorder_id, recorder_name, recorder_unit_id, recorder_unit_name, deleted_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, ?, ?, ?, ?, ?, NULL)`
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, ?, ?, ?, ?, ?, ?, NULL)`
 
     for (const r of validRowObjs) {
       const rec = r.data
@@ -851,6 +864,7 @@ async function commitImport(buffer, admin, filename = '', opts = {}) {
         admin && admin.username ? admin.username : '',
         '',
         rec.rectify_status || '未整改',
+        videoAutoClosed ? nowIso : null,
         recorderCtx.recorder_id,
         recorderCtx.recorder_name,
         recorderCtx.recorder_unit_id,
