@@ -20,6 +20,15 @@
       ✅ 已恢复上次作答进度，可继续答题
     </div>
 
+    <!-- 学习/练习模式：顶部固定提醒本次答错题数，引导点底部「交卷」录入错题库 -->
+    <div v-if="showWrongHint" class="wrong-hint-banner">
+      <span class="wrong-hint-icon">⚠️</span>
+      <span class="wrong-hint-text">
+        本次练习已答错 <b>{{ wrongAnsweredCount }}</b> 题，请在页面底部点击「交卷」按钮将错题录入题库
+      </span>
+      <button class="wrong-hint-close" type="button" @click="dismissWrongHint" aria-label="不再显示">✕</button>
+    </div>
+
     <!-- 加载中 -->
     <div v-if="loading" class="loading">
       <div class="spinner"></div>
@@ -37,10 +46,6 @@
     <div v-else-if="quiz" class="quiz-body">
       <!-- 提交失败/网络异常提示条（提交未成功时明确告知，避免"假成功"） -->
       <p v-if="errorMsg" class="submit-error">{{ errorMsg }}</p>
-      <!-- 学习/练习模式：本次答错题数提醒（让"点交卷入库"不可能被错过） -->
-      <p v-if="isRevealMode && wrongAnsweredCount > 0" class="wrong-hint">
-        ⚠️ 本次练习已答错 <b>{{ wrongAnsweredCount }}</b> 题，记得点底部「交卷」录入错题库
-      </p>
       <!-- 题目卡片 -->
       <div class="question-card" style="background:#fff; color:#0f172a;">
         <div class="question-index" style="color:#475569;">
@@ -296,6 +301,16 @@ const wrongAnsweredCount = computed(() => {
   return questions.value.filter(q => quizStore.answers[q.id] && isWrong(q)).length
 })
 
+// 顶部答错题数提醒：仅在学习/练习模式、存在错题、且用户未主动关闭时显示；
+// 关闭后本次练习不再提示（"不再显示"诉求），无错题时自动隐藏。
+const wrongHintDismissed = ref(false)
+const showWrongHint = computed(() =>
+  isRevealMode.value && wrongAnsweredCount.value > 0 && !wrongHintDismissed.value
+)
+function dismissWrongHint() {
+  wrongHintDismissed.value = true
+}
+
 // ── 选项状态辅助 ──────────────────────────────────────────────
 function letterOf(key) {
   if (/^\d+$/.test(String(key))) return String.fromCharCode(65 + parseInt(key, 10))
@@ -548,6 +563,7 @@ function confirmExit() {
 }
 
 onMounted(async () => {
+  wrongHintDismissed.value = false
   const timer = setTimeout(() => { loading.value = false }, 10000)
   try {
     // 运行模式严格取自路由 ?mode=，非法/缺失值由 normalizeMode 兜底为 exam；
@@ -740,22 +756,40 @@ onUnmounted(() => {
   line-height: 1.6;
 }
 
-/* 本次答错题数提醒（学习/练习模式） */
-.wrong-hint {
-  margin: 10px 12px 0;
+/* 本次答错题数提醒（学习/练习模式，顶部固定） */
+.wrong-hint-banner {
+  position: sticky;
+  top: 54px;
+  z-index: 99;
+  margin: 0;
   padding: 10px 14px;
   background: #FFF8E1;
   color: #B7791F;
-  border: 1px solid #F6E05E;
-  border-radius: 10px;
+  border-bottom: 1px solid #F6E05E;
   font-size: 13px;
   line-height: 1.6;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
-.wrong-hint b {
+.wrong-hint-icon { flex-shrink: 0; }
+.wrong-hint-text { flex: 1; min-width: 0; }
+.wrong-hint-text b {
   color: #C05621;
   font-size: 15px;
   margin: 0 2px;
 }
+.wrong-hint-close {
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  color: #B7791F;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+.wrong-hint-close:hover { color: #C05621; }
 
 .q-dots {
   position: fixed;
