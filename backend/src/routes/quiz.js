@@ -340,6 +340,136 @@ router.get('/list', authMiddleware, async (req, res) => {
   }
 })
 
+// ─── 断点续做进度（服务端持久化，绑定用户，跨设备/重登可用）─────────────────
+// 进度唯一键 (user_id, scope, material_id, mode)。trainingId='wrong' 视为
+// scope='wrong'、material_id=0（错题练习跨题库）；其余为 scope='material'。
+// 必须在 /:materialId 路由之前注册，否则 'progress' 会被动态段吞掉。
+function parseProgressTarget(materialIdParam) {
+  if (String(materialIdParam) === 'wrong') {
+    return { scope: 'wrong', materialId: 0 }
+  }
+  const n = Number(materialIdParam)
+  if (!Number.isInteger(n) || n <= 0) return null
+  return { scope: 'material', materialId: n }
+}
+
+// GET /api/quiz/progress  → 列出当前用户所有未完成进度（供列表页"继续作答"）
+router.get('/progress', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.id
+    const [rows] = await pool.execute(
+      `SELECT scope, material_id, mode, current_index, elapsed_sec, updated_at,
+              JSON_LENGTH(answers) AS answer_cnt
+       FROM t_quiz_progress
+       WHERE user_id = ? AND JSON_LENGTH(answers) > 0
+       ORDER BY updated_at DESC`,
+      [userId]
+    )
+    const list = rows.map(r => ({
+      scope:       r.scope,
+      materialId:  r.scope === 'wrong' ? 'wrong' : r.material_id,
+      mode:        r.mode,
+      currentIndex: r.current_index,
+      elapsedSec:  r.elapsed_sec,
+      answerCount: r.answer_cnt || 0,
+      updatedAt:   r.updated_at,
+    }))
+    res.json({ success: true, data: list })
+  } catch (err) {
+    console.error('[quiz.progress.list]', err)
+    sendError(res, 'INTERNAL_ERROR')
+  }
+})
+
+// GET /api/quiz/progress/:materialId?mode=...  → 读取单条进度
+router.get('/progress/:materialId', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.id
+    const target = parseProgressTarget(req.params.materialId)
+    if (!target) return sendError(res, 'INVALID_PARAM')
+    const mode = req.query.mode
+    if (!mode || !Object.values(QUIZ_MODES).includes(mode)) {
+      return res.status(400).json({ success: false, error: '缺少或非法 mode' })
+    }
+    const [rows] = await pool.execute(
+      `SELECT answers, current_index, elapsed_sec, updated_at
+       FROM t_quiz_progress
+       WHERE user_id = ? AND scope = ? AND material_id = ? AND mode = ?`,
+      [userId, target.scope, target.materialId, mode]
+    )
+    if (!rows.length) return res.json({ success: true, data: null })
+    const r = rows[0]
+    let answers = {}
+    try {
+      answers = (typeof r.answers === 'string') ? JSON.parse(r.answers) : (r.answers || {})
+    } catch { answers = {} }
+    res.json({
+      success: true,
+      data: {
+        answers,
+        currentIndex: r.current_index || 0,
+        elapsedSec:   r.elapsed_sec || 0,
+        updatedAt:    r.updated_at,
+      },
+    })
+  } catch (err) {
+    console.error('[quiz.progress.get]', err)
+    sendError(res, 'INTERNAL_ERROR')
+  }
+})
+
+// PUT /api/quiz/progress/:materialId  → 保存/覆盖进度（mode 取 body 或 query）
+router.put('/progress/:materialId', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.id
+    const target = parseProgressTarget(req.params.materialId)
+    if (!target) return sendError(res, 'INVALID_PARAM')
+    const mode = req.body?.mode || req.query?.mode
+    if (!mode || !Object.values(QUIZ_MODES).includes(mode)) {
+      return res.status(400).json({ success: false, error: '缺少或非法 mode' })
+    }
+    const body = req.body || {}
+    const answers = (body.answers && typeof body.answers === 'object') ? body.answers : {}
+    const currentIndex = Number.isFinite(Number(body.currentIndex)) ? Number(body.currentIndex) : 0
+    const elapsedSec = Number.isFinite(Number(body.elapsedSec)) ? Number(body.elapsedSec) : 0
+    await pool.execute(
+      `INSERT INTO t_quiz_progress (user_id, scope, material_id, mode, answers, current_index, elapsed_sec, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, NOW())
+       ON DUPLICATE KEY UPDATE
+         answers = VALUES(answers),
+         current_index = VALUES(current_index),
+         elapsed_sec = VALUES(elapsed_sec),
+         updated_at = NOW()`,
+      [userId, target.scope, target.materialId, mode, JSON.stringify(answers), currentIndex, elapsedSec]
+    )
+    res.json({ success: true })
+  } catch (err) {
+    console.error('[quiz.progress.put]', err)
+    sendError(res, 'INTERNAL_ERROR')
+  }
+})
+
+// DELETE /api/quiz/progress/:materialId?mode=...  → 清除进度（提交成功后）
+router.delete('/progress/:materialId', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.id
+    const target = parseProgressTarget(req.params.materialId)
+    if (!target) return sendError(res, 'INVALID_PARAM')
+    const mode = req.query.mode || req.body?.mode
+    if (!mode || !Object.values(QUIZ_MODES).includes(mode)) {
+      return res.status(400).json({ success: false, error: '缺少或非法 mode' })
+    }
+    await pool.execute(
+      `DELETE FROM t_quiz_progress WHERE user_id = ? AND scope = ? AND material_id = ? AND mode = ?`,
+      [userId, target.scope, target.materialId, mode]
+    )
+    res.json({ success: true })
+  } catch (err) {
+    console.error('[quiz.progress.delete]', err)
+    sendError(res, 'INTERNAL_ERROR')
+  }
+})
+
 // ─── GET /api/quiz/:materialId/result ───────────────────────────────────────
 // 获取当前用户该题库的答题回顾（逐题对错 + 正确答案 + 解析）
 router.get('/:materialId/result', authMiddleware, async (req, res) => {

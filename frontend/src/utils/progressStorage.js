@@ -1,15 +1,84 @@
 /**
- * progressStorage.js - 答题断点续做（localStorage 持久化）
+ * progressStorage.js - 答题断点续做持久化
  *
- * Key 约定：tnb_quiz_progress_${materialId}_${mode}
- * 存储内容：{ answers, currentIndex, elapsedSec, updatedAt }
+ * 双层存储：
+ *  1) localStorage（设备本地，瞬时可用、支持离线快取）：Key = tnb_quiz_progress_${materialId}_${mode}
+ *  2) 服务端（绑定登录用户，跨设备/重登可用）：/api/quiz/progress/...
  *
  * 设计要点：
  *  - answers 直接复用 quiz store 中 answers 对象结构（{ [questionId]: answer }），
- *    因此恢复时可直接 Object.assign 回 store。
- *  - elapsedSec 为已用时（秒），由答题页计时器累加，用于恢复倒计时/计费用时。
- *  - 仅依赖 localStorage（与 offlineDb 的内存实现解耦，断点续做不依赖网络）。
+ *    恢复时可直接 Object.assign 回 store。
+ *  - 服务端为主、localStorage 为缓存：恢复时优先读服务端，失败回退本地；
+ *    保存时本地即时写、服务端防抖写（由调用方触发）。
+ *  - 服务端同步使用独立 axios 实例（不带 401 重定向拦截），避免后台保存偶发 401
+ *    把正在答题的用户强制踢回登录页。
  */
+
+import axios from 'axios'
+
+// 独立实例：仅自动带员工 token，不挂载 401 重定向拦截
+const progressApi = axios.create({
+  baseURL: import.meta.env.VITE_API_BASE || '',
+  timeout: 10000,
+  headers: { 'Content-Type': 'application/json' },
+})
+progressApi.interceptors.request.use((config) => {
+  const token = localStorage.getItem('tnb_token')
+  if (token) config.headers.Authorization = `Bearer ${token}`
+  return config
+})
+// 注意：故意不挂 response 拦截 → 任何错误（含 401）都静默失败，仅回退本地缓存。
+
+/** 把 trainingId 映射到服务端 scope/materialId（'wrong' → 错题练习） */
+function mapTarget(trainingId) {
+  if (String(trainingId) === 'wrong') return { path: 'wrong', scope: 'wrong', materialId: 0 }
+  return { path: String(trainingId), scope: 'material', materialId: Number(trainingId) }
+}
+
+/**
+ * 从服务端读取断点进度（主来源）。失败/无进度返回 null。
+ * @returns {{answers:object,currentIndex:number,elapsedSec:number}|null}
+ */
+export async function fetchServerProgress(trainingId, mode) {
+  try {
+    const { path } = mapTarget(trainingId)
+    const res = await progressApi.get(`/api/quiz/progress/${path}`, { params: { mode } })
+    if (res.data?.success && res.data?.data) return res.data.data
+    return null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 保存断点进度到服务端（覆盖式）。失败静默。
+ */
+export async function saveServerProgress(trainingId, mode, progress) {
+  try {
+    const { path } = mapTarget(trainingId)
+    await progressApi.put(`/api/quiz/progress/${path}`, {
+      mode,
+      answers: (progress && progress.answers) || {},
+      currentIndex: progress?.currentIndex || 0,
+      elapsedSec: progress?.elapsedSec || 0,
+    })
+  } catch {
+    /* 静默失败：本地缓存已保底 */
+  }
+}
+
+/**
+ * 清除服务端断点进度（提交成功后）。
+ */
+export async function clearServerProgress(trainingId, mode) {
+  try {
+    const { path } = mapTarget(trainingId)
+    await progressApi.delete(`/api/quiz/progress/${path}`, { params: { mode } })
+  } catch {
+    /* 静默失败 */
+  }
+}
+
 
 const PROGRESS_PREFIX = 'tnb_quiz_progress_'
 

@@ -188,7 +188,7 @@ import { useQuizStore } from '@/stores/quiz'
 import {
   QUIZ_MODES, MODE_LABELS, isRevealing, normalizeMode,
 } from '@/utils/quizModes'
-import { loadProgress, saveProgress, clearProgress } from '@/utils/progressStorage'
+import { loadProgress, saveProgress, clearProgress, fetchServerProgress, saveServerProgress, clearServerProgress } from '@/utils/progressStorage'
 
 const route = useRoute()
 const router = useRouter()
@@ -483,10 +483,30 @@ function formatTime(sec) {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
 }
 
-// ── 断点续做持久化 ────────────────────────────────────────────
+// ── 断点续做持久化（localStorage 即时 + 服务端防抖，跨设备/重登可用）──
+let serverSaveTimer = null
 function persistProgress() {
   if (!quiz.value || !trainingId || !mode.value) return
-  saveProgress(trainingId, mode.value, {
+  const snapshot = {
+    answers: { ...quizStore.answers },
+    currentIndex: currentIndex.value,
+    elapsedSec: elapsedSec.value,
+  }
+  // 1) 本地即时保存（离线快取，瞬时可用）
+  saveProgress(trainingId, mode.value, snapshot)
+  // 2) 服务端防抖保存（避免每次按键都请求；1.5s 合并）
+  if (serverSaveTimer) clearTimeout(serverSaveTimer)
+  serverSaveTimer = setTimeout(() => {
+    serverSaveTimer = null
+    saveServerProgress(trainingId, mode.value, snapshot)
+  }, 1500)
+}
+
+// 立即把待保存的进度刷到服务端（退出/卸载时调用，避免丢失最后一次改动）
+async function flushServerProgress() {
+  if (serverSaveTimer) { clearTimeout(serverSaveTimer); serverSaveTimer = null }
+  if (!quiz.value || !trainingId || !mode.value) return
+  await saveServerProgress(trainingId, mode.value, {
     answers: { ...quizStore.answers },
     currentIndex: currentIndex.value,
     elapsedSec: elapsedSec.value,
@@ -513,7 +533,8 @@ async function handleSubmit() {
   submitting.value = false
 
   if (result.ok) {
-    clearProgress(trainingId, mode.value) // 提交成功清除断点
+    clearProgress(trainingId, mode.value) // 提交成功清除本地断点
+    clearServerProgress(trainingId, mode.value) // 清除服务端断点
     attemptNo.value += 1
     router.replace(`/result/${trainingId}`)
   } else if (result.offline) {
@@ -542,6 +563,7 @@ async function handleFinishStudy() {
 
   if (result.ok) {
     clearProgress(trainingId, mode.value)
+    clearServerProgress(trainingId, mode.value)
     router.replace('/quiz')
   } else {
     startTimer()
@@ -557,6 +579,8 @@ function confirmExit() {
   const dirty = elapsedSec.value > 0 || Object.keys(quizStore.answers).length > 0
   if (dirty) {
     persistProgress()
+    // 立即把进度刷到服务端，确保关门重登也能续上
+    flushServerProgress()
     alert('已保存进度，可继续作答')
   }
   router.replace('/quiz')
@@ -582,9 +606,27 @@ onMounted(async () => {
       // 注：此处 mode 已来自路由 query，不再回退到 data.mode（素材默认模式）
 
       // 恢复断点进度（按 materialId + mode 独立续做）
+      // 优先从服务端读取（跨设备/重登可用），失败回退本地 localStorage 缓存。
       quizStore.resetAnswers()
-      const progress = loadProgress(trainingId, mode.value)
-      if (progress) {
+      let progress = null
+      try {
+        progress = await fetchServerProgress(trainingId, mode.value)
+      } catch (e) {
+        console.warn('[QuizPage] 服务端进度读取失败，回退本地', e)
+      }
+      if (!progress) {
+        progress = loadProgress(trainingId, mode.value)
+      } else if (progress.answers && Object.keys(progress.answers).length) {
+        // 服务端有数据则同步回本地缓存，保证离线也能续
+        saveProgress(trainingId, mode.value, progress)
+      }
+
+      // 仅当存在真实进度（答过题 / 不在第一题 / 已用时）才标记"已恢复"，
+      // 避免空进度误弹"已恢复上次作答进度"的虚假提示。
+      const hasReal = progress &&
+        ((progress.answers && Object.keys(progress.answers).length > 0) ||
+         (progress.currentIndex > 0) || (progress.elapsedSec > 0))
+      if (hasReal) {
         Object.assign(quizStore.answers, progress.answers || {})
         currentIndex.value = progress.currentIndex || 0
         elapsedSec.value = progress.elapsedSec || 0
@@ -610,6 +652,9 @@ onMounted(async () => {
 onUnmounted(() => {
   if (timerInterval) clearInterval(timerInterval)
   if (autoAdvanceTimer) clearTimeout(autoAdvanceTimer)
+  if (serverSaveTimer) { clearTimeout(serverSaveTimer); serverSaveTimer = null }
+  // 卸载前尽量把进度刷到服务端（不 await：卸载钩子不宜长等待，失败由本地缓存兜底）
+  flushServerProgress()
   window.removeEventListener('keydown', onGlobalKeydown)
 })
 </script>

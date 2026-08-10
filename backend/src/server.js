@@ -660,6 +660,28 @@ async function autoMigrate() {
       )
     }
 
+    // 10.6 答题断点续做进度表（绑定用户，跨设备/重登可用）
+    //     以 (user_id, scope, material_id, mode) 唯一。trainingId='wrong' 的错题练习
+    //     视为 scope='wrong'、material_id=0（错题跨题库）；普通题库 scope='material'。
+    //     answers 用 JSON 列直接存 { [questionId]: answer }，与前端 quizStore.answers 同构，
+    //     恢复时可直接 Object.assign 回 store。
+    await ensureTable(`
+      CREATE TABLE IF NOT EXISTS t_quiz_progress (
+        id            BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        user_id       INT UNSIGNED NOT NULL COMMENT '员工ID',
+        scope         VARCHAR(16)  NOT NULL DEFAULT 'material' COMMENT 'material=普通题库 wrong=错题练习',
+        material_id   INT UNSIGNED NOT NULL DEFAULT 0 COMMENT '题库ID；wrong 练习固定 0',
+        mode          VARCHAR(16)  NOT NULL DEFAULT 'exam' COMMENT 'study/practice/exam',
+        answers       JSON         NULL COMMENT '各题作答 { [questionId]: answer }',
+        current_index INT          NOT NULL DEFAULT 0 COMMENT '当前题号（0 基）',
+        elapsed_sec   INT          NOT NULL DEFAULT 0 COMMENT '已用时（秒）',
+        updated_at    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_user_scope_material_mode (user_id, scope, material_id, mode),
+        KEY idx_user (user_id),
+        KEY idx_updated (updated_at)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='答题断点续做进度（绑定用户）'
+    `)
+
     // 种子：全局默认质量配置（仅当不存在时写入）
     const [defaultCfgRows] = await pool.execute(
       'SELECT id FROM t_quality_config WHERE material_id IS NULL AND is_default = 1 LIMIT 1'
