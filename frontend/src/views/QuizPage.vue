@@ -286,6 +286,31 @@ function isRight(q) {
 // 学习/练习模式下，作答后显示答案与解析
 const revealActive = computed(() => isRevealMode.value && hasAnsweredCurrent.value)
 
+// 学习/练习模式：答对后自动跳下一题（答错停留看解析；考试模式不跳）
+let autoAdvanceTimer = null
+watch(
+  () => [quizStore.answers[currentQuestion.value?.id], currentIndex.value],
+  () => {
+    if (!isRevealMode.value) return
+    const q = currentQuestion.value
+    if (!q || !hasAnsweredCurrent.value) return
+    if (!isRight(q)) return                       // 答错：停留，便于看解析/改答案
+    if (currentIndex.value >= questions.value.length - 1) return  // 最后一题不跳
+    if (autoAdvanceTimer) clearTimeout(autoAdvanceTimer)
+    autoAdvanceTimer = setTimeout(() => {
+      // 跳前复核：仍答对且仍是当前题、且非末题，避免期间改答案误跳
+      if (
+        isRevealMode.value &&
+        currentIndex.value < questions.value.length - 1 &&
+        hasAnsweredCurrent.value &&
+        isRight(currentQuestion.value)
+      ) {
+        nextQuestion()
+      }
+    }, 800)
+  }
+)
+
 // ── 选项状态辅助 ──────────────────────────────────────────────
 function letterOf(key) {
   if (/^\d+$/.test(String(key))) return String.fromCharCode(65 + parseInt(key, 10))
@@ -584,6 +609,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   if (timerInterval) clearInterval(timerInterval)
+  if (autoAdvanceTimer) clearTimeout(autoAdvanceTimer)
   window.removeEventListener('keydown', onGlobalKeydown)
 })
 </script>
