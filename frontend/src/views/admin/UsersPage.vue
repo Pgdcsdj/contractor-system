@@ -17,6 +17,20 @@
         <span class="total-count">共 {{ totalCount }} 人</span>
         <button class="btn btn-primary" @click="showAdd = true">➕ 新增人员</button>
         <button class="btn btn-outline" @click="showImport = true">📥 导入人员</button>
+        <button class="btn btn-outline" @click="handleExport" :disabled="exporting">
+          {{ exporting ? '导出中…' : '📤 导出' }}
+        </button>
+      </div>
+    </div>
+
+    <!-- 批量操作条 -->
+    <div v-if="selectedIds.length > 0" class="batch-bar card">
+      <span class="batch-info">已选 <b>{{ selectedIds.length }}</b> 人</span>
+      <div class="batch-actions">
+        <button class="btn btn-outline" @click="handleBatch('enable')">✅ 批量启用</button>
+        <button class="btn btn-outline" @click="handleBatch('disable')">⛔ 批量禁用</button>
+        <button class="btn btn-danger" @click="handleBatch('delete')">🗑 批量删除</button>
+        <button class="btn btn-ghost" @click="selectedIds = []">取消选择</button>
       </div>
     </div>
 
@@ -25,19 +39,25 @@
       <table class="data-table">
         <thead>
           <tr>
+            <th class="col-check">
+              <input type="checkbox" :checked="allSelectedOnPage" @change="toggleAll" aria-label="全选本页" />
+            </th>
             <th>姓名</th><th>身份证</th><th>主管单位</th><th>承包商</th><th>手机</th><th>录入时间</th><th>状态</th><th>操作</th>
           </tr>
         </thead>
         <tbody>
           <tr v-if="loading">
-            <td colspan="8" style="text-align:center;padding:30px;color:var(--text-secondary)">
+            <td colspan="9" style="text-align:center;padding:30px;color:var(--text-secondary)">
               <div class="spinner" style="margin:0 auto"></div>
             </td>
           </tr>
           <tr v-else-if="filteredUsers.length === 0">
-            <td colspan="8" class="empty-cell">暂无人员数据</td>
+            <td colspan="9" class="empty-cell">暂无人员数据</td>
           </tr>
           <tr v-for="u in paginatedUsers" :key="u.id">
+            <td class="col-check">
+              <input type="checkbox" :checked="selectedIds.includes(u.id)" @change="toggleOne(u.id)" :aria-label="'选择 ' + u.name" />
+            </td>
             <td><strong>{{ u.name }}</strong></td>
             <td class="mono">{{ maskIdCard(u.id_card) }}</td>
             <td>{{ u.supervising_unit || '-' }}</td>
@@ -47,7 +67,10 @@
             <td><span :class="['badge', Number(u.status) === 1 ? 'badge-success' : 'badge-danger']">
                 {{ Number(u.status) === 1 ? '启用' : '禁用' }}
               </span></td>
-            <td><button class="action-link" @click="editUser(u)">编辑</button></td>
+            <td class="op-cell">
+              <button class="action-link" @click="editUser(u)">编辑</button>
+              <button class="action-link danger" @click="handleDelete(u)">删除</button>
+            </td>
           </tr>
         </tbody>
       </table>
@@ -190,6 +213,77 @@ const saving = ref(false)
 const showAdd = ref(false)
 const addForm = ref({ name: '', id_card: '', unit: '', supervising_unit: '', phone: '' })
 const adding = ref(false)
+
+// 选择 / 批量 / 导出
+const selectedIds = ref([])
+const exporting = ref(false)
+const allSelectedOnPage = computed(() =>
+  paginatedUsers.value.length > 0 &&
+  paginatedUsers.value.every(u => selectedIds.value.includes(u.id))
+)
+function toggleOne(id) {
+  const i = selectedIds.value.indexOf(id)
+  if (i >= 0) selectedIds.value.splice(i, 1)
+  else selectedIds.value.push(id)
+}
+function toggleAll(e) {
+  const checked = e.target.checked
+  const pageIds = paginatedUsers.value.map(u => u.id)
+  if (checked) {
+    for (const id of pageIds) if (!selectedIds.value.includes(id)) selectedIds.value.push(id)
+  } else {
+    selectedIds.value = selectedIds.value.filter(id => !pageIds.includes(id))
+  }
+}
+function clearSelection() { selectedIds.value = [] }
+
+async function handleBatch(action) {
+  if (selectedIds.value.length === 0) return
+  const label = { delete: '删除', enable: '启用', disable: '禁用' }[action]
+  if (!confirm(`确认${action === 'delete' ? '永久' : ''}${label}选中的 ${selectedIds.value.length} 名人员？`)) return
+  try {
+    const res = await request.post('/api/admin/users/batch', { ids: selectedIds.value, action })
+    alert(res.data.message || '操作成功')
+    clearSelection()
+    fetchUsers()
+  } catch (e) {
+    alert('批量操作失败：' + (e.response?.data?.error || e.message))
+  }
+}
+
+async function handleDelete(u) {
+  if (!confirm(`确认删除人员「${u.name}」？此操作不可恢复。`)) return
+  try {
+    await request.delete(`/api/admin/users/${u.id}`)
+    selectedIds.value = selectedIds.value.filter(id => id !== u.id)
+    fetchUsers()
+  } catch (e) {
+    alert('删除失败：' + (e.response?.data?.error || e.message))
+  }
+}
+
+async function handleExport() {
+  exporting.value = true
+  try {
+    const params = {}
+    if (keyword.value) params.keyword = keyword.value
+    if (filterCompany.value) params.unit = filterCompany.value
+    if (filterSupervising.value) params.supervising_unit = filterSupervising.value
+    const res = await request.get('/api/admin/users/export', { params, responseType: 'blob' })
+    const url = window.URL.createObjectURL(new Blob([res.data]))
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `人员信息_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}.xlsx`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    window.URL.revokeObjectURL(url)
+  } catch (e) {
+    alert('导出失败：' + (e.response?.data?.error || e.message))
+  } finally {
+    exporting.value = false
+  }
+}
 
 const companies = computed(() => allUnits.value)
 
@@ -421,4 +515,30 @@ watch(page, fetchUsers)
 .action-link:hover { background: #e8f0fe; }
 .edit-form { display: flex; flex-direction: column; gap: 10px; margin: 16px 0; }
 .edit-form label { font-size: 13px; color: var(--text-secondary); margin-bottom: 2px; }
+
+/* 批量操作条 */
+.batch-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; margin-bottom: 12px; padding: 12px 16px; flex-wrap: wrap;
+  border-left: 4px solid var(--primary);
+}
+.batch-info { font-size: 14px; color: var(--text); }
+.batch-info b { color: var(--primary); font-size: 16px; margin: 0 2px; }
+.batch-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* 复选框列 */
+.col-check { width: 40px; text-align: center; }
+.col-check input { width: 16px; height: 16px; cursor: pointer; }
+
+/* 操作列 */
+.op-cell { white-space: nowrap; }
+.action-link.danger { color: var(--danger); }
+.action-link.danger:hover { background: #fce8e6; }
+
+/* 按钮变体 */
+.btn-danger { background: var(--danger); color: #fff; border: 1px solid var(--danger); }
+.btn-danger:hover { opacity: 0.9; }
+.btn-danger:disabled { opacity: 0.5; cursor: default; }
+.btn-ghost { background: transparent; border: 1px solid var(--border); color: var(--text-secondary); }
+.btn-ghost:hover { background: #f1f3f4; }
 </style>

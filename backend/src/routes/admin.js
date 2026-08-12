@@ -6,12 +6,16 @@
  * POST   /api/admin/import-users            上传 Excel 并导入人员（需JWT）
  * GET    /api/admin/import-users/fail/:id   下载失败报告 Excel（需JWT）
  * GET    /api/admin/users                   查询人员列表（需JWT）
+ * GET    /api/admin/users/export            导出人员信息 Excel（需JWT，支持筛选）
  * PATCH  /api/admin/users/:id/status        启用/禁用人员（需JWT）
+ * DELETE /api/admin/users/:id               删除单个人员（需JWT）
+ * POST   /api/admin/users/batch             批量处理（delete/enable/disable，需JWT）
  * GET    /api/admin/import-logs             导入历史（需JWT）
  */
 
 const express   = require('express')
 const multer    = require('multer')
+const XLSX      = require('xlsx')
 const { pool }  = require('../db/db')
 const { importUsers, generateFailReport } = require('../services/importUser')
 const { adminLogin, verifyAdminToken }   = require('../services/adminAuth')
@@ -220,6 +224,66 @@ router.post('/users', adminAuth, async (req, res) => {
   res.json({ success: true, message: '人员已添加', data: { id: result.insertId } })
 })
 
+// ─── GET /api/admin/users/export ──────────────────────────────────────────
+// 导出人员信息为 Excel（支持与列表相同的筛选条件）
+// 注意：本路由必须注册在 GET /users/:id 之前，否则 'export' 会被 :id 吞掉
+router.get('/users/export', adminAuth, async (req, res) => {
+  const { keyword = '', unit = '', supervising_unit = '' } = req.query
+
+  let where = 'WHERE 1=1'
+  const params = []
+  if (keyword) {
+    where += ' AND (name LIKE ? OR id_card LIKE ? OR unit LIKE ? OR supervising_unit LIKE ?)'
+    params.push(`%${keyword}%`, `%${keyword}%`, `%${keyword}%`, `%${keyword}%`)
+  }
+  if (unit) {
+    where += ' AND unit = ?'
+    params.push(unit)
+  }
+  if (supervising_unit) {
+    where += ' AND supervising_unit = ?'
+    params.push(supervising_unit)
+  }
+
+  try {
+    const [rows] = await pool.query(
+      `SELECT name, id_card, unit, supervising_unit, phone, status, created_at
+       FROM t_user ${where}
+       ORDER BY created_at DESC`,
+      params
+    )
+
+    const data = rows.map((u, idx) => ({
+      序号:       idx + 1,
+      姓名:       u.name,
+      身份证号:   u.id_card,
+      承包商单位: u.unit || '',
+      主管单位:   u.supervising_unit || '',
+      手机号:     u.phone || '',
+      状态:       Number(u.status) === 1 ? '启用' : '禁用',
+      录入时间:   u.created_at ? new Date(u.created_at).toLocaleString('zh-CN') : '',
+    }))
+
+    const wb = XLSX.utils.book_new()
+    const ws = XLSX.utils.json_to_sheet(data)
+    ws['!cols'] = [
+      { wch: 6 }, { wch: 12 }, { wch: 20 }, { wch: 24 }, { wch: 20 },
+      { wch: 16 }, { wch: 8 }, { wch: 20 },
+    ]
+    XLSX.utils.book_append_sheet(wb, ws, '人员信息')
+    const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' })
+
+    const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+    const filename = encodeURIComponent(`人员信息_${stamp}.xlsx`)
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${filename}`)
+    res.send(buf)
+  } catch (err) {
+    console.error('[users export]', err.message)
+    res.status(500).json({ error: '导出失败：' + err.message })
+  }
+})
+
 // ─── GET /api/admin/users/:id ─────────────────────────────────────────────────
 // 获取单个人员详情
 router.get('/users/:id', adminAuth, async (req, res) => {
@@ -255,6 +319,55 @@ router.put('/users/:id', adminAuth, async (req, res) => {
 
   await pool.execute(`UPDATE t_user SET ${updates.join(', ')} WHERE id = ?`, [...params, id])
   res.json({ success: true, message: '人员信息已更新' })
+})
+
+// ─── DELETE /api/admin/users/:id ───────────────────────────────────────────────
+// 删除单个人员
+router.delete('/users/:id', adminAuth, async (req, res) => {
+  const id = Number(req.params.id)
+  if (!id) return res.status(400).json({ error: '无效人员ID' })
+  try {
+    const [result] = await pool.execute('DELETE FROM t_user WHERE id = ?', [id])
+    if (!result.affectedRows) return res.status(404).json({ error: '人员不存在' })
+    res.json({ success: true, message: '人员已删除' })
+  } catch (err) {
+    console.error('[users delete]', err.message)
+    res.status(500).json({ error: '删除失败：' + err.message })
+  }
+})
+
+// ─── POST /api/admin/users/batch ──────────────────────────────────────────────
+// 批量处理：{ ids: number[], action: 'delete' | 'enable' | 'disable' }
+router.post('/users/batch', adminAuth, async (req, res) => {
+  try {
+    const body = req.body || {}
+    const ids = body.ids
+    const action = body.action
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ error: '请选择要操作的人员' })
+    }
+    const cleanIds = Array.from(new Set(ids.map(Number).filter(function (n) { return Number.isInteger(n) && n > 0 })))
+    if (cleanIds.length === 0) {
+      return res.status(400).json({ error: '人员ID无效' })
+    }
+    if (action !== 'delete' && action !== 'enable' && action !== 'disable') {
+      return res.status(400).json({ error: '不支持的批量操作' })
+    }
+    const q = cleanIds.map(function () { return '?' }).join(',')
+    if (action === 'delete') {
+      const out = await pool.execute('DELETE FROM t_user WHERE id IN (' + q + ')', cleanIds)
+      const aff = out[0].affectedRows
+      return res.json({ success: true, message: '已删除 ' + aff + ' 人', affected: aff })
+    }
+    const newStatus = action === 'enable' ? 1 : 0
+    const out = await pool.execute('UPDATE t_user SET status = ? WHERE id IN (' + q + ')', [newStatus].concat(cleanIds))
+    const aff = out[0].affectedRows
+    const verb = action === 'enable' ? '启用' : '禁用'
+    return res.json({ success: true, message: '已' + verb + ' ' + aff + ' 人', affected: aff })
+  } catch (err) {
+    console.error('[users batch]', err.stack || err.message)
+    res.status(500).json({ error: '批量操作失败：' + err.message })
+  }
 })
 
 // ─── GET /api/admin/import-logs ─────────────────────────────────────────────
