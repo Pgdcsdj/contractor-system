@@ -6,6 +6,13 @@
 
 ---
 
+## 2026.08.18 · v2026.08.18
+- **培训新建页「导入已有题库」新增「Word 试卷」tab**（与「题库管理 → 题库导入」双模式保持一致）：
+  - `TrainingFormPage.vue` 导入区顶部新增「📊 Excel 模板 / 📄 Word 试卷」切换，默认 Excel，Excel 模式行为保持不变。
+  - Word 模式上传「试题卷.docx」（必填）+「参考答案.docx」（可选），走 `POST /api/admin/quiz-import/import-docx`（multipart：`questions` + `answers` + `material_id`），沿用后端章节标题自动识别题型/分值、主观题参考答案整段入库逻辑。
+  - 文件后缀校验（.xlsx / .docx）、loading 状态、成功/失败展示与 Excel 模式一致；创建培训 → 导入题目两步流程复用。
+- 前端 version.js 升至 2026.08.18
+
 ## 2026.08.17 · v2026.08.17（当前版本）
 - **题库导入新增「Word 试卷直接导入」，支持主观题批量入库**：
   - 新增后端解析服务 `services/docxQuizImport.js`：用 `adm-zip` 读取「试题卷.docx」+「参考答案.docx」，按章节标题（选择题/判断题/简答题/案例分析题…）自动识别题型与每题分值；客观题答案归一化（字母 A-D；判断题 √/× → 正确/错误），括号内解析文字存入 `analysis`；主观题（简答/案例分析）整段参考答案存入 `answer`。

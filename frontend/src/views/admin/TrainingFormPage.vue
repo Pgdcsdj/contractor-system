@@ -17,7 +17,7 @@
         <div class="mode-card" @click="mode = 'import'">
           <div class="mode-icon">📥</div>
           <div class="mode-title">导入已有题库</div>
-          <div class="mode-desc">下载 Excel 模板，按格式填写后一键导入</div>
+          <div class="mode-desc">支持 Excel 模板 / Word 试卷，按格式填写后一键导入</div>
           <div class="mode-arrow">→</div>
         </div>
         <div class="mode-card" @click="mode = 'image_violation'">
@@ -281,40 +281,80 @@
         </div>
         </div>
 
+        <!-- 导入模式切换（Excel / Word） -->
+        <div class="import-tabs">
+          <button :class="['tab', importTab === 'excel' ? 'active' : '']" @click="importTab = 'excel'">📊 Excel 模板</button>
+          <button :class="['tab', importTab === 'docx' ? 'active' : '']" @click="importTab = 'docx'">📄 Word 试卷</button>
+        </div>
+
         <!-- 步骤说明 -->
         <div class="import-steps">
           <div class="step-line">📋 操作步骤：</div>
-          <div class="step-item"><span class="s-num">1</span> 点击下方按钮下载 Excel 模板</div>
-          <div class="step-item"><span class="s-num">2</span> 按模板格式填写题目（支持单选/多选/判断/简答）</div>
-          <div class="step-item"><span class="s-num">3</span> 上传填写好的 Excel 文件，一键导入</div>
+          <template v-if="importTab === 'excel'">
+            <div class="step-item"><span class="s-num">1</span> 点击下方按钮下载 Excel 模板</div>
+            <div class="step-item"><span class="s-num">2</span> 按模板格式填写题目（支持单选/多选/判断/简答）</div>
+            <div class="step-item"><span class="s-num">3</span> 上传填写好的 Excel 文件，一键导入</div>
+          </template>
+          <template v-else>
+            <div class="step-item"><span class="s-num">1</span> 准备 Word 试题卷（.docx，必填）</div>
+            <div class="step-item"><span class="s-num">2</span> （可选）准备参考答案 .docx，系统按章节标题自动识别题型与分值</div>
+            <div class="step-item"><span class="s-num">3</span> 上传文件后一键导入，自动创建培训题库</div>
+          </template>
         </div>
 
-        <!-- 下载模板 -->
-        <div class="download-row">
-          <button class="btn btn-outline" style="width:auto" @click="downloadTemplate" :disabled="downloading">
-            {{ downloading ? '下载中…' : '📄 下载题库模板（Excel）' }}
-          </button>
-          <span class="template-hint">列：题型 | 题目内容 | 选项A~D | 正确答案 | 解析 | 分值</span>
-        </div>
-
-        <!-- 上传区域 -->
-        <div class="form-body" style="margin-top:16px">
-          <div class="form-group">
-            <label>上传填写好的题库文件（.xlsx）</label>
-            <div class="file-upload-zone small" @click="triggerImportFile" :class="{ dragover: importDragover }"
-              @dragover.prevent="importDragover = true"
-              @dragleave="importDragover = false"
-              @drop.prevent="handleImportDrop">
-              <span class="upload-icon">📂</span>
-              <p>{{ importFile ? importFile.name : '选择 Excel 文件' }}</p>
+        <!-- Excel 模式：下载模板 + 上传 -->
+        <template v-if="importTab === 'excel'">
+          <div class="download-row">
+            <button class="btn btn-outline" style="width:auto" @click="downloadTemplate" :disabled="downloading">
+              {{ downloading ? '下载中…' : '📄 下载题库模板（Excel）' }}
+            </button>
+            <span class="template-hint">列：题型 | 题目内容 | 选项A~D | 正确答案 | 解析 | 分值</span>
+          </div>
+          <div class="form-body" style="margin-top:16px">
+            <div class="form-group">
+              <label>上传填写好的题库文件（.xlsx）</label>
+              <div class="file-upload-zone small" @click="triggerImportFile" :class="{ dragover: importDragover }"
+                @dragover.prevent="importDragover = true"
+                @dragleave="importDragover = false"
+                @drop.prevent="handleImportDrop">
+                <span class="upload-icon">📂</span>
+                <p>{{ importFile ? importFile.name : '选择 Excel 文件' }}</p>
+              </div>
+              <input ref="importFileInput" type="file" accept=".xlsx" style="display:none" @change="e => importFile = e.target.files[0]" />
             </div>
-            <input ref="importFileInput" type="file" accept=".xlsx" style="display:none" @change="e => importFile = e.target.files[0]" />
+          </div>
+        </template>
+
+        <!-- Word 模式：试题卷 + 参考答案 -->
+        <div v-else class="form-body" style="margin-top:16px">
+          <div class="word-hint">上传「试题卷.docx」与「参考答案.docx」。系统按章节标题（选择题 / 判断题 / 简答题 / 案例分析题 …）自动识别题型与每题分值；参考答案可选，缺答案时客观题标记「缺少答案」、主观题参考答案留空。</div>
+          <div class="form-group">
+            <label>试题卷（.docx，必填）</label>
+            <div class="file-upload-zone small" @click="triggerImportQFile" :class="{ dragover: importQDragover }"
+              @dragover.prevent="importQDragover = true"
+              @dragleave="importQDragover = false"
+              @drop.prevent="handleImportQDrop">
+              <span class="upload-icon">📄</span>
+              <p>{{ importQFile ? importQFile.name : '选择试题卷文件' }}</p>
+            </div>
+            <input ref="importQInput" type="file" accept=".docx" style="display:none" @change="e => importQFile = e.target.files[0]" />
+          </div>
+          <div class="form-group">
+            <label>参考答案（.docx，可选）</label>
+            <div class="file-upload-zone small" @click="triggerImportAFile" :class="{ dragover: importADragover }"
+              @dragover.prevent="importADragover = true"
+              @dragleave="importADragover = false"
+              @drop.prevent="handleImportADrop">
+              <span class="upload-icon">📘</span>
+              <p>{{ importAFile ? importAFile.name : '选择参考答案文件' }}</p>
+            </div>
+            <input ref="importAInput" type="file" accept=".docx" style="display:none" @change="e => importAFile = e.target.files[0]" />
           </div>
         </div>
 
         <div class="form-actions">
           <button class="btn btn-outline" @click="mode = null">上一步</button>
-          <button class="btn btn-primary" @click="handleImportSubmit" :disabled="importing || !importForm.title || !importFile">
+          <button class="btn btn-primary" @click="handleImportSubmit" :disabled="importing || !importForm.title || (importTab === 'excel' ? !importFile : !importQFile)">
             {{ importing ? '导入中…' : '创建培训并导入' }}
           </button>
         </div>
@@ -583,6 +623,14 @@ const importing = ref(false)
 const downloading = ref(false)
 const importStep = ref(1)
 const importResult = ref(null)
+// Word 试卷模式状态
+const importTab = ref('excel') // 'excel' | 'docx'
+const importQInput = ref(null)
+const importAInput = ref(null)
+const importQFile = ref(null)
+const importAFile = ref(null)
+const importQDragover = ref(false)
+const importADragover = ref(false)
 
 async function downloadTemplate() {
   downloading.value = true
@@ -608,8 +656,23 @@ async function downloadTemplate() {
 function triggerImportFile() { importFileInput.value?.click() }
 function handleImportDrop(e) { importDragover.value = false; importFile.value = e.dataTransfer.files[0] }
 
+function triggerImportQFile() { importQInput.value?.click() }
+function triggerImportAFile() { importAInput.value?.click() }
+function handleImportQDrop(e) { importQDragover.value = false; importQFile.value = e.dataTransfer.files[0] }
+function handleImportADrop(e) { importADragover.value = false; importAFile.value = e.dataTransfer.files[0] }
+
+function isValidXlsx(file) { return !!file && /\.xlsx$/i.test(file.name) }
+function isValidDocx(file) { return !!file && /\.docx$/i.test(file.name) }
+
 async function handleImportSubmit() {
-  if (!importForm.title || !importFile.value) return
+  const needFile = importTab.value === 'excel' ? importFile.value : importQFile.value
+  if (!importForm.title || !needFile) return
+  // 后缀校验：Excel 仅 .xlsx，Word 试题卷仅 .docx
+  const ok = importTab.value === 'excel' ? isValidXlsx(importFile.value) : isValidDocx(importQFile.value)
+  if (!ok) {
+    importResult.value = { error: importTab.value === 'excel' ? '请上传 .xlsx 文件' : '请上传 .docx 文件' }
+    return
+  }
   importing.value = true
   importResult.value = null
 
@@ -625,11 +688,22 @@ async function handleImportSubmit() {
     const materialId = createRes.data?.data?.materialId
     if (!materialId) throw new Error('创建培训失败')
 
-    // 步骤2：导入题目
+    // 步骤2：导入题目（Excel 用 file；Word 用 questions + 可选 answers）
     const fd = new FormData()
-    fd.append('file', importFile.value)
     fd.append('material_id', materialId)
-    const importRes = await request.post('/api/admin/quiz-import/import', fd, {
+    let url
+    if (importTab.value === 'excel') {
+      fd.append('file', importFile.value)
+      url = '/api/admin/quiz-import/import'
+    } else {
+      fd.append('questions', importQFile.value)
+      if (importAFile.value) {
+        if (!isValidDocx(importAFile.value)) throw new Error('参考答案必须是 .docx 文件')
+        fd.append('answers', importAFile.value)
+      }
+      url = '/api/admin/quiz-import/import-docx'
+    }
+    const importRes = await request.post(url, fd, {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
 
@@ -732,6 +806,27 @@ h2 { font-size: 18px; margin-bottom: 20px; }
 .ai-config { background: #f8f9fa; border-radius: 10px; padding: 14px; }
 .checkbox-label { display: flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer; }
 .ai-params { margin-top: 12px; }
+
+/* ── 导入模式切换 Tab ── */
+.import-tabs { display: flex; gap: 8px; margin-top: 4px; }
+.import-tabs .tab {
+  padding: 8px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+.import-tabs .tab.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+.word-hint {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  background: #f8f9fa;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
 
 /* ── 导入步骤 ── */
 .import-steps {
