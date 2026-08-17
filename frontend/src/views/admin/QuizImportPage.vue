@@ -6,25 +6,56 @@
 
     <div class="card">
       <h2>📥 导入题目</h2>
-      <p class="hint">从 Excel 模板批量导入题目到当前题库</p>
+      <p class="hint">支持从 Excel 模板或 Word 试卷（.docx）批量导入题目，含主观题（简答 / 案例分析）。</p>
 
-      <div class="step-list">
-        <div class="step">
-          <span class="step-num">1</span>
-          <span>下载模板</span>
-          <a :href="templateUrl" class="btn btn-outline btn-sm">📄 下载模板</a>
-        </div>
-        <div class="step">
-          <span class="step-num">2</span>
-          <span>按模板格式填写题目</span>
-        </div>
-        <div class="step">
-          <span class="step-num">3</span>
-          <span>上传 Excel 文件导入</span>
-          <div class="file-upload" @click="triggerFile">
-            <span>📂 {{ selectedFile ? selectedFile.name : '选择文件' }}</span>
+      <div class="mode-tabs">
+        <button :class="['tab', mode === 'excel' ? 'active' : '']" @click="mode = 'excel'">📊 Excel 模板</button>
+        <button :class="['tab', mode === 'docx' ? 'active' : '']" @click="mode = 'docx'">📄 Word 试卷</button>
+      </div>
+
+      <!-- Excel 模式 -->
+      <div v-if="mode === 'excel'" class="mode-body">
+        <div class="step-list">
+          <div class="step">
+            <span class="step-num">1</span>
+            <span>下载模板</span>
+            <a :href="templateUrl" class="btn btn-outline btn-sm">📄 下载模板</a>
           </div>
-          <input ref="fileInput" type="file" accept=".xlsx" style="display:none" @change="e => selectedFile = e.target.files[0]" />
+          <div class="step">
+            <span class="step-num">2</span>
+            <span>按模板格式填写题目</span>
+          </div>
+          <div class="step">
+            <span class="step-num">3</span>
+            <span>上传 Excel 文件导入</span>
+            <div class="file-upload" @click="triggerFile">
+              <span>📂 {{ selectedFile ? selectedFile.name : '选择文件' }}</span>
+            </div>
+            <input ref="fileInput" type="file" accept=".xlsx" style="display:none" @change="e => selectedFile = e.target.files[0]" />
+          </div>
+        </div>
+      </div>
+
+      <!-- Word 模式 -->
+      <div v-else class="mode-body">
+        <p class="hint">上传「试题卷.docx」与「参考答案.docx」。系统按章节标题（选择题 / 判断题 / 简答题 / 案例分析题 …）自动识别题型与每题分值，主观题参考答案整段存入题库。<br/>参考答案可选；若缺答案，客观题将标记「缺少答案」、主观题参考答案留空。</p>
+        <div class="step-list">
+          <div class="step">
+            <span class="step-num">1</span>
+            <span>试题卷（必填）</span>
+            <div class="file-upload" @click="triggerQ">
+              <span>📄 {{ qFile ? qFile.name : '选择试题卷 .docx' }}</span>
+            </div>
+            <input ref="qInput" type="file" accept=".docx" style="display:none" @change="e => qFile = e.target.files[0]" />
+          </div>
+          <div class="step">
+            <span class="step-num">2</span>
+            <span>参考答案（可选）</span>
+            <div class="file-upload" @click="triggerA">
+              <span>📘 {{ aFile ? aFile.name : '选择参考答案 .docx' }}</span>
+            </div>
+            <input ref="aInput" type="file" accept=".docx" style="display:none" @change="e => aFile = e.target.files[0]" />
+          </div>
         </div>
       </div>
 
@@ -40,7 +71,7 @@
 
       <div class="form-actions">
         <button class="btn btn-outline" @click="$router.back()">取消</button>
-        <button class="btn btn-primary" @click="handleImport" :disabled="!selectedFile || importing">
+        <button class="btn btn-primary" @click="handleImport" :disabled="!canImport || importing">
           {{ importing ? '导入中…' : '开始导入' }}
         </button>
       </div>
@@ -48,9 +79,13 @@
       <div v-if="result" class="result-box" :class="result.fail > 0 ? 'has-fail' : 'all-ok'">
         <p>✅ 成功 {{ result.success }} 条</p>
         <p v-if="result.fail > 0">❌ 失败 {{ result.fail }} 条</p>
+        <div v-if="result.data?.validation" class="val-box">
+          <span>题型分布：</span>
+          <span v-if="result.data.validation.perType">单选 {{ result.data.validation.perType.single }} · 多选 {{ result.data.validation.perType.multiple }} · 判断 {{ result.data.validation.perType.judgment }} · 简答/案例 {{ result.data.validation.perType.essay }}</span>
+        </div>
         <div v-if="result.failPreview?.length" class="fail-list">
-          <div v-for="f in result.failPreview" :key="f.row" class="fail-item">
-            第 {{ f.row }} 行: {{ f.error }}
+          <div v-for="f in result.failPreview" :key="f.row || f.index" class="fail-item">
+            第 {{ f.row || f.index }} 项: {{ f.error }}
           </div>
         </div>
       </div>
@@ -66,8 +101,13 @@ import { request } from '@/utils/request'
 const route = useRoute()
 const router = useRouter()
 const materialId = route.params.id
+const mode = ref('excel')
 const fileInput = ref(null)
+const qInput = ref(null)
+const aInput = ref(null)
 const selectedFile = ref(null)
+const qFile = ref(null)
+const aFile = ref(null)
 const importing = ref(false)
 const result = ref(null)
 const examSingle = ref(0)
@@ -76,25 +116,40 @@ const examJudgment = ref(0)
 
 const templateUrl = computed(() => `/api/admin/quiz-import/template`)
 
+const canImport = computed(() => {
+  if (mode.value === 'excel') return !!selectedFile.value
+  return !!qFile.value
+})
+
 function triggerFile() { fileInput.value?.click() }
+function triggerQ() { qInput.value?.click() }
+function triggerA() { aInput.value?.click() }
 
 async function handleImport() {
-  if (!selectedFile.value) return
+  if (!canImport.value || importing.value) return
   importing.value = true
   result.value = null
   try {
     const fd = new FormData()
-    fd.append('file', selectedFile.value)
     fd.append('material_id', materialId)
     fd.append('exam_single_num', Number(examSingle.value) || 0)
     fd.append('exam_multiple_num', Number(examMultiple.value) || 0)
     fd.append('exam_judgment_num', Number(examJudgment.value) || 0)
-    const res = await request.post('/api/admin/quiz-import/import', fd, {
+    let url
+    if (mode.value === 'excel') {
+      fd.append('file', selectedFile.value)
+      url = '/api/admin/quiz-import/import'
+    } else {
+      fd.append('questions', qFile.value)
+      if (aFile.value) fd.append('answers', aFile.value)
+      url = '/api/admin/quiz-import/import-docx'
+    }
+    const res = await request.post(url, fd, {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
     result.value = res.data?.data || res.data
   } catch (e) {
-    result.value = { success: 0, fail: 1, failPreview: [{ row: 0, error: e.response?.data?.error || '导入失败' }] }
+    result.value = { success: 0, fail: 1, failPreview: [{ error: e.response?.data?.error || '导入失败' }] }
   } finally {
     importing.value = false
   }
@@ -102,14 +157,18 @@ async function handleImport() {
 </script>
 
 <style scoped>
-.import-page { max-width: 600px; }
+.import-page { max-width: 640px; }
 .page-nav { margin-bottom: 16px; }
 .back-link { background: none; border: none; color: var(--primary); font-size: 14px; cursor: pointer; }
-.hint { font-size: 13px; color: var(--text-secondary); margin: 8px 0 20px; }
+.hint { font-size: 13px; color: var(--text-secondary); margin: 8px 0 20px; line-height: 1.6; }
+.mode-tabs { display: flex; gap: 8px; margin-bottom: 16px; }
+.tab { padding: 8px 16px; border: 1px solid var(--border); border-radius: 8px; background: #fff; cursor: pointer; font-size: 14px; color: var(--text-secondary); }
+.tab.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+.mode-body { margin: 8px 0 4px; }
 .step-list { display: flex; flex-direction: column; gap: 14px; margin: 20px 0; }
-.step { display: flex; align-items: center; gap: 10px; font-size: 14px; }
+.step { display: flex; align-items: center; gap: 10px; font-size: 14px; flex-wrap: wrap; }
 .step-num { width: 24px; height: 24px; border-radius: 50%; background: var(--primary); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; flex-shrink: 0; }
-.file-upload { padding: 6px 14px; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; font-size: 13px; color: var(--primary); }
+.file-upload { padding: 6px 14px; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; font-size: 13px; color: var(--primary); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-upload:hover { background: #e8f0fe; }
 .btn-sm { padding: 5px 12px; font-size: 12px; }
 .exam-config { margin: 20px 0; padding: 14px; background: #f8faff; border: 1px solid var(--border); border-radius: 10px; }
@@ -121,6 +180,7 @@ async function handleImport() {
 .result-box { margin-top: 16px; padding: 14px; border-radius: 8px; font-size: 14px; }
 .result-box.has-fail { background: #fce8e6; }
 .result-box.all-ok { background: #e6f4ea; }
+.val-box { margin-top: 8px; font-size: 12px; color: var(--text-secondary); }
 .fail-list { margin-top: 8px; }
 .fail-item { font-size: 12px; color: var(--danger); padding: 2px 0; }
 </style>

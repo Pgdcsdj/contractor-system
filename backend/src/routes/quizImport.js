@@ -196,6 +196,73 @@ router.post('/import', adminAuth, upload.single('file'), async (req, res) => {
   }
 })
 
+// ─── POST /api/admin/quiz-import/import-docx ────────────────────────────────
+// 直接导入 Word 试卷：试题卷.docx（必填）+ 参考答案.docx（可选）。
+// 支持含主观题（简答/案例分析）的试卷，参考答案为整段文本存入 answer（TEXT）。
+const uploadDocx = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } })
+router.post('/import-docx', adminAuth, uploadDocx.fields([
+  { name: 'questions', maxCount: 1 },
+  { name: 'answers', maxCount: 1 },
+]), async (req, res) => {
+  const files = req.files || {}
+  const qFile = files.questions && files.questions[0]
+  if (!qFile) return res.status(400).json({ error: '请上传试题卷 Word 文件（.docx）' })
+  if (!qFile.originalname.toLowerCase().endsWith('.docx')) {
+    return res.status(400).json({ error: '试题卷需为 .docx 格式' })
+  }
+  const aFile = files.answers && files.answers[0]
+
+  const { material_id, exam_single_num, exam_multiple_num, exam_judgment_num } = req.body
+  if (!material_id) return res.status(400).json({ error: '请指定目标题库ID' })
+  const [material] = await pool.execute('SELECT id FROM t_material WHERE id = ?', [material_id])
+  if (!material.length) return res.status(400).json({ error: '题库不存在' })
+
+  try {
+    const { parseExamPaper } = require('../services/docxQuizImport')
+    const { questions, validation } = parseExamPaper(qFile.buffer, aFile ? aFile.buffer : null)
+
+    let success = 0
+    const failList = []
+    for (let i = 0; i < questions.length; i++) {
+      const q = questions[i]
+      try {
+        await pool.execute(
+          `INSERT INTO t_question
+             (material_id, type, question, options, answer, analysis, score, sort_order, status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+          [material_id, q.type, q.question, q.options ? JSON.stringify(q.options) : null, q.answer || '', q.analysis || '', q.score, i + 1]
+        )
+        success++
+      } catch (e) {
+        failList.push({ index: i + 1, error: e.message })
+      }
+    }
+
+    const [[{ cnt }]] = await pool.execute(
+      'SELECT COUNT(*) AS cnt FROM t_question WHERE material_id = ? AND status = 1', [material_id]
+    )
+    const MATERIAL_STATUS_AFTER = 2
+    const examSingle = Math.max(0, Number(exam_single_num) || 0)
+    const examMultiple = Math.max(0, Number(exam_multiple_num) || 0)
+    const examJudgment = Math.max(0, Number(exam_judgment_num) || 0)
+    await pool.execute(
+      `UPDATE t_material
+       SET question_cnt = ?, status = ?, ai_status = 2,
+           exam_single_num = ?, exam_multiple_num = ?, exam_judgment_num = ?
+       WHERE id = ?`,
+      [cnt, MATERIAL_STATUS_AFTER, examSingle, examMultiple, examJudgment, material_id]
+    )
+
+    res.json({
+      success: true,
+      message: `导入完成：成功 ${success} 条 / 失败 ${failList.length} 条`,
+      data: { success, fail: failList.length, failPreview: failList.slice(0, 10), validation },
+    })
+  } catch (e) {
+    res.status(500).json({ error: '导入失败：' + e.message })
+  }
+})
+
 // ─── GET /api/admin/quiz-import/export/:id ────────────────────────────────────
 router.get('/export/:id', adminAuth, async (req, res) => {
   const { id } = req.params
