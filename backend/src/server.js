@@ -703,6 +703,19 @@ async function autoMigrate() {
     }
     console.log('[migrate] ✅ 出题质量校验相关表结构已就绪')
 
+    // 11. t_record 人工评分三列（essay 主观题人工打分：评分状态/评分人/评分时间）
+    for (const col of [
+      { name: 'essay_graded', def: "TINYINT NOT NULL DEFAULT 0 COMMENT 'essay是否已人工评分 0=待评 1=已评'" },
+      { name: 'graded_by',    def: "INT UNSIGNED DEFAULT NULL COMMENT '评分管理员ID(t_admin.id)'" },
+      { name: 'graded_at',    def: "TIMESTAMP NULL DEFAULT NULL COMMENT '人工评分时间'" },
+    ]) {
+      if (!(await ensureColumn('t_record', col.name))) {
+        console.log(`[migrate] 正在添加 t_record.${col.name} 字段...`)
+        await pool.execute(`ALTER TABLE t_record ADD COLUMN ${col.name} ${col.def}`)
+        console.log(`[migrate] ✅ t_record.${col.name} 字段添加完成`)
+      }
+    }
+
     console.log('[migrate] ✅ 隐患闭环相关表结构已就绪')
   } catch (err) {
     console.error('[migrate] 自动迁移失败:', err.message)

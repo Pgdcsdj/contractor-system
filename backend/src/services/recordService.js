@@ -88,24 +88,43 @@ async function hasCompleted(userId, materialId) {
 
 /**
  * 管理员查询答题记录列表
+ * 支持筛选：userId / materialId / unit / dateFrom / dateTo / keyword(姓名或手机) / passed(0|1)
  */
-async function queryRecords({ userId, materialId, unit, dateFrom, dateTo, page = 1, pageSize = 20 }) {
+async function queryRecords({ userId, materialId, unit, dateFrom, dateTo, keyword, passed, page = 1, pageSize = 20 }) {
   const safePageSize = Math.min(100, Math.max(1, Number(pageSize) || 20))
   const safeOffset   = (Math.max(1, Number(page) || 1) - 1) * safePageSize
   let where = 'WHERE 1=1'
   const params = []
 
-  if (userId)     { where += ' AND r.user_id = ?';     params.push(userId) }
-  if (materialId) { where += ' AND r.material_id = ?'; params.push(materialId) }
-  if (unit)       { where += ' AND u.unit = ?';        params.push(unit) }
-  if (dateFrom)   { where += ' AND r.submitted_at >= ?'; params.push(dateFrom) }
-  if (dateTo)     { where += ' AND r.submitted_at <= ?'; params.push(dateTo + ' 23:59:59') }
+  if (userId)     { where += ' AND r.user_id = ?';          params.push(userId) }
+  if (materialId) { where += ' AND r.material_id = ?';      params.push(materialId) }
+  if (unit)       { where += ' AND u.unit = ?';             params.push(unit) }
+  if (dateFrom)   { where += ' AND r.submitted_at >= ?';    params.push(dateFrom) }
+  if (dateTo)     { where += ' AND r.submitted_at <= ?';    params.push(dateTo + ' 23:59:59') }
+  if (keyword) {
+    where += ' AND (u.name LIKE ? OR u.phone LIKE ?)'
+    params.push(`%${keyword}%`, `%${keyword}%`)
+  }
+  // 及格判定必须用百分比口径（与 submit 一致），不能用 score>=pass_score（不完整提交 max_score 会偏小）
+  if (passed === '1' || passed === 1) {
+    where += ' AND r.max_score > 0 AND ROUND(r.score / r.max_score * 100) >= m.pass_score'
+  } else if (passed === '0' || passed === 0) {
+    where += ' AND (r.max_score = 0 OR ROUND(r.score / r.max_score * 100) < m.pass_score)'
+  }
 
   const sql = `
     SELECT
       r.id, r.score, r.max_score, r.duration_sec, r.submitted_at, r.is_offline, r.mode, r.attempt_no,
+      r.hash, r.essay_graded, r.graded_at,
       u.name AS user_name, u.unit, u.supervising_unit,
-      m.title AS material_title
+      m.title AS material_title, m.pass_score,
+      CASE WHEN r.max_score > 0
+        THEN ROUND(r.score / r.max_score * 100) >= m.pass_score
+        ELSE 0 END AS passed,
+      EXISTS(
+        SELECT 1 FROM t_question q
+        WHERE q.material_id = r.material_id AND q.type = 'essay' AND q.status = 1
+      ) AS needs_grading
     FROM t_record r
     JOIN t_user     u ON u.id = r.user_id
     JOIN t_material m ON m.id = r.material_id
@@ -128,4 +147,54 @@ async function queryRecords({ userId, materialId, unit, dateFrom, dateTo, page =
   return { total, list: rows, page: Math.max(1, Number(page) || 1), pageSize: safePageSize }
 }
 
-module.exports = { saveRecord, saveOfflineRecords, hasCompleted, queryRecords }
+/**
+ * 查询单条答题记录（含用户/题库信息），供人工评分详情页使用
+ * @param {number} id 记录ID
+ * @returns {object|null} 记录行（answers 为 MySQL JSON 解析后的对象/数组，或原样字符串）
+ */
+async function getRecordById(id) {
+  const [rows] = await pool.query(
+    `SELECT r.*, u.name AS user_name, u.unit, u.phone, u.supervising_unit,
+            m.title AS material_title, m.pass_score, m.ai_grading
+     FROM t_record r
+     JOIN t_user     u ON u.id = r.user_id
+     JOIN t_material m ON m.id = r.material_id
+     WHERE r.id = ? LIMIT 1`,
+    [id]
+  )
+  return rows.length ? rows[0] : null
+}
+
+/**
+ * 保存人工评分结果（essay 打分回写）
+ * @param {object} params
+ * @param {number} params.recordId     记录ID
+ * @param {Array}  params.answers      合并后的完整 answers 数组（含 manualGraded/score 等）
+ * @param {number} params.score        重算后的实际得分
+ * @param {number} params.maxScore     兜底后的满分（material 全部题分值之和）
+ * @param {number} params.essayGraded  0/1 是否已全部人工评完
+ * @param {number} params.gradedBy     管理员ID
+ * @param {Date}   params.gradedAt     评分时间
+ * @param {string} params.hash         重签后的防篡改 hash
+ * @returns {boolean} 是否更新成功
+ */
+async function saveEssayGrades({ recordId, answers, score, maxScore, essayGraded, gradedBy, gradedAt, hash }) {
+  const [result] = await pool.execute(
+    `UPDATE t_record
+        SET answers = ?, score = ?, max_score = ?, essay_graded = ?, graded_by = ?, graded_at = ?, hash = ?
+      WHERE id = ?`,
+    [
+      JSON.stringify(answers),
+      score,
+      maxScore,
+      essayGraded ? 1 : 0,
+      gradedBy || null,
+      gradedAt || null,
+      hash,
+      recordId,
+    ]
+  )
+  return result.affectedRows > 0
+}
+
+module.exports = { saveRecord, saveOfflineRecords, hasCompleted, queryRecords, getRecordById, saveEssayGrades }

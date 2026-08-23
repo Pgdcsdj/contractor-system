@@ -122,6 +122,11 @@ const routes = [
         component: () => import('@/views/admin/RecordsPage.vue'),
       },
       {
+        path: 'records/:id',
+        name: 'RecordGrade',
+        component: () => import('@/views/admin/EssayGradePage.vue'),
+      },
+      {
         path: 'settings',
         name: 'Settings',
         component: () => import('@/views/admin/SettingsPage.vue'),

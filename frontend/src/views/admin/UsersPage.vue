@@ -96,7 +96,7 @@
           @dragleave="isDragover = false"
           @drop.prevent="handleDrop">
           <span class="upload-icon">📂</span>
-          <p>{{ selectedFile ? selectedFile.name : '点击或拖拽上传 .xlsx 文件' }}</p>
+          <p>{{ selectedFile ? selectedFile.name : '点击或拖拽上传 .xlsx / .xls 文件' }}</p>
         </div>
         <input ref="fileInput" type="file" accept=".xlsx,.xls" style="display:none" @change="handleFileChange" />
 

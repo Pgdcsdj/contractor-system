@@ -55,7 +55,7 @@ router.get('/me', adminAuth, (req, res) => {
 
 // ─── 以下路由全部需要鉴权 ─────────────────────────────────────────────────────
 
-// multer：只接收 xlsx 文件，限制 5MB，存内存
+// multer：只接收 xlsx / xls 文件，限制 5MB，存内存
 const upload = multer({
   storage: multer.memoryStorage(),
   limits:  { fileSize: 5 * 1024 * 1024 },
@@ -64,10 +64,10 @@ const upload = multer({
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       'application/vnd.ms-excel',
     ]
-    if (allowed.includes(file.mimetype) || file.originalname.endsWith('.xlsx')) {
+    if (allowed.includes(file.mimetype) || file.originalname.endsWith('.xlsx') || file.originalname.endsWith('.xls')) {
       cb(null, true)
     } else {
-      cb(new Error('只支持 .xlsx 格式文件'))
+      cb(new Error('只支持 .xlsx / .xls 格式文件'))
     }
   },
 })

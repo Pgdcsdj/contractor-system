@@ -31,26 +31,36 @@
         <thead>
           <tr>
             <th>姓名</th><th>培训</th><th>得分</th><th>结果</th>
-            <th>提交时间</th><th>来源</th><th>签名状态</th>
+            <th>提交时间</th><th>来源</th><th>签名状态</th><th>人工评分</th><th>操作</th>
           </tr>
         </thead>
         <tbody>
           <tr v-if="loading">
-            <td colspan="7" style="text-align:center;padding:30px"><div class="spinner" style="margin:0 auto"></div></td>
+            <td colspan="9" style="text-align:center;padding:30px"><div class="spinner" style="margin:0 auto"></div></td>
           </tr>
           <tr v-else-if="records.length === 0">
-            <td colspan="7" class="empty-cell">暂无答题记录</td>
+            <td colspan="9" class="empty-cell">暂无答题记录</td>
           </tr>
           <tr v-for="r in records" :key="r.id">
             <td><strong>{{ r.user_name }}</strong></td>
-            <td class="title-cell">{{ r.training_title }}</td>
-            <td><strong :class="r.passed ? 'pass' : 'fail'">{{ r.score }}分</strong></td>
+            <td class="title-cell" :title="r.material_title">{{ r.material_title || '-' }}</td>
+            <td><strong :class="r.passed ? 'pass' : 'fail'">{{ r.score }}/{{ r.max_score }}分</strong></td>
             <td><span :class="['badge', r.passed ? 'badge-success' : 'badge-danger']">{{ r.passed ? '及格' : '不及格' }}</span></td>
-            <td class="time-cell">{{ formatTime(r.submit_time) }}</td>
-            <td><span :class="['badge', r.source === 'online' ? 'badge-success' : 'badge-warning']">{{ r.source === 'online' ? '在线' : '离线' }}</span></td>
+            <td class="time-cell">{{ formatTime(r.submitted_at) }}</td>
+            <td><span :class="['badge', r.is_offline === 0 ? 'badge-success' : 'badge-warning']">{{ r.is_offline === 0 ? '在线' : '离线' }}</span></td>
             <td>
-              <span class="badge badge-success" v-if="r.answer_hash">✓</span>
+              <span class="badge badge-success" v-if="r.hash">✓</span>
               <span class="badge badge-danger" v-else>✗</span>
+            </td>
+            <td>
+              <span v-if="r.needs_grading">
+                <span class="badge badge-success" v-if="r.essay_graded">已评</span>
+                <span class="badge badge-warning" v-else>待评</span>
+              </span>
+              <span v-else class="text-muted">-</span>
+            </td>
+            <td>
+              <button v-if="r.needs_grading" class="btn btn-sm btn-primary" @click="goGrade(r.id)">评分</button>
             </td>
           </tr>
         </tbody>
@@ -68,8 +78,10 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { request } from '@/utils/request'
 
+const router = useRouter()
 const records = ref([])
 const trainings = ref([])
 const loading = ref(true)
@@ -89,16 +101,34 @@ function debounceFetch() {
   debounceFetch._t = setTimeout(fetchRecords, 300)
 }
 
+// 后端参数映射：training→materialId、startDate→dateFrom、endDate→dateTo、keyword/passed 透传
+function buildParams() {
+  const params = { page: page.value, pageSize }
+  if (filters.value.keyword)   params.keyword = filters.value.keyword
+  if (filters.value.training)  params.materialId = filters.value.training
+  if (filters.value.passed !== '') params.passed = filters.value.passed
+  if (filters.value.startDate) params.dateFrom = filters.value.startDate
+  if (filters.value.endDate)   params.dateTo = filters.value.endDate
+  return params
+}
+
 async function fetchRecords() {
   loading.value = true
   try {
-    const params = { page: page.value, pageSize, ...filters.value }
-    const res = await request.get('/api/record/list', { params })
+    const res = await request.get('/api/record/list', { params: buildParams() })
     records.value = res.data?.data?.list || []
     total.value = res.data?.data?.total || 0
-    if (res.data?.data?.trainings) trainings.value = res.data.data.trainings
   } catch {}
   loading.value = false
+}
+
+// 培训下拉数据源：/api/material/list（后端 queryRecords 不返回 trainings）
+async function fetchTrainings() {
+  try {
+    const res = await request.get('/api/material/list', { params: { pageSize: 500 } })
+    const list = res.data?.data?.list || res.data?.data || []
+    trainings.value = Array.isArray(list) ? list : []
+  } catch {}
 }
 
 function formatTime(iso) {
@@ -107,17 +137,24 @@ function formatTime(iso) {
   return `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`
 }
 
+function goGrade(id) {
+  router.push(`/admin/records/${id}`)
+}
+
 function exportExcel() {
-  const params = new URLSearchParams(filters.value).toString()
+  const params = new URLSearchParams(buildParams()).toString()
   const token = localStorage.getItem('tnb_admin_token')
   window.open(`/api/record/export?${params}&token=${token}`, '_blank')
 }
 
-onMounted(fetchRecords)
+onMounted(() => {
+  fetchRecords()
+  fetchTrainings()
+})
 </script>
 
 <style scoped>
-.records-page { max-width: 1200px; }
+.records-page { max-width: 1280px; }
 
 .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
 .filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex: 1; }
@@ -143,6 +180,7 @@ onMounted(fetchRecords)
   background: #f8f9fa; color: var(--text-secondary);
   font-weight: 500; font-size: 13px;
   border-bottom: 1px solid var(--border);
+  white-space: nowrap;
 }
 .data-table td {
   padding: 11px 14px;
@@ -154,7 +192,10 @@ onMounted(fetchRecords)
 .time-cell { font-size: 13px; color: var(--text-secondary); white-space: nowrap; }
 .pass { color: var(--success); }
 .fail { color: var(--danger); }
+.text-muted { color: var(--text-secondary); font-size: 13px; }
 .empty-cell { text-align: center; padding: 40px; color: var(--text-secondary); }
+
+.btn-sm { padding: 4px 10px; font-size: 13px; border-radius: 6px; }
 
 .pagination { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 12px; border-top: 1px solid var(--border); }
 .pg-btn { width: 30px; height: 30px; border: 1px solid var(--border); border-radius: 6px; background: #fff; cursor: pointer; font-size: 15px; display: flex; align-items: center; justify-content: center; }
