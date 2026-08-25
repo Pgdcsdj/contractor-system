@@ -148,11 +148,32 @@
         </div>
         <div class="form-group">
           <label>目标人群</label>
-          <select v-model="publishForm.target_type" class="form-input">
+          <select v-model="publishForm.target_type" class="form-input" @change="onTargetTypeChange">
             <option value="all">全员</option>
             <option value="unit">指定承包商所有人员</option>
             <option value="specific">指定人员</option>
           </select>
+        </div>
+        <div v-if="publishForm.target_type === 'unit'" class="form-group">
+          <label>选择承包商单位（可多选）</label>
+          <div class="multi-select">
+            <label v-for="u in allUnits" :key="u" class="checkbox-label">
+              <input type="checkbox" :value="u" v-model="publishForm.target_value" />
+              {{ u }}
+            </label>
+          </div>
+        </div>
+        <div v-if="publishForm.target_type === 'specific'" class="form-group">
+          <label>选择人员（已加载 {{ allUsers.length }} 人，可输入姓名筛选）</label>
+          <input v-model="userSearch" class="form-input" placeholder="输入姓名筛选…" @input="filterUsers" />
+          <div v-if="filteredUsers.length" class="user-select-list">
+            <label v-for="u in filteredUsers" :key="u.id" class="checkbox-label">
+              <input type="checkbox" :value="u.id" v-model="publishForm.target_value" />
+              {{ u.name }} ({{ u.unit || '-' }})
+            </label>
+          </div>
+          <div v-else-if="!loadingUsers" class="user-empty">未找到匹配人员</div>
+          <div v-if="loadingUsers" class="user-empty">加载人员中…</div>
         </div>
         <div class="modal-actions">
           <button class="btn btn-outline" @click="showQuickPublish = false">取消</button>
@@ -182,6 +203,48 @@ const publishing = ref(null)
 const showQuickPublish = ref(false)
 const publishForm = ref({ id: null, category_id: null, target_type: 'all', target_value: [] })
 const categories = ref([])
+
+// ── 发布目标人群：单位 / 指定人员 ──
+const allUnits = ref([])
+const userSearch = ref('')
+const allUsers = ref([])
+const loadingUsers = ref(false)
+const searchTimer = ref(null)
+
+const filteredUsers = computed(() => {
+  const kw = userSearch.value.trim().toLowerCase()
+  if (!kw) return allUsers.value
+  return allUsers.value.filter(u =>
+    (u.name || '').toLowerCase().includes(kw) ||
+    (u.unit || '').toLowerCase().includes(kw) ||
+    (u.id_card || '').toLowerCase().includes(kw)
+  )
+})
+
+function onTargetTypeChange() {
+  publishForm.value.target_value = []
+  userSearch.value = ''
+  if (publishForm.value.target_type === 'specific') loadAllUsers()
+}
+
+function filterUsers() {
+  clearTimeout(searchTimer.value)
+  searchTimer.value = setTimeout(() => {}, 150)
+}
+
+async function loadAllUsers() {
+  if (allUsers.value.length > 0) return
+  loadingUsers.value = true
+  try {
+    const res = await request.get('/api/admin/users', { params: { pageSize: 100 } })
+    allUsers.value = res.data?.data?.list || []
+  } catch (e) {
+    console.error('[loadAllUsers]', e)
+    allUsers.value = []
+  } finally {
+    loadingUsers.value = false
+  }
+}
 
 // ── QR 码状态 ──
 const qrVisible = ref(false)
@@ -347,8 +410,12 @@ onMounted(() => { fetchTrainings(); initPublish() })
 
 async function initPublish() {
   try {
-    const res = await request.get('/api/admin/categories')
-    categories.value = res.data?.data || []
+    const [catRes, unitRes] = await Promise.all([
+      request.get('/api/admin/categories'),
+      request.get('/api/admin/filter-options'),
+    ])
+    categories.value = catRes.data?.data || []
+    allUnits.value = unitRes.data?.data?.units || []
   } catch {}
 }
 </script>
@@ -422,6 +489,7 @@ async function initPublish() {
 .multi-select { max-height: 160px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; padding: 8px; }
 .checkbox-label { display: flex; align-items: center; gap: 6px; padding: 4px 0; font-size: 13px; cursor: pointer; }
 .user-select-list { max-height: 200px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; padding: 8px; margin-top: 4px; }
+.user-empty { margin-top: 6px; font-size: 13px; color: var(--text-secondary); text-align: center; padding: 8px; }
 .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; }
 .qr-modal {
   width: 380px; padding: 28px 24px; text-align: center;

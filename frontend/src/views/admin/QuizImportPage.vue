@@ -19,7 +19,7 @@
           <div class="step">
             <span class="step-num">1</span>
             <span>下载模板</span>
-            <a :href="templateUrl" class="btn btn-outline btn-sm">📄 下载模板</a>
+            <button class="btn btn-outline btn-sm" @click="downloadTemplate">📄 下载模板</button>
           </div>
           <div class="step">
             <span class="step-num">2</span>
@@ -114,8 +114,6 @@ const examSingle = ref(0)
 const examMultiple = ref(0)
 const examJudgment = ref(0)
 
-const templateUrl = computed(() => `/api/admin/quiz-import/template`)
-
 const canImport = computed(() => {
   if (mode.value === 'excel') return !!selectedFile.value
   return !!qFile.value
@@ -124,6 +122,25 @@ const canImport = computed(() => {
 function triggerFile() { fileInput.value?.click() }
 function triggerQ() { qInput.value?.click() }
 function triggerA() { aInput.value?.click() }
+
+// 下载 Excel 导入模板：走 axios（自动带 tnb_admin_token），避免 <a href> 无鉴权 401
+async function downloadTemplate() {
+  try {
+    const res = await request.get('/api/admin/quiz-import/template', {
+      responseType: 'blob',
+    })
+    const url = URL.createObjectURL(res.data)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = '题库导入模板.xlsx'
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  } catch (e) {
+    alert(e.response?.data?.error || '下载模板失败')
+  }
+}
 
 async function handleImport() {
   if (!canImport.value || importing.value) return
