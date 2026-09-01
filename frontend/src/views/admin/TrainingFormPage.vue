@@ -279,7 +279,18 @@
             </select>
           </div>
         </div>
+
+        <!-- 考试抽题配置（与题库导入页「🎯 考试抽题配置」字段、文案保持一致） -->
+        <div class="exam-config">
+          <h3>🎯 考试抽题配置</h3>
+          <p class="hint">规定考试中各题型随机抽取数量（题库题目通常 &gt;100 道，避免一次考完全部）。留空或填 0 表示考该题型全部题目。仅「考试」模式生效，学习 / 练习模式使用全部题目。</p>
+          <div class="config-row">
+            <label>单选题 <input type="number" min="0" v-model.number="importForm.exam_single_num" placeholder="0" /></label>
+            <label>多选题 <input type="number" min="0" v-model.number="importForm.exam_multiple_num" placeholder="0" /></label>
+            <label>判断题 <input type="number" min="0" v-model.number="importForm.exam_judgment_num" placeholder="0" /></label>
+          </div>
         </div>
+        </div><!-- /.form-body -->
 
         <!-- 导入模式切换（Excel / Word） -->
         <div class="import-tabs">
@@ -615,6 +626,10 @@ const importForm = reactive({
   time_limit: 30,
   mode: 'exam',
   difficulty: 3,
+  // 考试随机抽题配置：0 = 该题型全抽（字段与 QuizImportPage 的 exam_single/multiple/judgment 对齐）
+  exam_single_num: 0,
+  exam_multiple_num: 0,
+  exam_judgment_num: 0,
 })
 const importFileInput = ref(null)
 const importFile = ref(null)
@@ -677,13 +692,16 @@ async function handleImportSubmit() {
   importResult.value = null
 
   try {
-    // 步骤1：创建培训（无文件）
+    // 步骤1：创建培训（无文件；同时写入考试抽题配置）
     const createRes = await request.post('/api/material/create', {
       title: importForm.title,
       category_id: importForm.category_id,
       pass_score: importForm.pass_score,
       time_limit: importForm.time_limit,
       mode: importForm.mode,
+      exam_single_num: Math.max(0, Number(importForm.exam_single_num) || 0),
+      exam_multiple_num: Math.max(0, Number(importForm.exam_multiple_num) || 0),
+      exam_judgment_num: Math.max(0, Number(importForm.exam_judgment_num) || 0),
     })
     const materialId = createRes.data?.data?.materialId
     if (!materialId) throw new Error('创建培训失败')
@@ -691,6 +709,10 @@ async function handleImportSubmit() {
     // 步骤2：导入题目（Excel 用 file；Word 用 questions + 可选 answers）
     const fd = new FormData()
     fd.append('material_id', materialId)
+    // 导入接口会按这三个字段覆盖题库抽题配置，必须透传，否则前面的设置会被清零
+    fd.append('exam_single_num', Math.max(0, Number(importForm.exam_single_num) || 0))
+    fd.append('exam_multiple_num', Math.max(0, Number(importForm.exam_multiple_num) || 0))
+    fd.append('exam_judgment_num', Math.max(0, Number(importForm.exam_judgment_num) || 0))
     let url
     if (importTab.value === 'excel') {
       fd.append('file', importFile.value)
@@ -806,6 +828,15 @@ h2 { font-size: 18px; margin-bottom: 20px; }
 .ai-config { background: #f8f9fa; border-radius: 10px; padding: 14px; }
 .checkbox-label { display: flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer; }
 .ai-params { margin-top: 12px; }
+
+/* ── 考试抽题配置（与 QuizImportPage 同名区块保持视觉一致）── */
+.exam-config { margin: 16px 0; padding: 14px; background: #f8faff; border: 1px solid var(--border); border-radius: 10px; }
+.exam-config h3 { font-size: 14px; margin-bottom: 6px; }
+.exam-config .hint { font-size: 12px; color: var(--text-secondary); line-height: 1.6; margin: 0; }
+.config-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+.config-row label { display: flex; flex-direction: column; font-size: 12px; color: var(--text-secondary); gap: 4px; flex: 1; min-width: 90px; }
+.config-row input { padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 14px; width: 100%; box-sizing: border-box; }
+.config-row input:focus { outline: none; border-color: var(--primary); }
 
 /* ── 导入模式切换 Tab ── */
 .import-tabs { display: flex; gap: 8px; margin-top: 4px; }

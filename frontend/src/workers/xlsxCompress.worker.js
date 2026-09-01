@@ -23,6 +23,8 @@ import {
   HARD_LIMIT,
   MIN_IMAGE_BYTES,
   MEDIA_PREFIX,
+  MAX_IMAGE_BYTES,
+  PER_IMAGE_PROFILES,
 } from '@/constants/importCompress'
 
 const MIME_MAP = {
@@ -43,8 +45,15 @@ function mimeFromName(name) {
   return MIME_MAP[m ? m[1] : ''] || 'image/png'
 }
 
-/** 用 OffscreenCanvas 把一张图压成 JPEG（按 maxEdge 等比缩放 + quality） */
-async function compressOne(bytes, profile, mime) {
+/**
+ * 按某 profile 把一张图压成 JPEG Uint8Array（等比缩放 + 指定质量）。
+ * 内部小函数，被 compressOne 复用（主档 + 单图上限兜底档共用同一套编码逻辑）。
+ * @param {Uint8Array} bytes 原始图片字节
+ * @param {{maxEdge:number, quality:number}} profile 缩放/质量参数
+ * @param {string} mime 原图 MIME
+ * @returns {Promise<Uint8Array>}
+ */
+async function encode(bytes, profile, mime) {
   const blob = new Blob([bytes], { type: mime })
   const bmp = await createImageBitmap(blob)
   try {
@@ -62,6 +71,28 @@ async function compressOne(bytes, profile, mime) {
   } finally {
     if (typeof bmp.close === 'function') bmp.close()
   }
+}
+
+/**
+ * 压缩单张图：先用主 profile 编码，再始终应用单图上限。
+ * 若主档压完仍 > MAX_IMAGE_BYTES，用 PER_IMAGE_PROFILES 逐档加码重压，
+ * 直到 ≤ MAX_IMAGE_BYTES 或走完地板档（300/0.30 仍超也接受，不再循环）。
+ * @param {Uint8Array} bytes 原始图片字节
+ * @param {{maxEdge:number, quality:number}} profile 主压缩档（来自 COMPRESS_PROFILES 当前轮）
+ * @param {string} mime 原图 MIME
+ * @returns {Promise<Uint8Array>}
+ */
+async function compressOne(bytes, profile, mime) {
+  let out = await encode(bytes, profile, mime)
+  // 单图上限必须在每一轮都生效（第 1 轮 1600px 也可能单图 >200KB）
+  if (out.length > MAX_IMAGE_BYTES) {
+    for (let i = 0; i < PER_IMAGE_PROFILES.length; i++) {
+      out = await encode(bytes, PER_IMAGE_PROFILES[i], mime)
+      if (out.length <= MAX_IMAGE_BYTES) break // 达标即停
+      // 否则继续下一更激进档位；走完地板档仍超则接受（避免死循环）
+    }
+  }
+  return out
 }
 
 /**

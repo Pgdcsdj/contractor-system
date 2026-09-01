@@ -176,3 +176,48 @@ export function saveRectifyUnitBiz(payload) {
 export function deleteRectifyUnitBiz(id) {
   return request.delete('/api/rectify-unit-biz/' + id)
 }
+
+// ─── 问题依据库（标准依据）───────────────────────────────────────────────────
+/** 列表（?page&pageSize&keyword） */
+export function getStandardBasisList(params = {}) {
+  return request.get('/api/hazards/standard-basis', { params })
+}
+
+/** 单条匹配（录入页自动匹配用） */
+export function matchStandardBasis(category) {
+  return request.post('/api/hazards/standard-basis/match', { category })
+}
+
+/** 新增 */
+export function createStandardBasis(payload) {
+  return request.post('/api/hazards/standard-basis', payload)
+}
+
+/** 修改 */
+export function updateStandardBasis(id, payload) {
+  return request.put(`/api/hazards/standard-basis/${id}`, payload)
+}
+
+/** 删除 */
+export function deleteStandardBasis(id) {
+  return request.delete(`/api/hazards/standard-basis/${id}`)
+}
+
+/** 导入（xlsx），file 为 File 对象 */
+export function importStandardBasis(file) {
+  const fd = new FormData()
+  fd.append('file', file)
+  return request.post('/api/hazards/standard-basis/import', fd, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
+}
+
+/** 下载模板（Blob） */
+export function getStandardBasisTemplate() {
+  return request.get('/api/hazards/standard-basis/template', { responseType: 'blob' })
+}
+
+/** 导出（Blob） */
+export function exportStandardBasis() {
+  return request.get('/api/hazards/standard-basis/export', { responseType: 'blob' })
+}

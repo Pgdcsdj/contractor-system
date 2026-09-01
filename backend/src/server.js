@@ -35,6 +35,7 @@ const backupService       = require('./services/backupService')
 const dingtalkRoutes       = require('./routes/dingtalk')        // 钉钉 OAuth 桥接 → Memos 个人工作日志
 const contractorDocRoutes   = require('./routes/contractorDoc')   // 承包商开工资料电子化上报（需求 C）
 const qualityRoutes         = require('./routes/quality')         // 出题质量量化校验与追踪
+const standardBasisRoutes   = require('./routes/standardBasis')    // 问题依据库（标准依据条款）
 
 // ─── 系统版本常量（与前端 src/version.js 保持一致）─────────────────────
 const { APP_VERSION, BUILD_DATE } = require('./version')
@@ -226,8 +227,17 @@ async function autoMigrate() {
       await pool.execute(
         "ALTER TABLE t_hazard ADD COLUMN hazard_investigation_item VARCHAR(200) NULL COMMENT '隐患排查项目'"
       )
-      console.log('[migrate] ✅ hazard_investigation_item 字段添加完成')
-    }
+    console.log('[migrate] ✅ hazard_investigation_item 字段添加完成')
+  }
+
+  // 4.9.1 t_hazard.standard_basis（违反的标准依据/条款正文）
+  if (!(await ensureColumn('t_hazard', 'standard_basis'))) {
+    console.log('[migrate] 正在添加 standard_basis 字段...')
+    await pool.execute(
+      "ALTER TABLE t_hazard ADD COLUMN standard_basis VARCHAR(1000) NULL COMMENT '标准依据（违反条款正文）'"
+    )
+    console.log('[migrate] ✅ standard_basis 字段添加完成')
+  }
 
     // 4.9 t_admin 扩展列（安全员账号：姓名 / 电话 / 归属单位），与 004 迁移同源
     for (const col of [
@@ -277,6 +287,21 @@ async function autoMigrate() {
         created_at TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
         KEY idx_hazard_id (hazard_id)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='隐患照片表'
+    `)
+
+    // 5.2 问题依据库（标准依据条款，按排查项目 category 匹配）
+    await ensureTable(`
+      CREATE TABLE IF NOT EXISTS t_standard_basis (
+        id             INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        category       VARCHAR(200)  NOT NULL DEFAULT '' COMMENT '归属排查项目（对齐 t_hazard.hazard_investigation_item，整列相等匹配）',
+        standard_basis VARCHAR(1000) NOT NULL DEFAULT '' COMMENT '标准依据条款正文',
+        source         VARCHAR(200)  NOT NULL DEFAULT '' COMMENT '来源标准，如 GB 30871-2022',
+        sort_order     INT           NOT NULL DEFAULT 0,
+        created_at     TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at     TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uk_category (category),
+        KEY idx_sort_order (sort_order)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='问题依据库（标准依据条款，按排查项目匹配）'
     `)
 
     // 5.5 隐患分类/等级字典表（Sprint 2 / P1-1）
@@ -749,6 +774,7 @@ app.use('/api/notify', notifyRoutes)                  // 钉钉通知（Sprint 1
 app.use('/api/contractor-units', contractorUnitRoutes)  // 承包商单位 CRUD + 导入（S1-3）
 app.use('/api/hazard', hazardRoutes)                    // 隐患照片上传（S1-4）
 app.use('/api/hazard-dict', hazardDictRoutes)            // 隐患分类/等级字典（S2 / P1-1）
+app.use('/api/hazards/standard-basis', standardBasisRoutes)  // 问题依据库（必须早于 /api/hazards，否则被 /:id 吞掉）
 app.use('/api/hazards', hazardLoopRoutes)                // 隐患闭环状态机（S2 / P0）
 app.use('/api/rectify-unit-biz', rectifyUnitBizRoutes)   // 整改单位→业务口关联（S2 / 关联维护）
 app.use('/api/safety',  safetyAuthRoutes)                 // 安全员登录（公开，无需鉴权）

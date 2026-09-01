@@ -59,19 +59,43 @@ function parseOptions(opts) {
 }
 
 /**
+ * 把任意写法的答案拆成选项 token 数组（与前端 utils/answerJudge.js 同源）。
+ * 兼容多选题答案的常见写法：
+ *   "AB"（字母连写）/ "A,B" / "A，B"（中文逗号）/ "A、B" / "A B" / "A/B" / "A;B" / ['A','B']
+ * 修复前用 split('') 逐字符切分，分隔符 ',' 会被当成答案字符混入，
+ * 导致 "A,C" 与 "AC" 判定不相等（多选题误判为错）。
+ * @param {*} raw 标准答案或用户答案（字符串 / 数字 / 数组）
+ * @returns {string[]} 大写 token 数组
+ */
+function splitAnswerTokens(raw) {
+  if (raw == null) return []
+  const list = Array.isArray(raw) ? raw : [raw]
+  const out = []
+  for (const part of list.map(v => String(v ?? '')).join(',').toUpperCase().split(/[^A-Z0-9]+/)) {
+    if (!part) continue
+    // 字母连写（如 "AC"）逐字符展开为 A、C，保证与 "A,C" 写法等价；
+    // 纯数字视为选项下标，保持整体（"12" 代表第 12 个选项，不是第 1、2 个）
+    if (/^[A-Z]+$/.test(part) && part.length > 1) out.push(...part.split(''))
+    else out.push(part)
+  }
+  return out
+}
+
+/**
  * 客观题评分：规范化后精确比较
  *  - single/judgment：去空格、转大写后相等
- *  - multiple：拆分为字符集合后排序比较（忽略顺序，如 "CA" == "AC"）
+ *  - multiple：拆分为选项集合后排序比较（忽略顺序 / 分隔符 / 大小写 / 重复项）
+ *    例：标准答案 "AB" 与用户答案 "A,B"、"BA"、"b,a" 均判定为正确。
  * @returns {boolean}
  */
 function normalizeAnswer(type, std, user) {
-  const s = String(std ?? '').toUpperCase().replace(/\s/g, '')
-  const u = String(user ?? '').toUpperCase().replace(/\s/g, '')
-  if (type === 'multiple') {
-    const sa = s.split('').sort().join('')
-    const ua = u.split('').sort().join('')
+  if (type === 'multiple' || type === 'multi') {
+    const sa = [...new Set(splitAnswerTokens(std))].sort().join(',')
+    const ua = [...new Set(splitAnswerTokens(user))].sort().join(',')
     return sa.length > 0 && sa === ua
   }
+  const s = String(std ?? '').toUpperCase().replace(/\s/g, '')
+  const u = String(user ?? '').toUpperCase().replace(/\s/g, '')
   return s === u
 }
 
@@ -604,16 +628,27 @@ router.get('/:materialId', authMiddleware, async (req, res) => {
         for (const q of questions) {
           if (byType[q.type]) byType[q.type].push(q)
         }
+        // Fisher-Yates 洗牌：原地无偏随机（替代 sort(() => Math.random() - 0.5)，
+        // 后者比较器不满足传递性，分布有偏，且 V8 上时间复杂度更差）
+        const shuffle = (arr) => {
+          const a = [...arr]
+          for (let i = a.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1))
+            ;[a[i], a[j]] = [a[j], a[i]]
+          }
+          return a
+        }
         const pick = (arr, n) => {
           if (!arr.length) return []
-          const shuffled = [...arr].sort(() => Math.random() - 0.5)
-          return n > 0 ? shuffled.slice(0, Math.min(n, arr.length)) : arr
+          // n<=0 表示该题型全抽（0 = 全抽，既有语义）
+          return n > 0 ? shuffle(arr).slice(0, Math.min(n, arr.length)) : arr
         }
-        finalQuestions = [
+        // 题型分桶随机抽题后再整体洗牌，避免同题型块状连续分布
+        finalQuestions = shuffle([
           ...pick(byType.single,   cfg.single),
           ...pick(byType.multiple, cfg.multiple),
           ...pick(byType.judgment, cfg.judgment),
-        ].sort(() => Math.random() - 0.5) // 整体随机排序，避免题型块状分布
+        ])
         // 抽题后题量可能少于题库总量，更新下发总量提示
         console.log(`[quiz.detail] exam 抽题：配置(${cfg.single}/${cfg.multiple}/${cfg.judgment}) 实际抽 ${finalQuestions.length}/${questions.length}`)
       }

@@ -58,6 +58,9 @@
             <div class="form-group"><label>问题描述</label>
               <textarea v-model="form.description" class="form-input" rows="3"></textarea></div>
 
+            <div class="form-group"><label>标准依据</label>
+              <textarea v-model="form.standard_basis" class="form-input" rows="2" placeholder="留空则保存时按「隐患排查项目」匹配到的依据（若未匹配则不填）"></textarea></div>
+
             <div class="form-group"><label>整改情况</label>
               <textarea v-model="form.rectify_measures" class="form-input" rows="2"></textarea></div>
 
@@ -119,6 +122,7 @@ const form = reactive({
   responsible_person: '',
   plan_finish_time: '',
   description: '',
+  standard_basis: '',
   rectify_measures: '',
   remark: '',
   is_reject_item: 0,
@@ -173,6 +177,7 @@ function fillForm(d) {
   form.responsible_person = d.responsible_person || ''
   form.plan_finish_time = toLocalInput(d.plan_finish_time)
   form.description = d.description || ''
+  form.standard_basis = d.standard_basis || ''
   form.rectify_measures = d.rectify_measures || ''
   form.remark = d.remark || ''
   // 是否否决项：库内 0/1 映射 select 的 0/1
@@ -219,6 +224,7 @@ async function submit() {
     business_dept: form.business_dept,
     business_dept_head: form.business_dept_head,
     description: form.description,
+    standard_basis: form.standard_basis,
     hazard_level: form.hazard_level,
     rectify_measures: form.rectify_measures,
     remark: form.remark,

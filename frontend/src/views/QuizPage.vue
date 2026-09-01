@@ -33,8 +33,16 @@
       <button class="btn btn-primary" @click="$router.go(0)">刷新重试</button>
     </div>
 
-    <!-- 答题区 -->
-    <div v-else-if="quiz" class="quiz-body">
+    <!-- 答题区（左右滑动翻题：左滑下一题 / 右滑上一题） -->
+    <div
+      v-else-if="quiz"
+      class="quiz-body"
+      :style="{ paddingBottom: dotsExpanded ? '262px' : '150px' }"
+      @touchstart="onTouchStart"
+      @touchmove="onTouchMove"
+      @touchend="onTouchEnd"
+      @touchcancel="onTouchCancel"
+    >
       <!-- 提交失败/网络异常提示条（提交未成功时明确告知，避免"假成功"） -->
       <p v-if="errorMsg" class="submit-error">{{ errorMsg }}</p>
       <!-- 题目卡片 -->
@@ -137,16 +145,21 @@
         </div>
       </div>
 
-      <!-- 导航按钮 -->
-      <div class="nav-btns">
-        <button class="btn btn-outline" :disabled="currentIndex === 0" @click="prevQuestion">
+      <!-- 手动翻题提示：滑动或点「上一题」后关闭自动跳题，避免回看已答对的题被强制弹走 -->
+      <p v-if="autoAdvanceOff" class="auto-off-tip">
+        🔒 已关闭「答对自动跳下一题」，可自由回看；重新进入答题自动恢复
+      </p>
+
+      <!-- 导航按钮（底部位置随题号区展开/收起自适应） -->
+      <div class="nav-btns" :style="{ bottom: dotsExpanded ? '170px' : '58px' }">
+        <button class="btn btn-outline" :disabled="currentIndex === 0" @click="goPrev">
           ← 上一题
         </button>
 
         <button
           class="btn btn-primary"
           :disabled="currentIndex >= questions.length - 1"
-          @click="nextQuestion"
+          @click="goNext"
         >
           下一题 →
         </button>
@@ -161,20 +174,33 @@
         </button>
       </div>
 
-      <!-- 题目进度缩略 -->
-      <div class="q-dots">
-        <div
-          v-for="(q, idx) in questions"
-          :key="q.id"
-          :class="['q-dot', {
-            active: idx === currentIndex,
-            answered: !!quizStore.answers[q.id] && !isRight(q) && !isWrong(q),
-            right: isRight(q),
-            wrong: isWrong(q),
-            current: idx === currentIndex
-          }]"
-          @click="currentIndex = idx"
-        ></div>
+      <!-- 题号圆点区：默认收起，点开关展开/收起 -->
+      <div class="dots-bar">
+        <button
+          class="dots-toggle"
+          type="button"
+          :aria-expanded="dotsExpanded ? 'true' : 'false'"
+          @click="dotsExpanded = !dotsExpanded"
+        >
+          <span class="dots-toggle-arrow">{{ dotsExpanded ? '🔽' : '🔼' }}</span>
+          <span>题号 {{ currentIndex + 1 }} / {{ questions.length }}</span>
+          <span class="dots-toggle-hint">{{ dotsExpanded ? '收起' : '展开' }}</span>
+        </button>
+
+        <div v-show="dotsExpanded" class="q-dots">
+          <div
+            v-for="(q, idx) in questions"
+            :key="q.id"
+            :class="['q-dot', {
+              active: idx === currentIndex,
+              answered: !!quizStore.answers[q.id] && !isRight(q) && !isWrong(q),
+              right: isRight(q),
+              wrong: isWrong(q),
+              current: idx === currentIndex
+            }]"
+            @click="jumpTo(idx)"
+          ></div>
+        </div>
       </div>
 
     </div>
@@ -189,6 +215,7 @@ import {
   QUIZ_MODES, MODE_LABELS, isRevealing, normalizeMode,
 } from '@/utils/quizModes'
 import { loadProgress, saveProgress, clearProgress, fetchServerProgress, saveServerProgress, clearServerProgress } from '@/utils/progressStorage'
+import { isChoiceAnswerCorrect, isMultipleType, splitAnswerTokens, letterOf as letterOfKey } from '@/utils/answerJudge'
 
 const route = useRoute()
 const router = useRouter()
@@ -202,6 +229,14 @@ const submitting = ref(false)
 const errorMsg = ref('')
 const showImageModal = ref(false)
 const resumed = ref(false)
+
+// 题号圆点区是否展开（默认收起，点开关切换）
+const dotsExpanded = ref(false)
+
+// 手动翻题标志：一旦滑动翻页或点「上一题」即置 true，
+// 此后关闭「答对自动跳下一题」（否则右滑回看已答对的题会被强制弹走）。
+// 重新进入答题（组件重新挂载）时随 ref 初始值自动重置为 false。
+const manualNavActive = ref(false)
 
 // 当前有效模式（请求/回退得到的 study|practice|exam）
 const mode = ref(QUIZ_MODES.EXAM)
@@ -250,48 +285,49 @@ const hasAnsweredCurrent = computed(() => {
   return ans != null && ans !== ''
 })
 
-// 某题是否答错（仅学习/练习模式有即时反馈；比对用户答案与正确答案）
-// 用于底部进度圆点显示红色（答错的题一目了然，便于重点复习）
+// 可自动判分的客观题类型（简答题由人工/AI 批改，不参与圆点正误着色）
+const JUDGABLE_TYPES = new Set(['single', 'choice', 'multiple', 'multi', 'judgment'])
+
+// 某题是否已作答（多选为数组，其余为字符串；空数组视为未作答）
+function hasAnswer(q) {
+  const ans = quizStore.answers[q?.id]
+  if (Array.isArray(ans)) return ans.length > 0
+  return ans != null && ans !== ''
+}
+
+// 是否可对本题做自动正误判定（揭示模式 + 客观题 + 已作答 + 有标准答案）
+function canJudge(q) {
+  return !!q && isRevealMode.value && JUDGABLE_TYPES.has(q.type) && hasAnswer(q)
+    && q.correctAnswer != null && q.correctAnswer !== ''
+}
+
+// 某题是否答错（仅学习/练习模式有即时反馈；用于底部进度圆点显示红色，便于重点复习）
+// 判定统一走 utils/answerJudge，避免「数组转字符串带出逗号」导致多选题误判为错。
 function isWrong(q) {
-  if (!isRevealMode.value) return false
-  const ans = quizStore.answers[q.id]
-  if (ans == null || ans === '') return false
-  const correct = q.correctAnswer
-  if (correct == null) return false
-  const norm = (s) => String(s ?? '').toUpperCase().replace(/\s/g, '')
-  if (q.type === 'multiple') {
-    const a = norm(ans).split('').sort().join('')
-    const b = norm(correct).split('').sort().join('')
-    return a.length > 0 && a !== b
-  }
-  return norm(ans) !== norm(correct)
+  if (!canJudge(q)) return false
+  return !isChoiceAnswerCorrect(q.type, quizStore.answers[q.id], q.correctAnswer)
 }
 
 // 某题是否答对（仅学习/练习模式有即时反馈；用于底部进度圆点显示绿色）
 function isRight(q) {
-  if (!isRevealMode.value) return false
-  const ans = quizStore.answers[q.id]
-  if (ans == null || ans === '') return false
-  const correct = q.correctAnswer
-  if (correct == null) return false
-  const norm = (s) => String(s ?? '').toUpperCase().replace(/\s/g, '')
-  if (q.type === 'multiple') {
-    const a = norm(ans).split('').sort().join('')
-    const b = norm(correct).split('').sort().join('')
-    return a.length > 0 && a === b
-  }
-  return norm(ans) === norm(correct)
+  if (!canJudge(q)) return false
+  return isChoiceAnswerCorrect(q.type, quizStore.answers[q.id], q.correctAnswer)
 }
 
 // 学习/练习模式下，作答后显示答案与解析
 const revealActive = computed(() => isRevealMode.value && hasAnsweredCurrent.value)
 
 // 学习/练习模式：答对后自动跳下一题（答错停留看解析；考试模式不跳）
+// 互斥逻辑：用户一旦手动翻过题（滑动 或 点「上一题」/「下一题」/点圆点跳题），
+// 就永久关闭本次答题会话的自动跳题，避免回看已答对的题时被强制弹走。
+const autoAdvanceOff = computed(() => isRevealMode.value && manualNavActive.value)
+
 let autoAdvanceTimer = null
 watch(
   () => [quizStore.answers[currentQuestion.value?.id], currentIndex.value],
   () => {
     if (!isRevealMode.value) return
+    if (manualNavActive.value) return             // 已手动翻过题 → 不再自动跳
     const q = currentQuestion.value
     if (!q || !hasAnsweredCurrent.value) return
     if (!isRight(q)) return                       // 答错：停留，便于看解析/改答案
@@ -301,6 +337,7 @@ watch(
       // 跳前复核：仍答对且仍是当前题、且非末题，避免期间改答案误跳
       if (
         isRevealMode.value &&
+        !manualNavActive.value &&
         currentIndex.value < questions.value.length - 1 &&
         hasAnsweredCurrent.value &&
         isRight(currentQuestion.value)
@@ -318,21 +355,21 @@ function letterOf(key) {
 }
 
 // 判断某选项索引/键是否为正确答案（兼容字母与数字下标）
+// 多选题答案可能写成 "AC" / "A,C" / "A，C"，统一按 token 拆分后再比对，
+// 否则 "AC" 这种无分隔符写法会让所有选项都匹配不上，揭示态不显示正确项。
 function isOptionCorrect(key) {
   const q = currentQuestion.value
   if (!q || q.correctAnswer == null) return false
-  const ca = String(q.correctAnswer)
-  if (q.type === 'multiple' || q.type === 'multi') {
-    const set = ca.split(/[\s,]+/).filter(Boolean).map(s => s.trim())
-    const k = String(key)
-    return set.includes(k) || set.map(s => s.toUpperCase()).includes(k.toUpperCase())
+  const k = letterOfKey(key)
+  if (isMultipleType(q.type)) {
+    const set = new Set(splitAnswerTokens(q.correctAnswer).map(letterOfKey))
+    return set.has(k)
   }
   // 单选 / 判断
-  const s = ca.trim().toUpperCase()
-  const k = String(key).trim().toUpperCase()
+  const s = String(q.correctAnswer).trim().toUpperCase()
   if (s === k) return true
   const letter = /^[A-Z]$/.test(s) ? s.charCodeAt(0) - 65 : -1
-  const idx = /^\d+$/.test(k) ? parseInt(k, 10) : -1
+  const idx = /^\d+$/.test(String(key).trim()) ? parseInt(String(key).trim(), 10) : -1
   if (letter >= 0 && idx >= 0) return letter === idx
   return false
 }
@@ -425,11 +462,72 @@ function setSubjectiveAnswer(text) {
   persistProgress()
 }
 
+// 纯跳转（不含手动标志）：自动跳题、空格键等内部调用走这里
 function prevQuestion() {
   if (currentIndex.value > 0) currentIndex.value--
 }
 function nextQuestion() {
   if (currentIndex.value < questions.value.length - 1) currentIndex.value++
+}
+
+// 用户主动翻题：置位手动标志 → 关闭「答对自动跳下一题」
+function goPrev() {
+  manualNavActive.value = true
+  prevQuestion()
+}
+function goNext() {
+  manualNavActive.value = true
+  nextQuestion()
+}
+// 点题号圆点跳题同样视为手动导航（跳过去后不该被自动跳走）
+function jumpTo(idx) {
+  manualNavActive.value = true
+  if (idx >= 0 && idx < questions.value.length) currentIndex.value = idx
+}
+
+// ── 滑动翻题（原生 touch 事件，无第三方依赖）────────────────────────────
+// 规则：横向位移 > 50px 且横向位移大于纵向位移（避免与页面滚动冲突）
+//       左滑（dx < 0）→ 下一题；右滑（dx > 0）→ 上一题
+const SWIPE_THRESHOLD = 50
+let touchStartX = 0
+let touchStartY = 0
+
+function onTouchStart(e) {
+  const t = e.changedTouches?.[0] || e.touches?.[0]
+  if (!t) return
+  touchStartX = t.clientX
+  touchStartY = t.clientY
+}
+
+function onTouchEnd(e) {
+  // 图片放大弹层打开时不响应滑动（此时手势用于查看大图）
+  if (showImageModal.value || !quiz.value) return
+  const t = e.changedTouches?.[0] || e.touches?.[0]
+  if (!t) return
+  const dx = t.clientX - touchStartX
+  const dy = t.clientY - touchStartY
+  if (Math.abs(dx) < SWIPE_THRESHOLD) return          // 位移太小：视为点击，不翻题
+  if (Math.abs(dx) <= Math.abs(dy)) return            // 纵向为主：视为滚动，不翻题
+  if (dx < 0) goNext()                                // 左滑 → 下一题
+  else goPrev()                                       // 右滑 → 上一题
+}
+
+function onTouchMove(e) {
+  // 图片放大弹层打开时不拦截（手势用于查看大图）
+  if (showImageModal.value || !quiz.value) return
+  const t = e.changedTouches?.[0] || e.touches?.[0]
+  if (!t) return
+  const dx = t.clientX - touchStartX
+  const dy = t.clientY - touchStartY
+  // 横向滑动为主 → 拦截浏览器默认手势，避免触发系统/浏览器的"左右滑动返回"
+  if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 10) {
+    e.preventDefault()
+  }
+}
+
+function onTouchCancel() {
+  touchStartX = 0
+  touchStartY = 0
 }
 
 // ── 空格键快捷跳题（仅学习/练习模式） ────────────────────────────
@@ -455,7 +553,7 @@ function onGlobalKeydown(e) {
   if (!isKeyShortcutMode.value) return
   if (currentIndex.value >= questions.value.length - 1) return
   e.preventDefault()
-  nextQuestion()
+  goNext() // 与点击「下一题」一致：视为手动导航，关闭自动跳题避免连跳
 }
 
 // ── 计时器 ────────────────────────────────────────────────────
@@ -587,6 +685,10 @@ function confirmExit() {
 }
 
 onMounted(async () => {
+  // 重新进入答题（重新加载）时重置会话级状态：
+  // 手动翻题标志复位 → 恢复「答对自动跳下一题」；题号区复位为收起。
+  manualNavActive.value = false
+  dotsExpanded.value = false
   const timer = setTimeout(() => { loading.value = false }, 10000)
   try {
     // 运行模式严格取自路由 ?mode=，非法/缺失值由 normalizeMode 兜底为 exam；
@@ -734,7 +836,8 @@ onUnmounted(() => {
   text-align: center;
 }
 
-.quiz-body { padding: 16px 12px 180px; }
+/* padding-bottom 由内联样式按题号区展开状态动态设置（收起 110px / 展开 222px），此处仅为兜底 */
+.quiz-body { padding: 16px 12px 110px; overscroll-behavior-x: contain; touch-action: pan-y; }
 
 .question-card {
   background: var(--c-surface, #fff);
@@ -782,12 +885,58 @@ onUnmounted(() => {
   gap: 10px;
   padding: 16px 12px;
   position: fixed;
-  bottom: 110px;
+  bottom: 58px; /* 由内联样式按题号区展开状态覆盖：收起 58px / 展开 170px */
   left: 0; right: 0;
   background: var(--bg);
   z-index: 11;
+  transition: bottom .2s ease;
 }
 .nav-btns .btn { flex: 1; white-space: nowrap; }
+
+/* 关闭自动跳题的提示条（仅学习/练习模式，手动翻题后出现） */
+.auto-off-tip {
+  margin: 0 0 10px;
+  padding: 8px 12px;
+  background: var(--c-surface-2, #F8FAFC);
+  border: 1px dashed var(--c-border-strong, #D4DAE3);
+  border-radius: var(--r-sm, 8px);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--c-text-2, #475569);
+}
+
+/* ── 底部题号区（可折叠，默认收起）── */
+.dots-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0; right: 0;
+  background: #fff;
+  border-top: 1px solid var(--border);
+  z-index: 12;
+  padding-bottom: env(safe-area-inset-bottom, 0);
+}
+.dots-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 11px 12px;
+  background: none;
+  border: none;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--c-text-2, #475569);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.dots-toggle:active { background: var(--c-surface-2, #F8FAFC); }
+.dots-toggle-arrow { font-size: 11px; line-height: 1; }
+.dots-toggle-hint {
+  color: var(--primary);
+  font-size: 12px;
+  font-weight: 500;
+}
 
 /* 提交失败提示条 */
 .submit-error {
@@ -802,19 +951,14 @@ onUnmounted(() => {
 }
 
 .q-dots {
-  position: fixed;
-  bottom: 0;
-  left: 0; right: 0;
   background: #fff;
-  padding: 10px 12px 16px;
+  padding: 4px 12px 14px;
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
   justify-content: center;
-  border-top: 1px solid var(--border);
   max-height: 110px;
   overflow-y: auto;
-  z-index: 10;
 }
 .q-dot {
   width: 28px; height: 28px;

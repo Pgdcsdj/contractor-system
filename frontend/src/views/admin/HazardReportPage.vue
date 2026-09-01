@@ -14,7 +14,7 @@
         <!-- 隐患排查项目（下拉来自 hazard_investigation_item 字典，非必填） -->
         <div class="form-group">
           <label>隐患排查项目</label>
-          <select v-model="form.hazard_investigation_item" class="form-input">
+          <select v-model="form.hazard_investigation_item" class="form-input" @change="onInvestigationItemChange">
             <option value="">请选择（可选）</option>
             <option v-for="p in investigationItems" :key="p.code" :value="p.name">{{ p.name }}</option>
           </select>
@@ -74,6 +74,18 @@
           <textarea v-model="form.description" class="form-input" rows="3" placeholder="描述隐患具体情况、风险点"></textarea>
         </div>
 
+        <!-- 标准依据（按排查项目自动匹配，可手动覆盖） -->
+        <div class="form-group full">
+          <label>
+            标准依据
+            <button type="button" class="btn btn-mini" :disabled="!form.hazard_investigation_item || matching" @click="doMatchBasis">
+              {{ matching ? '匹配中…' : '自动匹配依据' }}
+            </button>
+          </label>
+          <textarea v-model="form.standard_basis" class="form-input" rows="2" placeholder="选择「隐患排查项目」后点「自动匹配依据」，或从问题依据库自动带入；也可手填"></textarea>
+          <p v-if="basisHint" class="basis-hint" :class="basisHintType">{{ basisHint }}</p>
+        </div>
+
         <!-- 整改情况（可多次更新） -->
         <div class="form-group full">
           <label>整改情况</label>
@@ -127,6 +139,7 @@ import {
   getContractorUnits,
   getRectifyUnitBiz,
   reportHazard,
+  matchStandardBasis,
 } from '@/api/hazard'
 
 const units = ref([])
@@ -134,6 +147,11 @@ const levels = ref([])
 const photoUrls = ref([])
 const submitting = ref(false)
 const showImport = ref(false)
+
+// 标准依据自动匹配状态
+const matching = ref(false)
+const basisHint = ref('')
+const basisHintType = ref('')
 
 // 隐患设置下拉：业务部门；责任单位·业务口关联（用于自动带出负责人）
 const businessDepts = ref([])
@@ -155,6 +173,7 @@ const form = reactive({
   hazard_investigation_item: '',
   business_dept_head: '',
   hazard_level: '',
+  standard_basis: '',
   description: '',
   rectify_measures: '',
   responsible_person: '',
@@ -199,6 +218,39 @@ function onLocationChange() {
   form.location = parts.every((p) => !p) ? '' : parts.join('/')
 }
 
+// 标准依据：按排查项目自动匹配（仅当依据为空时生效，避免覆盖用户手填）
+async function doMatchBasis() {
+  if (!form.hazard_investigation_item) {
+    basisHint.value = '请先选择「隐患排查项目」'
+    basisHintType.value = 'warn'
+    return
+  }
+  matching.value = true
+  basisHint.value = ''
+  try {
+    const res = await matchStandardBasis(form.hazard_investigation_item)
+    const m = res.data?.data || {}
+    if (m.matched) {
+      form.standard_basis = m.standard_basis
+      basisHint.value = m.source ? `已匹配：${m.standard_basis}（${m.source}）` : `已匹配：${m.standard_basis}`
+      basisHintType.value = 'ok'
+    } else {
+      basisHint.value = '问题依据库中未找到该排查项目对应的标准依据'
+      basisHintType.value = 'warn'
+    }
+  } catch (e) {
+    basisHint.value = '匹配失败：' + (e.response?.data?.error || e.message)
+    basisHintType.value = 'warn'
+  } finally {
+    matching.value = false
+  }
+}
+
+// 排查项目下拉变化 → 若依据为空则自动匹配
+function onInvestigationItemChange() {
+  if (!form.standard_basis) doMatchBasis()
+}
+
 // 批量导入成功回调（弹窗已展示明细，这里给个全局提示）
 function onImported() {
   showToast('导入完成，请到闭环看板查看', 'success')
@@ -218,6 +270,7 @@ function resetForm() {
   form.hazard_investigation_item = ''
   form.business_dept_head = ''
   form.hazard_level = ''
+  form.standard_basis = ''
   form.description = ''
   form.rectify_measures = ''
   form.responsible_person = ''
@@ -243,6 +296,7 @@ async function handleSubmit() {
       business_dept: form.business_dept,
       hazard_investigation_item: form.hazard_investigation_item,
       business_dept_head: form.business_dept_head,
+      standard_basis: form.standard_basis || '',
       description: form.description,
       hazard_level: form.hazard_level,
       rectify_measures: form.rectify_measures,
@@ -311,6 +365,15 @@ onMounted(loadOptions)
 .form-group label { display: block; font-size: 13px; font-weight: 500; color: var(--c-text-2); margin-bottom: 6px; }
 .req { color: var(--c-danger); }
 .cascade { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.btn-mini {
+  margin-left: 8px; padding: 2px 10px; font-size: 12px; line-height: 1.6;
+  border: 1px solid var(--c-border); border-radius: 8px; cursor: pointer;
+  background: var(--c-bg-soft); color: var(--c-primary);
+}
+.btn-mini:disabled { opacity: .5; cursor: not-allowed; }
+.basis-hint { font-size: 12px; margin: 6px 0 0; line-height: 1.5; }
+.basis-hint.ok { color: var(--c-success); }
+.basis-hint.warn { color: var(--c-warning); }
 
 .form-actions {
   display: flex; gap: 12px; justify-content: flex-end; margin-top: 22px;

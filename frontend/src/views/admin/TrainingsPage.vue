@@ -80,6 +80,14 @@
                 >
                   质量
                 </button>
+                <!-- 考试随机抽题组卷配置（仅考试模式生效） -->
+                <button
+                  :class="['action-link', 'examcfg', { configured: examConfigured(t) }]"
+                  :title="examConfigTip(t)"
+                  @click="openExamConfig(t)"
+                >
+                  🎯 抽题{{ examConfigLabel(t) }}
+                </button>
                 <button
                   v-if="t.status === 'pending' && t.total_questions > 0"
                   class="action-link success"
@@ -184,6 +192,43 @@
       </div>
     </div>
 
+    <!-- 考试抽题配置弹窗 -->
+    <div v-if="showExamConfig" class="modal-overlay" @click.self="showExamConfig = false">
+      <div class="modal">
+        <h3>🎯 考试抽题配置</h3>
+        <p class="modal-hint">{{ examConfigForm.title }}</p>
+        <p class="exam-tip">
+          设置考试时各题型<b>随机抽取</b>的题目数量。留空或填 <b>0</b> 表示该题型<b>全部抽取</b>；
+          三项均为 0 则考题库全部题目。<br />
+          仅 <b>考试</b> 模式生效，学习 / 练习模式始终使用全部题目。
+        </p>
+        <div class="config-row">
+          <label>
+            单选题
+            <input type="number" min="0" v-model.number="examConfigForm.exam_single_num" placeholder="0" />
+          </label>
+          <label>
+            多选题
+            <input type="number" min="0" v-model.number="examConfigForm.exam_multiple_num" placeholder="0" />
+          </label>
+          <label>
+            判断题
+            <input type="number" min="0" v-model.number="examConfigForm.exam_judgment_num" placeholder="0" />
+          </label>
+        </div>
+        <p v-if="examConfigForm.mode && examConfigForm.mode !== 'exam'" class="mode-warn">
+          ⚠️ 该题库默认模式为「{{ MODE_LABELS[examConfigForm.mode] || examConfigForm.mode }}」，
+          抽题配置仅在以「考试」模式作答时生效。
+        </p>
+        <div class="modal-actions">
+          <button class="btn btn-outline" @click="showExamConfig = false">取消</button>
+          <button class="btn btn-primary" @click="saveExamConfig" :disabled="savingExamConfig">
+            {{ savingExamConfig ? '保存中…' : '保存' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
   </div>
 </template>
 
@@ -191,6 +236,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { request } from '@/utils/request'
+import { MODE_LABELS } from '@/utils/quizModes'
 import QRCode from 'qrcode'
 
 const router = useRouter()
@@ -269,6 +315,66 @@ function formatDate(iso) {
   if (!iso) return '-'
   const d = new Date(iso)
   return `${d.getMonth()+1}月${d.getDate()}日`
+}
+
+// ── 考试随机抽题配置 ──
+const showExamConfig = ref(false)
+const savingExamConfig = ref(false)
+const examConfigForm = ref({
+  id: null,
+  title: '',
+  mode: 'exam',
+  exam_single_num: 0,
+  exam_multiple_num: 0,
+  exam_judgment_num: 0,
+})
+
+// 该题库是否已配置了抽题（三项之和 > 0）
+function examConfigured(t) {
+  return (Number(t?.exam_single_num) || 0) + (Number(t?.exam_multiple_num) || 0) + (Number(t?.exam_judgment_num) || 0) > 0
+}
+
+// 按钮上显示的抽题数量，例：「 15/10/5」（未配置时返回空串）
+function examConfigLabel(t) {
+  if (!examConfigured(t)) return ''
+  return ` ${Number(t.exam_single_num) || 0}/${Number(t.exam_multiple_num) || 0}/${Number(t.exam_judgment_num) || 0}`
+}
+
+// 鼠标悬停提示：分别说明各题型抽题数（0 表示全抽）
+function examConfigTip(t) {
+  if (!examConfigured(t)) return '设置考试随机抽题数量（当前：考全部题目）'
+  const n = (v) => (Number(v) || 0) > 0 ? `${v} 题` : '全抽'
+  return `考试抽题 — 单选 ${n(t.exam_single_num)} / 多选 ${n(t.exam_multiple_num)} / 判断 ${n(t.exam_judgment_num)}`
+}
+
+function openExamConfig(t) {
+  examConfigForm.value = {
+    id: t.id,
+    title: t.title,
+    mode: t.mode || 'exam',
+    exam_single_num: Number(t.exam_single_num) || 0,
+    exam_multiple_num: Number(t.exam_multiple_num) || 0,
+    exam_judgment_num: Number(t.exam_judgment_num) || 0,
+  }
+  showExamConfig.value = true
+}
+
+async function saveExamConfig() {
+  if (!examConfigForm.value.id) return
+  savingExamConfig.value = true
+  try {
+    await request.put(`/api/material/${examConfigForm.value.id}/exam-config`, {
+      exam_single_num: Math.max(0, Number(examConfigForm.value.exam_single_num) || 0),
+      exam_multiple_num: Math.max(0, Number(examConfigForm.value.exam_multiple_num) || 0),
+      exam_judgment_num: Math.max(0, Number(examConfigForm.value.exam_judgment_num) || 0),
+    })
+    showExamConfig.value = false
+    await fetchTrainings()
+  } catch (e) {
+    alert(e.response?.data?.error || '保存失败')
+  } finally {
+    savingExamConfig.value = false
+  }
 }
 
 async function publishTraining(id) {
@@ -465,6 +571,49 @@ async function initPublish() {
 .action-link.qrcode:hover { background: #e8f0fe; }
 .action-link.quality { color: #7b1fa2; }
 .action-link.quality:hover { background: #f3e5f5; }
+.action-link.examcfg { color: #c2740b; }
+.action-link.examcfg:hover { background: #fbf1e0; }
+/* 已配置过抽题数量的题库：按钮加粗高亮，便于一眼识别 */
+.action-link.examcfg.configured { color: #b45309; font-weight: 700; }
+
+/* ── 考试抽题配置弹窗 ── */
+.exam-tip {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.7;
+  background: #f8f9fa;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 14px;
+}
+.config-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.config-row label {
+  flex: 1;
+  min-width: 90px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.config-row input {
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 14px;
+  width: 100%;
+  box-sizing: border-box;
+}
+.config-row input:focus { outline: none; border-color: var(--primary); }
+.mode-warn {
+  margin-top: 12px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  background: #fff7e6;
+  color: #ad6800;
+  font-size: 12px;
+  line-height: 1.6;
+}
 .action-link.warning { color: #e37400; }
 .action-link.warning:hover { background: #fef7e0; }
 .action-link.danger { color: var(--danger); }

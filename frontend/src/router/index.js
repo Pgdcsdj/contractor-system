@@ -191,6 +191,11 @@ const routes = [
         name: 'QualityCheck',
         component: () => import('@/views/admin/QualityCheckPage.vue'),
       },
+      {
+        path: 'standard-basis',
+        name: 'StandardBasisLibrary',
+        component: () => import('@/views/admin/StandardBasisLibraryPage.vue'),
+      },
     ],
   },
 ]

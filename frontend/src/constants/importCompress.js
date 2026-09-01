@@ -3,12 +3,31 @@
  * 架构师设计 §3.1 / §7.6 —— 禁止在组件内散落魔法数字。
  */
 
-/** 压缩降级档位（最多 3 轮）：边最长 + JPEG 质量 */
+/** 压缩降级档位（整体多轮收敛到 TARGET_BYTES）：边最长 + JPEG 质量 */
 export const COMPRESS_PROFILES = [
   { maxEdge: 1600, quality: 0.72 }, // 第 1 轮
-  { maxEdge: 1280, quality: 0.6 }, // 第 2 轮（第 1 轮后仍超限）
-  { maxEdge: 1024, quality: 0.5 }, // 第 3 轮（最后一搏）
+  { maxEdge: 1280, quality: 0.60 }, // 第 2 轮（第 1 轮后仍超限）
+  { maxEdge: 1024, quality: 0.50 }, // 第 3 轮
+  { maxEdge: 800, quality: 0.45 }, // 第 4 轮
+  { maxEdge: 640, quality: 0.40 }, // 第 5 轮
+  { maxEdge: 480, quality: 0.35 }, // 第 6 轮
+  { maxEdge: 360, quality: 0.30 }, // 第 7 轮（地板档：保证整体能压到 <5MB）
 ]
+
+/**
+ * 单图上限收敛档位：compressOne 压完仍 > MAX_IMAGE_BYTES 时逐档加码，
+ * 直到达标或到达地板档。作为"唯一真源"导出（设计 §3.1）。
+ */
+export const PER_IMAGE_PROFILES = [
+  { maxEdge: 900, quality: 0.60 },
+  { maxEdge: 700, quality: 0.50 },
+  { maxEdge: 520, quality: 0.42 },
+  { maxEdge: 400, quality: 0.35 },
+  { maxEdge: 300, quality: 0.30 }, // 地板档：仍超则接受，避免死循环
+]
+
+/** 单张图片硬上限：每张图压完必须 ≤ 200KB */
+export const MAX_IMAGE_BYTES = 200 * 1024
 
 /** 目标体积：留 0.4MB 给 multipart 边界开销（< 5MB 红线） */
 export const TARGET_BYTES = 4.6 * 1024 * 1024

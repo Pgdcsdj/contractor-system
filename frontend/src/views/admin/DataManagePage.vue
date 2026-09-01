@@ -208,6 +208,7 @@ const FIELD_OPTIONS = [
   { value: 'hazard_level', label: '隐患等级' },
   { value: 'location', label: '位置' },
   { value: 'description', label: '问题描述' },
+  { value: 'standard_basis', label: '标准依据' },
   { value: 'rectify_unit', label: '整改单位' },
   { value: 'unit_name', label: '责任单位' },
   { value: 'hazard_investigation_item', label: '隐患排查项目' },

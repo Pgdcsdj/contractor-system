@@ -36,6 +36,7 @@ const EXPORT_FIELDS = {
   business_dept:     '业务部门',
   rectify_unit:      '整改单位',
   hazard_investigation_item: '隐患排查项目',
+  standard_basis:    '标准依据',
 }
 
 // 状态中文映射
@@ -127,7 +128,7 @@ async function backupNow() {
   const [hazards] = await pool.query(
     `SELECT id, hazard_code, unit_name, hazard_level, description, location, hazard_investigation_item,
             responsible_person, status, recorder_name, recorder_unit_name,
-            plan_finish_time, created_at, closed_at,
+            plan_finish_time, created_at, closed_at, standard_basis,
             CASE WHEN status <> 'closed' AND plan_finish_time IS NOT NULL AND plan_finish_time < NOW() THEN 1 ELSE 0 END AS is_overdue
        FROM t_hazard
       WHERE deleted_at IS NULL
@@ -152,6 +153,7 @@ async function backupNow() {
     { key: 'unit_name', header: '责任单位' },
     { key: 'hazard_level', header: '隐患等级' },
     { key: 'description', header: '隐患描述' },
+    { key: 'standard_basis', header: '标准依据' },
     { key: 'location', header: '场所站点' },
     { key: 'hazard_investigation_item', header: '隐患排查项目' },
     { key: 'responsible_person', header: '整改责任人' },

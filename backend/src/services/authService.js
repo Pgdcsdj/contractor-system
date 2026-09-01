@@ -55,27 +55,35 @@ async function loginByQr(qrToken) {
 
 /**
  * 手动登录（姓名 + 身份证后四位）
+ * 约定：身份证末位为 X 时，密码按 0 处理（例如后四位 273X → 密码 2730）
  * @param {string} name     姓名
  * @param {string} last4    身份证后四位
  */
 async function loginByManual(name, last4) {
   if (!name || !last4) throw new Error('请输入姓名和身份证后四位')
-  if (!/^\d{4}$/.test(last4)) throw new Error('身份证后四位格式不正确')
+  const raw = String(last4).toUpperCase()
+  if (!/^[0-9X]{4}$/.test(raw)) throw new Error('身份证后四位格式不正确')
+
+  // 归一：末位 X 视为 0（系统约定）
+  const inputLast4 = raw.replace(/X$/, '0')
 
   const [rows] = await pool.execute(
     `SELECT id, name, id_card, unit, status
      FROM t_user
-     WHERE name = ? AND RIGHT(id_card, 4) = ?
+     WHERE name = ? AND SUBSTRING(RIGHT(id_card, 4), 1, 3) = ?
      LIMIT 1`,
-    [name.trim(), last4]
+    [name.trim(), inputLast4.slice(0, 3)]
   )
 
   if (!rows.length)          throw new Error('姓名或身份证后四位不正确')
   if (rows[0].status === 0)  throw new Error('账号已被禁用，请联系管理员')
 
   const user = rows[0]
-  const token = signToken(user)
+  // 校验归一后的后四位（末位 X 视为 0）
+  const storedLast4 = String(user.id_card).toUpperCase().slice(-4).replace(/X$/, '0')
+  if (storedLast4 !== inputLast4) throw new Error('姓名或身份证后四位不正确')
 
+  const token = signToken(user)
   return { token, user: { id: user.id, name: user.name, unit: user.unit } }
 }
 

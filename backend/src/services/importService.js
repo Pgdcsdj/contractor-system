@@ -25,6 +25,7 @@ const { resolveRecorderContext } = require('./permission')
 const { LEVELS } = require('../constants/hazardStates')
 const { extractImages, matchImagesToRows } = require('./xlsxImageExtractor')
 const { uploadAndBind } = require('./hazardPhotoImport')
+const { loadBasisLibrary, matchStandardBasis } = require('./standardBasisService')
 
 // ─── 规范字段 → 列名别名（命中优先级：越靠前越优先；buildMapping 中长别名优先）──
 const IMPORT_FIELDS = [
@@ -42,6 +43,7 @@ const IMPORT_FIELDS = [
   { key: 'is_reject_item', aliases: ['是否否决项', '否决项', '是否否决', '否决', '是否否决'] },
   { key: 'deduct_score', aliases: ['扣分', '扣分数', '扣分值', '扣分项'] },
   { key: 'progress', aliases: ['整改进度', '进度', '整改情况', '整改状态', '完成情况', '治理进度', '整改进度', '状态'] },
+  { key: 'standard_basis', aliases: ['标准依据', '依据', '条款', '违反条款', '标准条款', '依据标准'] },
 ]
 
 // 字段 key → 中文名（用于表头模糊识别告警展示）
@@ -60,6 +62,7 @@ const FIELD_LABELS = {
   is_reject_item: '是否否决项',
   deduct_score: '扣分',
   progress: '整改进度',
+  standard_basis: '标准依据',
 }
 
 // 数字补零
@@ -559,6 +562,17 @@ async function cleanRow(row, mapping, ctx) {
 
   rec.description = rawDesc
 
+  // 标准依据：Excel 已填「标准依据」列则优先用之；否则按排查项目（hazard_investigation_item）从问题依据库自动匹配
+  const rawBasis = getVal('standard_basis')
+  if (rawBasis) {
+    rec.standard_basis = rawBasis
+  } else if (ctx.basisLib && rec.hazard_investigation_item) {
+    const m = matchStandardBasis(ctx.basisLib, { category: rec.hazard_investigation_item })
+    rec.standard_basis = m.matched ? m.standard_basis : ''
+  } else {
+    rec.standard_basis = ''
+  }
+
   // 责任单位解析结果写回（修复 Bug B：unit_name / contractor_unit_id 计算后未落库）
   rec.unit_name = unit_name
   rec.contractor_unit_id = contractor_unit_id
@@ -590,6 +604,8 @@ async function parseWorkbook(buffer, originalname = '', opts = {}) {
   })
   const [bdRows] = await pool.execute("SELECT code,name FROM t_hazard_dict WHERE type='business_dept' AND enabled=1")
   const [bhRows] = await pool.execute("SELECT code,name FROM t_hazard_dict WHERE type='business_dept_head' AND enabled=1")
+  // 预载问题依据库（标准依据自动匹配，按排查项目 category 相等）
+  const basisLib = await loadBasisLibrary(pool)
 
   const sheets = []
   const rows = []
@@ -633,7 +649,7 @@ async function parseWorkbook(buffer, originalname = '', opts = {}) {
 
       const rowNo = headerIdx + i + 2 // 1-based 绝对行号
       const { rec, errors, warnings: rowWarnings } = await cleanRow(row, mapping, {
-        unitMap, unitList, bdRows, bhRows, sheetName, sheetNames, importType,
+        unitMap, unitList, bdRows, bhRows, sheetName, sheetNames, importType, basisLib,
       })
 
       let rowStatus
@@ -681,6 +697,7 @@ async function parseWorkbook(buffer, originalname = '', opts = {}) {
           is_reject_item: rec.is_reject_item,
           deduct_score: rec.deduct_score,
           rectify_status: rec.rectify_status,
+          standard_basis: rec.standard_basis || '',
         },
         errors,
         warnings: rowWarnings,
@@ -835,12 +852,12 @@ async function commitImport(buffer, admin, filename = '', opts = {}) {
     const recorderCtx = await resolveRecorderContext(admin)
 
     const INSERT_SQL = `INSERT INTO t_hazard
-        (hazard_code, contractor_unit_id, unit_name, location, description, hazard_level,
+        (hazard_code, contractor_unit_id, unit_name, location, description, standard_basis, hazard_level,
          rectify_measures, responsible_person,
          plan_finish_time, business_dept, hazard_investigation_item, business_dept_head, status,
          reported_by, reported_by_name, report_time, photo_url, rectify_status, closed_at,
          recorder_id, recorder_name, recorder_unit_id, recorder_unit_name, deleted_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, ?, ?, ?, ?, ?, ?, NULL)`
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, ?, ?, ?, ?, ?, ?, NULL)`
 
     for (const r of validRowObjs) {
       const rec = r.data
@@ -852,6 +869,7 @@ async function commitImport(buffer, admin, filename = '', opts = {}) {
         rec.unit_name || '',
         rec.location || '',
         rec.description || '',
+        rec.standard_basis || '',
         rec.hazard_level || '',
         rec.rectify_measures || '',
         rec.responsible_person || '',
@@ -960,12 +978,13 @@ function generateTemplate() {
   const headers = [
     '隐患排查项目', '责任单位', '场所站点', '隐患分类', '隐患等级', '问题描述',
     '整改措施', '整改责任人', '责任人电话', '计划完成时间', '业务归口',
-    '业务部门负责人', '是否否决项', '扣分', '初始状态',
+    '业务部门负责人', '是否否决项', '扣分', '初始状态', '标准依据',
   ]
   const sample = [
     '主题交流会问题', '产销厂', '马10脱水井场', '设备', '一般',
     '示例：阀门法兰渗漏，需更换密封垫', '更换密封垫，紧固螺栓', '田海川',
     '13800000000', '2026-07-20', '生产服务中心', '', '否', '', '整改中',
+    '（可选：留空则按「隐患排查项目」自动匹配依据库）',
   ]
   const aoa = [headers, sample]
   const ws = xlsx.utils.aoa_to_sheet(aoa)

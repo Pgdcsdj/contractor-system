@@ -55,6 +55,10 @@
           <Icon name="settings" :size="20" class="nav-icon" />
           <span v-if="!sidebarCollapsed" class="nav-label">隐患模块设置</span>
         </router-link>
+        <router-link to="/admin/standard-basis" class="nav-item">
+          <Icon name="book" :size="20" class="nav-icon" />
+          <span v-if="!sidebarCollapsed" class="nav-label">问题依据库</span>
+        </router-link>
         <router-link to="/admin/data" class="nav-item">
           <Icon name="inbox" :size="20" class="nav-icon" />
           <span v-if="!sidebarCollapsed" class="nav-label">数据管理</span>
@@ -141,6 +145,7 @@ const routeMap = {
   HazardLoop: '隐患闭环',
   HazardMonitor: '隐患监控看板',
   HazardSettings: '隐患模块设置',
+  StandardBasisLibrary: '问题依据库',
   AccountManage: '账号管理',
   DataManage: '数据管理',
   QuizImport: '题目导入',

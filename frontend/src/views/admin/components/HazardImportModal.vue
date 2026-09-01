@@ -128,7 +128,7 @@
             <thead>
               <tr>
                 <th>状态</th><th>工作表</th><th>行</th><th>隐患排查项目</th><th>责任单位</th>
-                <th>场所</th><th>等级</th><th>描述</th><th>责任人</th>
+                <th>场所</th><th>等级</th><th>描述</th><th>标准依据</th><th>责任人</th>
                 <th>计划完成</th><th>初始状态</th>
                 <th v-if="showScreenshotCol">截图</th>
                 <th>说明</th>
@@ -144,6 +144,7 @@
                 <td>{{ r.data.location || '-' }}</td>
                 <td>{{ r.data.hazard_level || '-' }}</td>
                 <td class="cell-desc" :title="r.data.description">{{ r.data.description || '-' }}</td>
+                <td>{{ r.data.standard_basis || '-' }}</td>
                 <td>{{ r.data.responsible_person || '-' }}</td>
                 <td>{{ r.data.plan_finish_time || '（空）' }}</td>
                 <td>{{ statusLabel(r.data.status) }}</td>
@@ -159,7 +160,7 @@
                 </td>
               </tr>
               <tr v-if="filteredRows.length === 0">
-                <td :colspan="showScreenshotCol ? 13 : 12" class="empty-cell">该分类下暂无数据</td>
+                <td :colspan="showScreenshotCol ? 14 : 13" class="empty-cell">该分类下暂无数据</td>
               </tr>
             </tbody>
           </table>
@@ -420,14 +421,20 @@ async function ensureCompressed() {
       return src
     }
     if (res.overLimit) {
-      compressError.value = `文件含 ${res.imageCount} 张图片，压缩后仍 ${toMB(res.finalSize)}，超过 5MB 上限，请将 Excel 拆分为多个文件分批导入`
+      compressError.value = `已尽力压缩（每张截图已压至 200KB 以内）仍超过 5MB，请将文件拆分为多个批次导入`
       return null
     }
     compressedFileRef.value = res.file
     return res.file
   } catch (e) {
     compressProgress.value.active = false
-    // 压缩失败不阻断导入：降级用（转换后的）文件上传
+    // 压缩失败：若原文件本身 >5MB（HARD_LIMIT_BYTES），上传后端必触发 413，
+    // 故阻断并提示拆分，避免无意义的 413；否则降级用（转换后的）原文件上传。
+    if ((src.size || 0) > HARD_LIMIT_BYTES) {
+      console.warn('[视频督查压缩] 失败且原文件超 5MB，阻断上传：', e && e.message)
+      compressError.value = '截图压缩失败，且原文件超过 5MB，请拆分为多个文件后重试'
+      return null
+    }
     console.warn('[视频督查压缩] 失败，降级使用原文件：', e && e.message)
     compressedFileRef.value = src
     return src

@@ -26,6 +26,7 @@ const schedulerConfig = require('../services/schedulerConfig')
 const { STATUS, LEVELS } = require('../constants/hazardStates')
 const { applyRecorderScope, resolveRecorderContext } = require('../services/permission')
 const importService = require('../services/importService')
+const { matchStandardBasisDb } = require('../services/standardBasisService')
 const path = require('path')
 const multer = require('multer')
 const xlsx = require('xlsx')
@@ -70,7 +71,7 @@ const HAZARD_COLUMNS = [
   'responsible_person', 'plan_finish_time', 'rectify_status', 'status',
   'reported_by', 'reported_by_name', 'report_time', 'photo_url', 'rectify_photo_url',
   'assigned_to', 'assigned_at', 'verified_by', 'verified_at', 'verify_result',
-  'verify_comment', 'remark', 'closed_at', 'overdue_notified', 'created_at', 'updated_at',
+  'verify_comment', 'remark', 'closed_at', 'overdue_notified', 'created_at', 'updated_at', 'standard_basis',
   'recorder_id', 'recorder_name', 'recorder_unit_id', 'recorder_unit_name', 'deleted_at',
 ].join(', ')
 
@@ -133,6 +134,7 @@ router.post('/', adminAuth, async (req, res) => {
     business_dept_head = '',
     remark = '',
     photo_urls = [],
+    standard_basis = '',
   } = req.body
 
   // 必填校验
@@ -152,16 +154,24 @@ router.post('/', adminAuth, async (req, res) => {
     // 录入人上下文：取当前登录管理员/安全员（设计 §8.2，recorder_* 由后端写入，前端不传）
     const recorderCtx = await resolveRecorderContext(req.admin)
 
+    // 标准依据：前端未填则按排查项目从问题依据库服务端兜底匹配
+    let standardBasisValue = standard_basis || ''
+    if (!standardBasisValue && hazard_investigation_item) {
+      const m = await matchStandardBasisDb(pool, { category: hazard_investigation_item })
+      if (m.matched) standardBasisValue = m.standard_basis
+    }
+
     const [result] = await pool.execute(
       `INSERT INTO t_hazard
-        (hazard_code, contractor_unit_id, unit_name, location, description, hazard_level,
+        (hazard_code, contractor_unit_id, unit_name, location, description, standard_basis, hazard_level,
          rectify_measures, responsible_person,
          plan_finish_time, business_dept, hazard_investigation_item, business_dept_head, status,
          reported_by, reported_by_name, report_time, photo_url, rectify_status,
          recorder_id, recorder_name, recorder_unit_id, recorder_unit_name, remark, deleted_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'reported', ?, ?, NOW(), ?, '未整改', ?, ?, ?, ?, ?, NULL)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'reported', ?, ?, NOW(), ?, '未整改', ?, ?, ?, ?, ?, NULL)`,
       [
         hazard_code, safeUnitId, unit_name.trim(), location.trim(), description.trim(),
+        standardBasisValue,
         hazard_level, rectify_measures,
         responsible_person.trim(), plan_finish_time,
         business_dept || '', hazard_investigation_item || '', business_dept_head || '',
@@ -765,6 +775,7 @@ router.patch('/:id', requireAdminOrSafety, async (req, res) => {
     remark: { type: 'string', trim: true },
     responsible_person: { type: 'string', trim: true },
     plan_finish_time: { type: 'string', trim: true },
+    standard_basis: { type: 'string', trim: true },
     // 验收字段（与 verify 接口 coerce 对齐）：is_reject_item 归一式 Number(v)?1:0；deduct_score 原值透传
     is_reject_item: { type: 'bool-int' },
     deduct_score: { type: 'string', trim: true },

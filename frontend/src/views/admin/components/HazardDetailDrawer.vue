@@ -27,6 +27,7 @@
                 <span class="v"><span :class="['badge', levelBadge(current.hazard_level)]">{{ current.hazard_level || '-' }}</span></span>
               </div>
             </div>
+            <div class="info-line"><span class="k">标准依据</span><p class="v">{{ current.standard_basis || '-' }}</p></div>
             <div class="info-line"><span class="k">描述</span><p class="v">{{ current.description || '-' }}</p></div>
             <div class="info-line"><span class="k">整改情况</span><p class="v">{{ current.rectify_measures || '-' }}</p></div>
           </section>
