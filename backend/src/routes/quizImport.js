@@ -217,14 +217,19 @@ router.post('/import', adminAuth, upload.single('file'), async (req, res) => {
       materialStatusAfter: MATERIAL_STATUS_AFTER,
     }
 
+    const zeroQuestion = success === 0
     res.json({
       success: true,
-      message: `导入完成：成功 ${success} 条 / 失败 ${fail} 条`,
+      // 0 题时给出明确原因，避免用户误以为「成功 0 题」是失败
+      message: zeroQuestion
+        ? `导入完成，但成功 0 条题目。请检查：①题型列是否填写（单选/多选/判断/简答）②文件是否为 .xlsx ③表头第1列是否含「题型」字样`
+        : `导入完成：成功 ${success} 条 / 失败 ${fail} 条`,
       data: {
         success,
         fail,
         failPreview: failList.slice(0, 10),
         validation,
+        zeroQuestion,
       },
     })
   } catch (e) {

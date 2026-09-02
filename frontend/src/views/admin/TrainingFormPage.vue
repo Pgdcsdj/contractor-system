@@ -373,10 +373,31 @@
 
       <!-- 步骤2：导入结果 -->
       <div v-else>
-        <div v-if="importResult" class="result-msg" :class="importResult.error ? 'error' : 'ok'">
-          {{ importResult.error || importResult.message }}
+        <div v-if="importResult">
+          <!-- 错误（红） -->
+          <div v-if="importResult.error" class="result-msg error">{{ importResult.error }}</div>
+          <!-- 0 题警告（橙） -->
+          <div v-else-if="importResult.data && importResult.data.zeroQuestion" class="result-msg warn">
+            ⚠️ {{ importResult.message }}
+            <div class="hint">常见原因：题型列未填写 / 文件不是 .xlsx / 表头不含「题型」列。请点下方「下载标准模板」对照填写后重试。</div>
+          </div>
+          <!-- 正常成功（绿） -->
+          <div v-else class="result-msg ok">{{ importResult.message }}</div>
+
+          <!-- 失败明细 -->
+          <div v-if="importResult.data && importResult.data.failPreview && importResult.data.failPreview.length" class="fail-list">
+            <div class="fail-title">失败明细（前 10 条）：</div>
+            <div v-for="(f, i) in importResult.data.failPreview" :key="i" class="fail-item">第 {{ f.row }} 行：{{ f.error }}</div>
+          </div>
+
+          <!-- 复制错误详情 -->
+          <div class="copy-row">
+            <button class="btn btn-secondary" @click="copyImportDetail">复制错误详情</button>
+            <span v-if="copied" class="copied-tip">已复制 ✓</span>
+          </div>
         </div>
-        <div v-if="importResult && importResult.error && /模板格式|题型|下载模板/.test(importResult.error)" class="template-tip">
+
+        <div v-if="importResult && (importResult.error || (importResult.data && importResult.data.zeroQuestion))" class="template-tip">
           <p>标准模板第 1 行应为：<code>题型 | 题目内容 | 选项A | 选项B | 选项C | 选项D | 正确答案 | 解析 | 分值</code></p>
           <button class="btn btn-secondary" :disabled="downloading" @click="downloadTemplate">
             {{ downloading ? '下载中…' : '下载标准模板' }}
@@ -741,6 +762,7 @@ async function handleImportSubmit() {
     const data = importRes.data?.data || importRes.data
     importResult.value = {
       message: `导入完成：成功 ${data.success} 题，失败 ${data.fail} 题`,
+      data,
     }
     importStep.value = 2
   } catch (e) {
@@ -748,6 +770,24 @@ async function handleImportSubmit() {
   } finally {
     importing.value = false
   }
+}
+
+// 复制导入错误/结果详情，便于用户直接粘贴给技术人员定位
+const copied = ref(false)
+async function copyImportDetail() {
+  const text = JSON.stringify(importResult.value, null, 2)
+  try {
+    await navigator.clipboard.writeText(text)
+  } catch {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    document.body.appendChild(ta)
+    ta.select()
+    document.execCommand('copy')
+    document.body.removeChild(ta)
+  }
+  copied.value = true
+  setTimeout(() => (copied.value = false), 2000)
 }
 
 async function fetchCategories() {
@@ -910,8 +950,15 @@ h2 { font-size: 18px; margin-bottom: 20px; }
   margin-top: 12px; padding: 10px 14px;
   border-radius: 8px; font-size: 14px;
 }
-.result-msg.ok { background: #e6f4ea; color: var(--success); }
-.result-msg.error { background: #fce8e6; color: var(--danger); }
+.result-msg.ok { background: #e6f4ea; color: var(--success); padding: 12px 14px; border-radius: 8px; }
+.result-msg.error { background: #fce8e6; color: var(--danger); padding: 12px 14px; border-radius: 8px; }
+.result-msg.warn { background: #fff4e5; color: #b26a00; border: 1px solid #ffd8a8; padding: 12px 14px; border-radius: 8px; }
+.result-msg.warn .hint { margin-top: 6px; font-size: 13px; opacity: 0.9; line-height: 1.6; }
+.fail-list { margin-top: 12px; padding: 12px 14px; background: #fce8e6; border-radius: 8px; font-size: 13px; }
+.fail-title { font-weight: 600; margin-bottom: 6px; color: var(--danger); }
+.fail-item { padding: 2px 0; }
+.copy-row { margin-top: 12px; }
+.copied-tip { margin-left: 10px; color: var(--success); font-size: 13px; }
 .template-tip {
   margin-top: 12px; padding: 12px 14px; border-radius: 8px;
   background: #fff8e1; border: 1px solid #fde293; font-size: 13px; color: #795548;
