@@ -84,12 +84,39 @@ router.post('/import', adminAuth, upload.single('file'), async (req, res) => {
 
     if (rows.length < 2) return res.status(400).json({ error: '文件为空或只有表头，请按模板填写题目后重试' })
 
-    // 表头容错：首行首格归一化后含「题型」字样即通过（兼容「题型（必填）」「题目类型」及前后空格/BOM）
-    const header0 = String(rows[0]?.[0] ?? '').replace(/^﻿/, '').trim()
-    const isHeaderOk = /题型|题目类型|试题类型|类型/.test(header0)
-    if (!isHeaderOk) {
+    // ── 表头定位 + 列映射（高容错）──
+    // 1) 向前扫描至多 15 行，寻找含「题型」列且同时含「答案/选项/解析/题干」的表头行
+    //    （兼容：表头不在第1行、前面有标题行、表头带说明文字等情况）
+    let headerRowIdx = 0
+    for (let r = 0; r < Math.min(rows.length, 15); r++) {
+      const joined = (rows[r] || []).join(' ')
+      if (/题型|题目类型|试题类型|类型/.test(joined) && /答案|选项|解析|题干|题目/.test(joined)) {
+        headerRowIdx = r
+        break
+      }
+    }
+
+    // 2) 按表头名称定位各列（容错不同写法），缺失则按标准位置兜底
+    const headerCells = (rows[headerRowIdx] || []).map((h) => String(h ?? '').replace(/^﻿/, '').trim())
+    const findCol = (re) => headerCells.findIndex((h) => re.test(h))
+    const col = {
+      type: findCol(/题型|题目类型|试题类型|类型/),
+      question: findCol(/题目内容|题干|^题目$|^问题$|内容/),
+      optA: findCol(/选项A|^A$|选择A/),
+      optB: findCol(/选项B|^B$|选择B/),
+      optC: findCol(/选项C|^C$|选择C/),
+      optD: findCol(/选项D|^D$|选择D/),
+      answer: findCol(/正确答案|标准答案|^答案$/),
+      analysis: findCol(/解析|分析/),
+      score: findCol(/分值|分数|得分/),
+    }
+    const fallbackPos = [0, 1, 2, 3, 4, 5, 6, 7, 8]
+    const colKeys = ['type', 'question', 'optA', 'optB', 'optC', 'optD', 'answer', 'analysis', 'score']
+    colKeys.forEach((k, i) => { if (col[k] < 0) col[k] = fallbackPos[i] })
+
+    if (col.type < 0) {
       return res.status(400).json({
-        error: `模板格式不对：第1行第1列应为「题型」，当前是「${header0 || '（空）'}」。请先点「下载模板」按标准格式填写。`,
+        error: '未识别到表头：请在第1行第1列填写「题型」（可选值：单选/多选/判断/简答）。若文件前面有标题行请先删除后重试。',
       })
     }
 
@@ -107,19 +134,19 @@ router.post('/import', adminAuth, upload.single('file'), async (req, res) => {
     const emptyAnswerRows = []
     const unrecognizedTypeRows = []
 
-    for (let i = 1; i < rows.length; i++) {
+    for (let i = headerRowIdx + 1; i < rows.length; i++) {
       const row = rows[i]
-      if (!row || !row[0]) continue
+      if (!row || !row[col.type]) continue
 
-      const qType = normalizeType(row[0])
+      const qType = normalizeType(row[col.type])
       if (!qType) {
-        failList.push({ row: i + 1, error: `未知题型: ${row[0]}` })
+        failList.push({ row: i + 1, error: `未知题型: ${row[col.type]}` })
         unrecognizedTypeRows.push(i + 1)
         questionTypes.unrecognized++
         continue
       }
 
-      const question = String(row[1] || '').trim()
+      const question = String(row[col.question] || '').trim()
       if (!question) {
         failList.push({ row: i + 1, error: '题目内容为空' })
         questionTypes.unrecognized++
@@ -130,16 +157,17 @@ router.post('/import', adminAuth, upload.single('file'), async (req, res) => {
       if (qType === 'single' || qType === 'multiple') {
         const opts = {}
         const labels = ['A', 'B', 'C', 'D']
+        const colIdx = [col.optA, col.optB, col.optC, col.optD]
         for (let j = 0; j < 4; j++) {
-          const val = String(row[2 + j] || '').trim()
+          const val = String(row[colIdx[j]] || '').trim()
           if (val) opts[labels[j]] = val
         }
         if (Object.keys(opts).length >= 2) options = opts
       }
 
-      const answer = String(row[6] || '').trim()
-      const analysis = String(row[7] || '').trim()
-      const score = Math.min(100, Math.max(1, Number(row[8]) || 5))
+      const answer = String(row[col.answer] || '').trim()
+      const analysis = String(row[col.analysis] || '').trim()
+      const score = Math.min(100, Math.max(1, Number(row[col.score]) || 5))
 
       // 空答案（客观题必须有答案；简答允许空参考答案，但记录提示）
       if (qType !== 'essay' && !answer) {
@@ -181,7 +209,7 @@ router.post('/import', adminAuth, upload.single('file'), async (req, res) => {
 
     const fail = failList.length
     const validation = {
-      totalRows: Math.max(0, rows.length - 1),
+      totalRows: Math.max(0, rows.length - headerRowIdx - 1),
       questionTypes,
       emptyAnswerRows,
       unrecognizedTypeRows,
