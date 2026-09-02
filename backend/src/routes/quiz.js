@@ -333,8 +333,9 @@ router.get('/list', authMiddleware, async (req, res) => {
   try {
     const userId = req.user.id
 
-    const [users] = await pool.execute('SELECT id, unit FROM t_user WHERE id = ?', [userId])
-    const userUnit = users.length > 0 ? users[0].unit : ''
+    const [users] = await pool.execute('SELECT id, unit, position FROM t_user WHERE id = ?', [userId])
+    const userUnit = users.length > 0 ? (users[0].unit || '') : ''
+    const userPosition = users.length > 0 ? (users[0].position || '') : ''
 
     // 下发 time_limit / pass_score / category / mode / attempt_limit / ai_grading
     const [materials] = await pool.execute(
@@ -352,9 +353,10 @@ router.get('/list', authMiddleware, async (req, res) => {
            m.target_type = 'all'
            OR (m.target_type = 'unit' AND JSON_CONTAINS(m.target_value, ?))
            OR (m.target_type = 'specific' AND JSON_CONTAINS(m.target_value, CAST(? AS JSON)))
+           OR (m.target_type = 'position' AND JSON_CONTAINS(m.target_value, ?))
          )
        ORDER BY completed ASC, m.created_at DESC`,
-      [userId, JSON.stringify(userUnit), JSON.stringify(userId)]
+      [userId, JSON.stringify(userUnit), JSON.stringify(userId), JSON.stringify(userPosition)]
     )
 
     res.json({ success: true, data: materials })

@@ -32,6 +32,7 @@
             <th>及格分</th>
             <th>时限</th>
             <th>状态</th>
+            <th>目标人群</th>
             <th>AI</th>
             <th>发布时间</th>
             <th>操作</th>
@@ -51,6 +52,9 @@
               <span :class="['badge', statusBadge(t.status)]">
                 {{ statusLabel(t.status) }}
               </span>
+            </td>
+            <td>
+              <span class="badge badge-muted">{{ targetLabel(t) }}</span>
             </td>
             <td>
               <span v-if="t.ai_status === 0" class="badge badge-muted">未触发</span>
@@ -159,8 +163,18 @@
           <select v-model="publishForm.target_type" class="form-input" @change="onTargetTypeChange">
             <option value="all">全员</option>
             <option value="unit">指定承包商所有人员</option>
+            <option value="position">指定岗位（管理岗/操作岗）</option>
             <option value="specific">指定人员</option>
           </select>
+        </div>
+        <div v-if="publishForm.target_type === 'position'" class="form-group">
+          <label>选择岗位（可多选）</label>
+          <div class="multi-select">
+            <label v-for="p in allPositions" :key="p" class="checkbox-label">
+              <input type="checkbox" :value="p" v-model="publishForm.target_value" />
+              {{ p }}
+            </label>
+          </div>
         </div>
         <div v-if="publishForm.target_type === 'unit'" class="form-group">
           <label>选择承包商单位（可多选）</label>
@@ -252,6 +266,7 @@ const categories = ref([])
 
 // ── 发布目标人群：单位 / 指定人员 ──
 const allUnits = ref([])
+const allPositions = ref(['管理岗', '操作岗'])
 const userSearch = ref('')
 const allUsers = ref([])
 const loadingUsers = ref(false)
@@ -308,6 +323,18 @@ const statusMap = { pending: '待发布', published: '已发布', closed: '已�
 
 function typeLabel(t) { return typeMap[t] || t }
 function statusLabel(s) { return statusMap[s] || s }
+function targetLabel(t) {
+  const type = t.target_type || 'all'
+  try {
+    const val = typeof t.target_value === 'string' ? JSON.parse(t.target_value || 'null') : t.target_value
+    if (type === 'unit')      return '承包商：' + (val && val.length ? val.join('、') : '全部')
+    if (type === 'position')  return '岗位：' + (val && val.length ? val.join('、') : '未选')
+    if (type === 'specific')  return '指定人员 ' + (val && val.length ? val.length : 0) + ' 人'
+    return '全员'
+  } catch {
+    return '全员'
+  }
+}
 function statusBadge(s) {
   return { pending: 'badge-warning', published: 'badge-success', closed: 'badge-danger' }[s] || ''
 }

@@ -651,6 +651,8 @@ router.get('/list', async (req, res) => {
             ELSE 'pending'
           END AS status,
           ai_status,
+          m.target_type,
+          m.target_value,
           c.name AS category_name,
           m.created_at,
           m.updated_at AS published_at
@@ -941,7 +943,7 @@ router.post('/:id/publish', adminAuth, async (req, res) => {
 
     res.json({
       success: true,
-      message: `题库已发布（共 ${cnt} 道题），目标人群: ${{ all: '全员', unit: '指定承包商', specific: '指定人员' }[target_type] || target_type}`,
+      message: `题库已发布（共 ${cnt} 道题），目标人群: ${{ all: '全员', unit: '指定承包商', specific: '指定人员', position: '指定岗位' }[target_type] || target_type}`,
     })
   } catch (err) {
     console.error('[publish error]', err.message)

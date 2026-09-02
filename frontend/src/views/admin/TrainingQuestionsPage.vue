@@ -49,8 +49,18 @@
             <select v-model="publishForm.target_type" class="form-input" @change="onTargetTypeChange">
               <option value="all">全员</option>
               <option value="unit">指定承包商所有人员</option>
+              <option value="position">指定岗位（管理岗/操作岗）</option>
               <option value="specific">指定人员</option>
             </select>
+          </div>
+          <div v-if="publishForm.target_type === 'position'" class="form-group">
+            <label>选择岗位（可多选）</label>
+            <div class="multi-select">
+              <label v-for="p in allPositions" :key="p" class="checkbox-label">
+                <input type="checkbox" :value="p" v-model="publishForm.target_value" />
+                {{ p }}
+              </label>
+            </div>
           </div>
           <div v-if="publishForm.target_type === 'unit'" class="form-group">
             <label>选择承包商单位（可多选）</label>
@@ -152,6 +162,7 @@ const showPublish = ref(false)
 const publishing = ref(false)
 const categories = ref([])
 const allUnits = ref([])
+const allPositions = ref(['管理岗', '操作岗'])
 const userSearch = ref('')
 const allUsers = ref([])
 const loadingUsers = ref(false)
