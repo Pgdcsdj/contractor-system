@@ -406,6 +406,12 @@ import AIPreviewModal from './components/AIPreviewModal.vue'
 
 const router = useRouter()
 
+// 上传前先把文件读进内存 Blob，避免磁盘源文件被 Excel/Word 占用或改写时触发 ERR_UPLOAD_FILE_CHANGED
+async function fileToBlob(file) {
+  if (!file) return file
+  return new Blob([await file.arrayBuffer()], { type: file.type || 'application/octet-stream' })
+}
+
 // ── 模式选择 ──
 const mode = ref(null) // null | 'ai' | 'import' | 'image_violation'
 
@@ -595,14 +601,13 @@ async function handleImgSubmit() {
     fd.append('time_limit', imgForm.time_limit)
     fd.append('mode', imgForm.mode)
     if (imgForm.category_id) fd.append('category_id', imgForm.category_id)
-    fd.append('file', imgFile.value)
+    fd.append('file', await fileToBlob(imgFile.value))
     fd.append('ai_enabled', 'true')
     fd.append('ai_question_types', 'mixed')
     fd.append('ai_question_count', 15)
     fd.append('difficulty', imgForm.difficulty || 3)
 
     const res = await request.post('/api/material/upload', fd, {
-      headers: { 'Content-Type': 'multipart/form-data' },
       onUploadProgress: (e) => {
         if (e.total) imgUploadProgress.value = Math.round((e.loaded / e.total) * 100)
       },
@@ -715,19 +720,17 @@ async function handleImportSubmit() {
     fd.append('exam_judgment_num', Math.max(0, Number(importForm.exam_judgment_num) || 0))
     let url
     if (importTab.value === 'excel') {
-      fd.append('file', importFile.value)
+      fd.append('file', await fileToBlob(importFile.value))
       url = '/api/admin/quiz-import/import'
     } else {
-      fd.append('questions', importQFile.value)
+      fd.append('questions', await fileToBlob(importQFile.value))
       if (importAFile.value) {
         if (!isValidDocx(importAFile.value)) throw new Error('参考答案必须是 .docx 文件')
-        fd.append('answers', importAFile.value)
+        fd.append('answers', await fileToBlob(importAFile.value))
       }
       url = '/api/admin/quiz-import/import-docx'
     }
-    const importRes = await request.post(url, fd, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    })
+    const importRes = await request.post(url, fd)
 
     const data = importRes.data?.data || importRes.data
     importResult.value = {
