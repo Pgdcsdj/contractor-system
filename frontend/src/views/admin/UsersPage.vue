@@ -353,19 +353,21 @@ async function handleImport() {
   if (!selectedFile.value) return
   importing.value = true
   importResult.value = null
-  const form = new FormData()
-  form.append('file', selectedFile.value)
   try {
-    const res = await request.post('/api/admin/import-users', form, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    })
+    const form = new FormData()
+    // 读入内存后上传，规避源文件被 Excel 占用导致的 ERR_UPLOAD_FILE_CHANGED 中断
+    const buf = await selectedFile.value.arrayBuffer()
+    const blob = new Blob([buf], { type: selectedFile.value.type || 'application/octet-stream' })
+    form.append('file', blob, selectedFile.value.name)
+    // 不显式设置 Content-Type，交由 axios 自动携带 multipart boundary
+    const res = await request.post('/api/admin/import-users', form)
     const d = res.data?.data || {}
     importResult.value = d
     if (!d.fail) {
       setTimeout(() => { showImport.value = false; fetchUsers() }, 1500)
     }
   } catch (e) {
-    importResult.value = { inserted: 0, updated: 0, fail: 1, error: e.response?.data?.error || '导入失败' }
+    importResult.value = { inserted: 0, updated: 0, fail: 1, error: e.response?.data?.error || '导入失败，请关闭文件后重试' }
   } finally {
     importing.value = false
   }

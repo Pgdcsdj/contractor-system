@@ -123,6 +123,13 @@ function triggerFile() { fileInput.value?.click() }
 function triggerQ() { qInput.value?.click() }
 function triggerA() { aInput.value?.click() }
 
+// 将 File 读入内存 Blob 后再上传：避免源文件（如正被 Excel 打开）在上传途中被改写，
+// 触发浏览器 ERR_UPLOAD_FILE_CHANGED 而中断上传（表现为「无反应/导入失败」）。
+async function fileToBlob(file) {
+  const buf = await file.arrayBuffer()
+  return new Blob([buf], { type: file.type || 'application/octet-stream' })
+}
+
 // 下载 Excel 导入模板：走 axios（自动带 tnb_admin_token），避免 <a href> 无鉴权 401
 async function downloadTemplate() {
   try {
@@ -154,19 +161,19 @@ async function handleImport() {
     fd.append('exam_judgment_num', Number(examJudgment.value) || 0)
     let url
     if (mode.value === 'excel') {
-      fd.append('file', selectedFile.value)
+      // 读入内存后上传，规避源文件被占用导致的上传中断
+      fd.append('file', await fileToBlob(selectedFile.value), selectedFile.value.name)
       url = '/api/admin/quiz-import/import'
     } else {
-      fd.append('questions', qFile.value)
-      if (aFile.value) fd.append('answers', aFile.value)
+      fd.append('questions', await fileToBlob(qFile.value), qFile.value.name)
+      if (aFile.value) fd.append('answers', await fileToBlob(aFile.value), aFile.value.name)
       url = '/api/admin/quiz-import/import-docx'
     }
-    const res = await request.post(url, fd, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    })
+    // 不显式设置 Content-Type，交由 axios 自动携带 multipart boundary
+    const res = await request.post(url, fd)
     result.value = res.data?.data || res.data
   } catch (e) {
-    result.value = { success: 0, fail: 1, failPreview: [{ error: e.response?.data?.error || '导入失败' }] }
+    result.value = { success: 0, fail: 1, failPreview: [{ error: e.response?.data?.error || '导入失败，请关闭文件后重试' }] }
   } finally {
     importing.value = false
   }
