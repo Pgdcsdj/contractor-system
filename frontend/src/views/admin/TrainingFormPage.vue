@@ -628,7 +628,7 @@ async function handleImgSubmit() {
     fd.append('time_limit', imgForm.time_limit)
     fd.append('mode', imgForm.mode)
     if (imgForm.category_id) fd.append('category_id', imgForm.category_id)
-    fd.append('file', await fileToBlob(imgFile.value))
+    fd.append('file', await fileToBlob(imgFile.value), imgFile.value.name)
     fd.append('ai_enabled', 'true')
     fd.append('ai_question_types', 'mixed')
     fd.append('ai_question_count', 15)
@@ -747,13 +747,13 @@ async function handleImportSubmit() {
     fd.append('exam_judgment_num', Math.max(0, Number(importForm.exam_judgment_num) || 0))
     let url
     if (importTab.value === 'excel') {
-      fd.append('file', await fileToBlob(importFile.value))
+      fd.append('file', await fileToBlob(importFile.value), importFile.value.name)
       url = '/api/admin/quiz-import/import'
     } else {
-      fd.append('questions', await fileToBlob(importQFile.value))
+      fd.append('questions', await fileToBlob(importQFile.value), importQFile.value.name)
       if (importAFile.value) {
         if (!isValidDocx(importAFile.value)) throw new Error('参考答案必须是 .docx 文件')
-        fd.append('answers', await fileToBlob(importAFile.value))
+        fd.append('answers', await fileToBlob(importAFile.value), importAFile.value.name)
       }
       url = '/api/admin/quiz-import/import-docx'
     }

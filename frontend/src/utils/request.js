@@ -36,6 +36,18 @@ request.interceptors.request.use((config) => {
     const token = localStorage.getItem('tnb_token')
     if (token) config.headers.Authorization = `Bearer ${token}`
   }
+
+  // ── FormData 上传强制 multipart ─────────────────────────────────────────────
+  // 关键修复（v2026.09.10）：axios.create 时设了全局默认 Content-Type:
+  // application/json，若 FormData 走默认头，axios 会把它 JSON.stringify 成
+  // {"file":"[object File]"} 发走，文件字节丢失、服务器收不到 multipart →
+  // req.file 为 undefined → 后端 400「请上传 Excel 文件」。
+  // 显式改为 multipart/form-data 后，浏览器/XHR 会自动补 boundary，文件正常上传。
+  // 此拦截覆盖全站所有 FormData 上传（题库导入、隐患图片、承包商资料等）。
+  if (config.data instanceof FormData) {
+    config.headers['Content-Type'] = 'multipart/form-data'
+  }
+
   // 上传 / AI 出题类请求放宽超时：大文件 + COS 上传 + 模型响应耗时，
   // 默认 15s 易被 axios 主动掐断，表现为「上传失败」。与 nginx proxy_read_timeout(300s) 对齐，
   // 避免前端先于网关掐断。其他请求保持 15s。
