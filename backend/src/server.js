@@ -69,6 +69,15 @@ async function autoMigrate() {
       console.log('[migrate] ✅ supervising_unit 字段添加完成')
     }
 
+    // 1.1 t_user.position（岗位）
+    if (!(await ensureColumn('t_user', 'position'))) {
+      console.log('[migrate] 正在添加 position 字段...')
+      await pool.execute(
+        "ALTER TABLE t_user ADD COLUMN position VARCHAR(100) NOT NULL DEFAULT '' COMMENT '岗位' AFTER phone"
+      )
+      console.log('[migrate] ✅ position 字段添加完成')
+    }
+
     // 2. t_system_config（修复 schema.sql 缺口：settings 接口引用但未建表）
     await ensureTable(`
       CREATE TABLE IF NOT EXISTS t_system_config (

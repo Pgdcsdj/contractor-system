@@ -2,7 +2,7 @@
   <div class="safety-layout">
     <header class="topbar">
       <div class="topbar-left">
-        <span class="brand-char">通</span>
+        <img :src="logoUrl" class="topbar-logo" alt="通南巴气田安全管理" />
         <span class="brand-text">通南巴隐患整改 — 安全员工作台</span>
       </div>
       <div class="topbar-right">
@@ -26,6 +26,7 @@
 import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAdminStore } from '@/stores/admin'
+import logoUrl from '@/assets/logo.jpg'
 
 const router = useRouter()
 const admin = useAdminStore()
@@ -56,11 +57,11 @@ function handleLogout() {
 }
 .topbar-left { display: flex; align-items: center; gap: 12px; }
 .brand-text { font-size: 15px; font-weight: 700; letter-spacing: .5px; }
-.brand-char {
-  width: 30px; height: 30px; border-radius: 8px; flex-shrink: 0;
-  display: flex; align-items: center; justify-content: center; color: #fff;
-  background: linear-gradient(135deg, var(--c-blue-500), var(--c-blue-700));
-  box-shadow: 0 3px 10px rgba(29,111,184,.4); font-size: 16px; font-weight: 700; line-height: 1;
+.topbar-logo {
+  width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0;
+  object-fit: contain;
+  background: #fff;
+  box-shadow: 0 3px 10px rgba(0,0,0,.2);
 }
 .topbar-right { display: flex; align-items: center; gap: 14px; }
 

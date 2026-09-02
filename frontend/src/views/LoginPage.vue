@@ -2,7 +2,7 @@
   <div class="login-page">
     <!-- 顶部品牌 -->
     <div class="brand">
-      <div class="brand-logo"><span class="brand-char">通</span></div>
+      <div class="brand-logo"><img :src="logoUrl" class="brand-img" alt="通南巴气田安全管理" /></div>
       <h1 class="brand-title">通南巴项目部</h1>
       <p class="brand-sub">承包商安全培训考核</p>
     </div>
@@ -61,6 +61,7 @@
 import { ref, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import logoUrl from '@/assets/logo.jpg'
 // offlineDb 动态加载，已移除静态导入
 
 const router = useRouter()
@@ -143,16 +144,16 @@ async function handleRegister() {
   background: linear-gradient(160deg, #e8f0fe 0%, #f5f5f5 100%);
 }
 
-.brand { text-align: center; margin-bottom: 30px; }
-.brand-logo { display: flex; justify-content: center; margin-bottom: 10px; }
-.brand-char {
-  width: 60px; height: 60px; border-radius: 16px;
-  display: flex; align-items: center; justify-content: center; color: #fff;
-  background: linear-gradient(135deg, #1a73e8, #1558d6);
-  box-shadow: 0 6px 18px rgba(26,115,232,.4); font-size: 32px; font-weight: 700; line-height: 1;
+.brand { text-align: center; margin-bottom: 28px; }
+.brand-logo { display: flex; justify-content: center; margin-bottom: 14px; }
+.brand-img {
+  width: 110px; height: 110px; border-radius: 50%;
+  object-fit: contain;
+  box-shadow: 0 8px 28px rgba(26,115,232,.35);
+  background: #fff;
 }
-.brand-title { font-size: 22px; font-weight: 700; color: #1a73e8; }
-.brand-sub { font-size: 14px; color: #5f6368; margin-top: 4px; }
+.brand-title { font-size: 24px; font-weight: 700; color: #1a73e8; }
+.brand-sub { font-size: 15px; color: #5f6368; margin-top: 5px; }
 
 .card { width: 100%; max-width: 400px; padding: 24px; }
 .section-title { font-size: 16px; font-weight: 600; margin-bottom: 16px; text-align: center; }

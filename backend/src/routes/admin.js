@@ -86,11 +86,15 @@ router.post('/import-users', adminAuth, upload.single('file'), async (req, res) 
 
     res.json({
       success: true,
-      message: `导入完成：成功 ${result.success} 条 / 失败 ${result.fail} 条`,
+      message: `导入完成：新增 ${result.inserted} 条 / 覆盖更新 ${result.updated} 条 / 失败 ${result.fail} 条`,
       data: {
-        total:   result.total,
-        success: result.success,
-        fail:    result.fail,
+        total:     result.total,
+        success:   result.success,
+        inserted:  result.inserted,
+        updated:   result.updated,
+        fail:      result.fail,
+        logId:     result.logId,
+        warnings:  result.warnings,
         // 只返回前10条失败记录（完整报告用下载接口）
         failPreview: result.failList.slice(0, 10),
       },
@@ -153,7 +157,7 @@ router.get('/users', adminAuth, async (req, res) => {
   )
 
   const [rows] = await pool.query(
-    `SELECT id, name, id_card, unit, supervising_unit, phone, status, qr_token, created_at
+    `SELECT id, name, id_card, unit, supervising_unit, phone, position, status, qr_token, created_at
      FROM t_user ${where}
      ORDER BY created_at DESC
      LIMIT ${safePageSize} OFFSET ${safeOffset}`,
@@ -205,11 +209,11 @@ router.patch('/users/:id/status', adminAuth, async (req, res) => {
 // ─── POST /api/admin/users ────────────────────────────────────────────────────
 // 新增单个人员（管理员手动录入）
 router.post('/users', adminAuth, async (req, res) => {
-  const { name, id_card, unit, supervising_unit, phone } = req.body
+  const { name, id_card, unit, supervising_unit, phone, position } = req.body
   if (!name || !name.trim()) return res.status(400).json({ error: '请输入姓名' })
   if (!id_card || !id_card.trim()) return res.status(400).json({ error: '请输入身份证号' })
 
-  // 检查是否已存在
+  // 检查是否已存在（身份证号为主键）
   const [existing] = await pool.execute('SELECT id FROM t_user WHERE id_card = ?', [id_card.trim()])
   if (existing.length > 0) return res.status(400).json({ error: '该身份证号已存在' })
 
@@ -217,9 +221,9 @@ router.post('/users', adminAuth, async (req, res) => {
   const qrToken = crypto.createHash('sha256').update(id_card.trim()).digest('hex').slice(0, 16)
 
   const [result] = await pool.execute(
-    `INSERT INTO t_user (name, id_card, unit, supervising_unit, phone, qr_token, status)
-     VALUES (?, ?, ?, ?, ?, ?, 1)`,
-    [name.trim(), id_card.trim(), (unit || '').trim(), (supervising_unit || '').trim(), (phone || '').trim(), qrToken]
+    `INSERT INTO t_user (name, id_card, unit, supervising_unit, phone, position, qr_token, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
+    [name.trim(), id_card.trim(), (unit || '').trim(), (supervising_unit || '').trim(), (phone || '').trim(), (position || '').trim(), qrToken]
   )
   res.json({ success: true, message: '人员已添加', data: { id: result.insertId } })
 })
@@ -247,7 +251,7 @@ router.get('/users/export', adminAuth, async (req, res) => {
 
   try {
     const [rows] = await pool.query(
-      `SELECT name, id_card, unit, supervising_unit, phone, status, created_at
+      `SELECT name, id_card, unit, supervising_unit, position, phone, status, created_at
        FROM t_user ${where}
        ORDER BY created_at DESC`,
       params
@@ -259,6 +263,7 @@ router.get('/users/export', adminAuth, async (req, res) => {
       身份证号:   u.id_card,
       承包商单位: u.unit || '',
       主管单位:   u.supervising_unit || '',
+      岗位:       u.position || '',
       手机号:     u.phone || '',
       状态:       Number(u.status) === 1 ? '启用' : '禁用',
       录入时间:   u.created_at ? new Date(u.created_at).toLocaleString('zh-CN') : '',
@@ -267,8 +272,8 @@ router.get('/users/export', adminAuth, async (req, res) => {
     const wb = XLSX.utils.book_new()
     const ws = XLSX.utils.json_to_sheet(data)
     ws['!cols'] = [
-      { wch: 6 }, { wch: 12 }, { wch: 20 }, { wch: 24 }, { wch: 20 },
-      { wch: 16 }, { wch: 8 }, { wch: 20 },
+      { wch: 6 }, { wch: 12 }, { wch: 20 }, { wch: 24 }, { wch: 14 },
+      { wch: 14 }, { wch: 16 }, { wch: 8 }, { wch: 20 },
     ]
     XLSX.utils.book_append_sheet(wb, ws, '人员信息')
     const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' })
@@ -289,7 +294,7 @@ router.get('/users/export', adminAuth, async (req, res) => {
 router.get('/users/:id', adminAuth, async (req, res) => {
   const { id } = req.params
   const [rows] = await pool.execute(
-    'SELECT id, name, id_card, unit, supervising_unit, phone, status, qr_token, created_at, updated_at FROM t_user WHERE id = ?',
+    'SELECT id, name, id_card, unit, supervising_unit, phone, position, status, qr_token, created_at, updated_at FROM t_user WHERE id = ?',
     [id]
   )
   if (!rows.length) return res.status(404).json({ error: '用户不存在' })
@@ -300,7 +305,7 @@ router.get('/users/:id', adminAuth, async (req, res) => {
 // 编辑人员信息
 router.put('/users/:id', adminAuth, async (req, res) => {
   const { id } = req.params
-  const { name, id_card, unit, supervising_unit, phone, status } = req.body
+  const { name, id_card, unit, supervising_unit, phone, position, status } = req.body
 
   const [existing] = await pool.execute('SELECT id FROM t_user WHERE id = ?', [id])
   if (!existing.length) return res.status(404).json({ error: '用户不存在' })
@@ -313,6 +318,7 @@ router.put('/users/:id', adminAuth, async (req, res) => {
   if (unit !== undefined)             { updates.push('unit = ?');             params.push(unit.trim()) }
   if (supervising_unit !== undefined) { updates.push('supervising_unit = ?'); params.push(supervising_unit.trim()) }
   if (phone !== undefined)            { updates.push('phone = ?');            params.push(phone.trim()) }
+  if (position !== undefined)         { updates.push('position = ?');         params.push(position.trim()) }
   if (status !== undefined)           { updates.push('status = ?');           params.push(Number(status)) }
 
   if (updates.length === 0) return res.status(400).json({ error: '请提供要修改的字段' })

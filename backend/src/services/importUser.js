@@ -2,13 +2,14 @@
  * Excel 人员导入服务
  *
  * 功能：
- *   - 解析 .xlsx 文件，提取姓名/身份证/承包商/主管单位/手机
- *   - UPSERT 写入 t_user（重复身份证自动更新）
- *   - 同步生成二维码 Token
- *   - 返回成功/失败统计，支持下载失败行报告
+ *   - 解析 .xlsx 文件，提取姓名/身份证/承包商/主管单位/手机/岗位
+ *   - 去重规则（身份证号为主键）：身份证号相同即视为同一人，以最新导入信息覆盖原记录
+ *   - 姓名仅作辅助提示：若姓名与既有记录重复但身份证不同，记录 warning（仍作为新记录插入）
+ *   - 同步生成/刷新二维码 Token
+ *   - 返回成功/失败/新增/覆盖统计与失败报告
  *
  * 期望 Excel 表头（第一行）：
- *   姓名 | 身份证号 | 所属单位（承包商）| 主管单位（甲方）| 手机号（可选）
+ *   姓名 | 身份证号 | 所属单位（承包商）| 主管单位（甲方）| 岗位（选填）| 手机号（选填）
  */
 
 const xlsx = require('xlsx')
@@ -27,6 +28,7 @@ const FIELD_MAP = {
   unit:             ['所属单位', '承包商', '承包商名称', '公司', 'unit'],
   supervising_unit: ['主管单位', '甲方单位', 'supervising_unit'],
   phone:            ['手机号', '手机', '电话', 'phone', 'mobile'],
+  position:         ['岗位', '职务', '职位', 'position', 'post'],
 }
 
 /**
@@ -107,6 +109,9 @@ async function importUsers(buffer, adminId = 0, filename = '') {
   }
 
   const successList = []
+  const insertedList = []
+  const updatedList = []
+  const warnings = []
   const failList = []
 
   for (let i = 0; i < dataRows.length; i++) {
@@ -126,22 +131,42 @@ async function importUsers(buffer, adminId = 0, filename = '') {
     data.qr_token = genQrToken(data.id_card)
     if (!data.unit)             data.unit             = ''
     if (!data.supervising_unit) data.supervising_unit = ''
-    if (!data.phone)            data.phone = null
+    if (!data.phone)            data.phone            = null
+    if (!data.position)         data.position         = ''
 
     try {
-      await pool.execute(
-        `INSERT INTO t_user (name, id_card, qr_token, unit, supervising_unit, phone)
-         VALUES (?, ?, ?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE
-           name             = VALUES(name),
-           qr_token         = VALUES(qr_token),
-           unit             = VALUES(unit),
-           supervising_unit = VALUES(supervising_unit),
-           phone            = VALUES(phone),
-           status           = 1,
-           updated_at       = CURRENT_TIMESTAMP`,
-        [data.name, data.id_card, data.qr_token, data.unit, data.supervising_unit, data.phone]
+      // 去重主键：身份证号（用户确认：身份证号为主键）
+      const [existing] = await pool.execute(
+        'SELECT id FROM t_user WHERE id_card = ?',
+        [data.id_card]
       )
+
+      if (existing.length) {
+        // 身份证号相同 → 视为同一人，以最新导入信息覆盖原记录
+        await pool.execute(
+          `UPDATE t_user
+              SET name = ?, unit = ?, supervising_unit = ?, phone = ?, position = ?,
+                  qr_token = ?, status = 1, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?`,
+          [data.name, data.unit, data.supervising_unit, data.phone, data.position, data.qr_token, existing[0].id]
+        )
+        updatedList.push({ row: rowNum, name: data.name, id_card: data.id_card })
+      } else {
+        // 辅助提示：姓名与既有「不同身份证」记录重复（可能是同名不同人，仍作为新记录保留）
+        const [nameHit] = await pool.execute(
+          'SELECT id_card FROM t_user WHERE name = ? AND id_card != ? LIMIT 1',
+          [data.name, data.id_card]
+        )
+        if (nameHit.length) {
+          warnings.push({ row: rowNum, name: data.name, id_card: data.id_card, existing_id_card: nameHit[0].id_card })
+        }
+        await pool.execute(
+          `INSERT INTO t_user (name, id_card, qr_token, unit, supervising_unit, phone, position)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [data.name, data.id_card, data.qr_token, data.unit, data.supervising_unit, data.phone, data.position]
+        )
+        insertedList.push({ row: rowNum, name: data.name, id_card: data.id_card })
+      }
       successList.push({ row: rowNum, name: data.name, id_card: data.id_card })
     } catch (dbErr) {
       failList.push({ row: rowNum, data: row, error: `数据库错误: ${dbErr.message}` })
@@ -149,7 +174,7 @@ async function importUsers(buffer, adminId = 0, filename = '') {
   }
 
   // 写入导入日志
-  await pool.execute(
+  const [logRes] = await pool.execute(
     `INSERT INTO t_import_log (filename, total_rows, success_rows, fail_rows, fail_detail, imported_by)
      VALUES (?, ?, ?, ?, ?, ?)`,
     [
@@ -163,11 +188,17 @@ async function importUsers(buffer, adminId = 0, filename = '') {
   )
 
   return {
-    total:   dataRows.length,
-    success: successList.length,
-    fail:    failList.length,
+    total:     dataRows.length,
+    success:   successList.length,
+    fail:      failList.length,
     failList,
     successList,
+    inserted:  insertedList.length,
+    updated:   updatedList.length,
+    insertedList,
+    updatedList,
+    warnings,
+    logId:     logRes.insertId,
   }
 }
 

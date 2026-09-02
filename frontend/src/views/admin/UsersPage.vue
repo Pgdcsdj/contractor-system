@@ -42,17 +42,17 @@
             <th class="col-check">
               <input type="checkbox" :checked="allSelectedOnPage" @change="toggleAll" aria-label="全选本页" />
             </th>
-            <th>姓名</th><th>身份证</th><th>主管单位</th><th>承包商</th><th>手机</th><th>录入时间</th><th>状态</th><th>操作</th>
+            <th>姓名</th><th>身份证</th><th>主管单位</th><th>承包商</th><th>岗位</th><th>手机</th><th>录入时间</th><th>状态</th><th>操作</th>
           </tr>
         </thead>
         <tbody>
           <tr v-if="loading">
-            <td colspan="9" style="text-align:center;padding:30px;color:var(--text-secondary)">
+            <td colspan="10" style="text-align:center;padding:30px;color:var(--text-secondary)">
               <div class="spinner" style="margin:0 auto"></div>
             </td>
           </tr>
           <tr v-else-if="filteredUsers.length === 0">
-            <td colspan="9" class="empty-cell">暂无人员数据</td>
+            <td colspan="10" class="empty-cell">暂无人员数据</td>
           </tr>
           <tr v-for="u in paginatedUsers" :key="u.id">
             <td class="col-check">
@@ -62,6 +62,7 @@
             <td class="mono">{{ maskIdCard(u.id_card) }}</td>
             <td>{{ u.supervising_unit || '-' }}</td>
             <td>{{ u.unit || '-' }}</td>
+            <td>{{ u.position || '-' }}</td>
             <td>{{ u.phone || '-' }}</td>
             <td class="mono" style="font-size:12px">{{ u.created_at ? formatDate(u.created_at) : '-' }}</td>
             <td><span :class="['badge', Number(u.status) === 1 ? 'badge-success' : 'badge-danger']">
@@ -89,7 +90,8 @@
         <h3>📥 Excel 导入人员</h3>
         <p class="modal-hint">
           请上传 Excel 文件，表头列名需包含：<strong>姓名、身份证号</strong>（必填），
-          <strong>所属单位（承包商）、主管单位（甲方）、手机号</strong>（选填，自动识别列名）
+          <strong>所属单位（承包商）、主管单位（甲方）、岗位、手机号</strong>（选填，自动识别列名）。<br />
+          导入将<strong>按身份证号自动去重</strong>：相同身份证号视为同一人，以最新导入信息覆盖原记录。
         </p>
         <div class="file-upload" @click="triggerFile" :class="{ dragover: isDragover }"
           @dragover.prevent="isDragover = true"
@@ -108,12 +110,18 @@
         </div>
 
         <!-- 导入结果 -->
-        <div v-if="importResult" class="import-result" :class="importResult.fail > 0 ? 'has-fail' : 'all-ok'">
-          <p>✅ 成功 {{ importResult.success }} 条</p>
-          <p v-if="importResult.fail > 0">❌ 失败 {{ importResult.fail }} 条</p>
-          <a v-if="importResult.fail > 0" :href="importResult.downloadUrl" class="btn btn-outline" style="margin-top:8px;font-size:13px">
+        <div v-if="importResult" class="import-result" :class="(importResult.fail > 0) ? 'has-fail' : 'all-ok'">
+          <p v-if="importResult.error" class="err-text">⚠️ {{ importResult.error }}</p>
+          <template v-else>
+            <p>✅ 新增 {{ importResult.inserted ?? 0 }} 条 / 覆盖更新 {{ importResult.updated ?? 0 }} 条</p>
+            <p v-if="importResult.fail > 0">❌ 失败 {{ importResult.fail }} 条</p>
+            <p v-if="importResult.warnings && importResult.warnings.length" class="warn-text">
+              ⚠️ {{ importResult.warnings.length }} 条「姓名」与既有记录重复但身份证不同，已作为新记录保留
+            </p>
+          </template>
+          <button v-if="importResult.logId && importResult.fail > 0" class="btn btn-outline" style="margin-top:8px;font-size:13px" @click="downloadFail(importResult.logId)">
             📥 下载失败报告
-          </a>
+          </button>
         </div>
       </div>
     </div>
@@ -127,6 +135,7 @@
           <div class="form-group"><label>身份证号 *</label><input v-model="addForm.id_card" class="form-input" maxlength="18" /></div>
           <div class="form-group"><label>承包商单位</label><input v-model="addForm.unit" class="form-input" /></div>
           <div class="form-group"><label>主管单位</label><input v-model="addForm.supervising_unit" class="form-input" /></div>
+          <div class="form-group"><label>岗位</label><input v-model="addForm.position" class="form-input" placeholder="如：焊工 / 安全员" /></div>
           <div class="form-group"><label>手机号</label><input v-model="addForm.phone" class="form-input" /></div>
         </div>
         <div class="modal-actions">
@@ -158,6 +167,10 @@
           <div class="form-group">
             <label>主管单位</label>
             <input v-model="editForm.supervising_unit" class="form-input" />
+          </div>
+          <div class="form-group">
+            <label>岗位</label>
+            <input v-model="editForm.position" class="form-input" placeholder="如：焊工 / 安全员" />
           </div>
           <div class="form-group">
             <label>手机号</label>
@@ -206,12 +219,12 @@ const importResult = ref(null)
 
 // 编辑
 const showEdit = ref(false)
-const editForm = ref({ id: null, name: '', id_card: '', unit: '', supervising_unit: '', phone: '', status: 1 })
+const editForm = ref({ id: null, name: '', id_card: '', unit: '', supervising_unit: '', position: '', phone: '', status: 1 })
 const saving = ref(false)
 
 // 新增
 const showAdd = ref(false)
-const addForm = ref({ name: '', id_card: '', unit: '', supervising_unit: '', phone: '' })
+const addForm = ref({ name: '', id_card: '', unit: '', supervising_unit: '', position: '', phone: '' })
 const adding = ref(false)
 
 // 选择 / 批量 / 导出
@@ -315,7 +328,7 @@ async function handleAddUser() {
   try {
     await request.post('/api/admin/users', { ...addForm.value })
     showAdd.value = false
-    addForm.value = { name: '', id_card: '', unit: '', supervising_unit: '', phone: '' }
+    addForm.value = { name: '', id_card: '', unit: '', supervising_unit: '', position: '', phone: '' }
     fetchUsers()
   } catch (e) {
     alert(e.response?.data?.error || '添加失败')
@@ -346,14 +359,32 @@ async function handleImport() {
     const res = await request.post('/api/admin/import-users', form, {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
-    importResult.value = res.data
-    if (!res.data.fail) {
+    const d = res.data?.data || {}
+    importResult.value = d
+    if (!d.fail) {
       setTimeout(() => { showImport.value = false; fetchUsers() }, 1500)
     }
   } catch (e) {
-    importResult.value = { success: 0, fail: 1, error: e.response?.data?.error || '导入失败' }
+    importResult.value = { inserted: 0, updated: 0, fail: 1, error: e.response?.data?.error || '导入失败' }
   } finally {
     importing.value = false
+  }
+}
+
+async function downloadFail(logId) {
+  if (!logId) return
+  try {
+    const res = await request.get(`/api/admin/import-users/fail/${logId}`, { responseType: 'blob' })
+    const url = window.URL.createObjectURL(new Blob([res.data]))
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `失败明细_${logId}.xlsx`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    window.URL.revokeObjectURL(url)
+  } catch (e) {
+    alert('下载失败：' + (e.response?.data?.error || e.message))
   }
 }
 
@@ -364,6 +395,7 @@ function editUser(u) {
     id_card: u.id_card || '',
     unit: u.unit || '',
     supervising_unit: u.supervising_unit || '',
+    position: u.position || '',
     phone: u.phone || '',
     status: Number(u.status) ?? 1,
   }
@@ -378,6 +410,7 @@ async function handleEdit() {
       id_card: editForm.value.id_card,
       unit: editForm.value.unit,
       supervising_unit: editForm.value.supervising_unit,
+      position: editForm.value.position,
       phone: editForm.value.phone,
       status: editForm.value.status,
     })
@@ -510,6 +543,9 @@ watch(page, fetchUsers)
 .import-result { margin-top: 14px; padding: 12px; border-radius: 8px; font-size: 14px; }
 .import-result.has-fail { background: #fce8e6; color: var(--danger); }
 .import-result.all-ok { background: #e6f4ea; color: var(--success); }
+.import-result p { margin: 2px 0; }
+.import-result .warn-text { font-size: 12.5px; opacity: 0.85; }
+.import-result .err-text { font-weight: 600; }
 
 .action-link { background: none; border: none; color: var(--primary); cursor: pointer; font-size: 13px; padding: 4px 8px; border-radius: 6px; }
 .action-link:hover { background: #e8f0fe; }

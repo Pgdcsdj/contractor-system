@@ -3,9 +3,7 @@
     <!-- 侧边栏 -->
     <aside class="sidebar" :class="{ collapsed: sidebarCollapsed }">
       <div class="sidebar-header">
-        <span class="brand-mark">
-          <span class="brand-char">通</span>
-        </span>
+        <img :src="logoUrl" class="sidebar-logo" alt="通南巴气田安全管理" />
         <span v-if="!sidebarCollapsed" class="logo-text">通南巴承包商系统</span>
       </div>
 
@@ -125,6 +123,7 @@ import { ref, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAdminStore } from '@/stores/admin'
 import Icon from '@/components/Icon.vue'
+import logoUrl from '@/assets/logo.jpg'
 
 const admin = useAdminStore()
 const route = useRoute()
@@ -182,20 +181,13 @@ function handleLogout() {
 
 .sidebar-header {
   display: flex; align-items: center; gap: 11px;
-  padding: 20px 18px; border-bottom: 1px solid rgba(255, 255, 255, .08);
+  padding: 18px; border-bottom: 1px solid rgba(255, 255, 255, .08);
 }
-.brand-mark {
-  width: 38px; height: 38px; border-radius: 10px; flex-shrink: 0;
-  display: flex; align-items: center; justify-content: center;
-  background: linear-gradient(135deg, var(--c-blue-500), var(--c-blue-700));
-  color: #fff; box-shadow: 0 4px 12px rgba(29, 111, 184, .45);
-}
-.brand-char {
-  font-size: 20px;
-  font-weight: 700;
-  color: #fff;
-  line-height: 1;
-  user-select: none;
+.sidebar-logo {
+  width: 40px; height: 40px; border-radius: 10px; flex-shrink: 0;
+  object-fit: contain;
+  background: #fff;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, .25);
 }
 .logo-text { color: #fff; font-weight: 700; font-size: 15.5px; letter-spacing: .5px; white-space: nowrap; }
 

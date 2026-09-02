@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS t_user (
   unit              VARCHAR(100) NOT NULL DEFAULT ''       COMMENT '承包商单位名称',
   supervising_unit  VARCHAR(100) NOT NULL DEFAULT ''       COMMENT '所属主管单位（甲方）',
   phone             VARCHAR(20)           DEFAULT NULL     COMMENT '手机号（可选）',
+  position    VARCHAR(100) NOT NULL DEFAULT ''       COMMENT '岗位',
   status      TINYINT      NOT NULL DEFAULT 1        COMMENT '1=正常 0=禁用',
   created_at  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP             COMMENT '创建时间',
   updated_at  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',

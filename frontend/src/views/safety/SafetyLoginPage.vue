@@ -2,9 +2,7 @@
   <div class="safety-login-page">
     <div class="login-card">
       <div class="brand">
-        <div class="brand-icon">
-          <span class="brand-char">通</span>
-        </div>
+        <img :src="logoUrl" class="brand-icon-img" alt="通南巴气田安全管理" />
         <div class="brand-text">
           <h1>通南巴安全隐患整改系统</h1>
           <p class="sub">安全员入口</p>
@@ -36,6 +34,7 @@ import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAdminStore } from '@/stores/admin'
 import { safetyLogin } from '@/api/safety'
+import logoUrl from '@/assets/logo.jpg'
 
 const router = useRouter()
 const admin = useAdminStore()
@@ -93,13 +92,12 @@ async function handleLogin() {
   box-shadow: 0 30px 80px rgba(0, 0, 0, .35);
 }
 .brand { display: flex; align-items: center; gap: 14px; margin-bottom: 30px; }
-.brand-icon {
-  width: 48px; height: 48px; border-radius: 13px; flex-shrink: 0;
-  display: flex; align-items: center; justify-content: center; color: #fff;
-  background: linear-gradient(135deg, var(--c-blue-500), var(--c-blue-700));
+.brand-icon-img {
+  width: 56px; height: 56px; border-radius: 14px; flex-shrink: 0;
+  object-fit: contain;
+  background: #fff;
   box-shadow: 0 6px 18px rgba(29,111,184,.45);
 }
-.brand-char { font-size: 26px; font-weight: 700; line-height: 1; }
 .brand-text h1 { font-size: 17px; font-weight: 700; color: var(--c-text); line-height: 1.3; }
 .sub { font-size: 12.5px; color: var(--c-text-3); margin-top: 3px; }
 

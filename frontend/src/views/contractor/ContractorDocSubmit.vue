@@ -3,9 +3,7 @@
     <!-- 顶部条 -->
     <header class="cd-header">
       <div class="cd-brand">
-        <span class="brand-mark">
-          <span class="brand-char">通</span>
-        </span>
+        <img :src="logoUrl" class="brand-img" alt="通南巴气田安全管理" />
         <div>
           <div class="cd-title">承包商开工资料电子化上报</div>
           <div class="cd-sub">中原油田普光分公司 · 通南巴天然气开发项目部</div>
@@ -185,6 +183,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { request } from '@/utils/request'
 import Icon from '@/components/Icon.vue'
+import logoUrl from '@/assets/logo.jpg'
 
 const units = ref([])
 const catalogTree = ref([])
@@ -479,8 +478,7 @@ onMounted(() => { loadBase(); loadAllPackages() })
 .cd-page { max-width: 1080px; margin: 0 auto; padding: 20px 18px 60px; }
 .cd-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
 .cd-brand { display: flex; align-items: center; gap: 12px; }
-.brand-mark { width: 42px; height: 42px; border-radius: 11px; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, var(--c-blue-500), var(--c-blue-700)); box-shadow: 0 4px 12px rgba(29,111,184,.4); }
-.brand-char { font-size: 22px; font-weight: 700; color: #fff; line-height: 1; }
+.brand-img { width: 42px; height: 42px; border-radius: 11px; object-fit: contain; background: #fff; box-shadow: 0 4px 12px rgba(29,111,184,.4); }
 .cd-title { font-size: 18px; font-weight: 800; color: var(--c-text); }
 .cd-sub { font-size: 12.5px; color: var(--c-text-2); }
 .cd-home { font-size: 13.5px; color: var(--c-blue-600); text-decoration: none; font-weight: 600; }

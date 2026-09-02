@@ -70,6 +70,26 @@ function fmtDateTime(v) {
   return s.replace('T', ' ').slice(0, 19)
 }
 
+// ─── 单元格超长裁剪 ─────────────────────────────────────────────────────────
+// Excel 单单元格文本上限为 32767 字符（xlsx 库硬性限制，超长会在 XLSX.write 抛
+// "Text length must not exceed 32767 characters"，导致整库备份/导出失败）。
+// 统一在生成 sheet 前对所有单元格裁剪，超出部分截断并追加标记，保证备份始终可用。
+const MAX_CELL_LEN = 32767
+function clipCell(v) {
+  if (typeof v === 'string' && v.length > MAX_CELL_LEN) {
+    console.warn('[backup] 单元格文本超长已截断（前40字）:', v.slice(0, 40))
+    return v.slice(0, MAX_CELL_LEN - 7) + '…(已截断)'
+  }
+  return v
+}
+function sanitizeAOA(aoa) {
+  return aoa.map((row) => (Array.isArray(row) ? row.map(clipCell) : row))
+}
+// 包装 XLSX.utils.aoa_to_sheet，写入前先裁剪超长单元格
+function toSheet(aoa) {
+  return XLSX.utils.aoa_to_sheet(sanitizeAOA(aoa))
+}
+
 // 单元格取值（含状态/超期/日期转换）
 function cellValue(code, row) {
   const v = row[code]
@@ -172,7 +192,7 @@ async function backupNow() {
     return row.map((cell, ci) => (hazardCols[ci].key === 'photo_urls' ? (photoMap[r.id] || []).join('\n') : cell))
   })
   wb.SheetNames.push('隐患数据')
-  wb.Sheets['隐患数据'] = XLSX.utils.aoa_to_sheet(hazardData)
+  wb.Sheets['隐患数据'] = toSheet(hazardData)
   totalCount += hazards.length
 
   // ── 培训：材料 / 题库 / 人员 / 答题记录 ──
@@ -200,7 +220,7 @@ async function backupNow() {
     { key: 'content_text', header: '内容文本' },
   ]
   wb.SheetNames.push('培训材料')
-  wb.Sheets['培训材料'] = XLSX.utils.aoa_to_sheet(buildSheetAOA(materials, materialCols))
+  wb.Sheets['培训材料'] = toSheet(buildSheetAOA(materials, materialCols))
   totalCount += materials.length
 
   const [questions] = await pool.query('SELECT id, material_id, type, question, image_url, options, answer, analysis, score, sort_order, status, difficulty, bloom_level, knowledge_points, created_at FROM t_question ORDER BY id')
@@ -222,16 +242,17 @@ async function backupNow() {
     { key: 'created_at', header: '创建时间', date: true },
   ]
   wb.SheetNames.push('培训题库')
-  wb.Sheets['培训题库'] = XLSX.utils.aoa_to_sheet(buildSheetAOA(questions, questionCols))
+  wb.Sheets['培训题库'] = toSheet(buildSheetAOA(questions, questionCols))
   totalCount += questions.length
 
-  const [users] = await pool.query('SELECT id, name, id_card, unit, supervising_unit, phone, status, contractor_unit_id, dingtalk_userid, created_at FROM t_user ORDER BY id')
+  const [users] = await pool.query('SELECT id, name, id_card, unit, supervising_unit, phone, position, status, contractor_unit_id, dingtalk_userid, created_at FROM t_user ORDER BY id')
   const userCols = [
     { key: 'id', header: 'ID' },
     { key: 'name', header: '姓名' },
     { key: 'id_card', header: '身份证号' },
     { key: 'unit', header: '单位' },
     { key: 'supervising_unit', header: '监管单位' },
+    { key: 'position', header: '岗位' },
     { key: 'phone', header: '电话' },
     { key: 'status', header: '状态', map: (v) => (v == 1 ? '启用' : '停用') },
     { key: 'contractor_unit_id', header: '承包商单位ID' },
@@ -239,7 +260,7 @@ async function backupNow() {
     { key: 'created_at', header: '创建时间', date: true },
   ]
   wb.SheetNames.push('培训人员')
-  wb.Sheets['培训人员'] = XLSX.utils.aoa_to_sheet(buildSheetAOA(users, userCols))
+  wb.Sheets['培训人员'] = toSheet(buildSheetAOA(users, userCols))
   totalCount += users.length
 
   const [records] = await pool.query('SELECT id, user_id, material_id, answers, score, max_score, duration_sec, mode, attempt_no, is_offline, submitted_at FROM t_record ORDER BY id')
@@ -257,7 +278,7 @@ async function backupNow() {
     { key: 'submitted_at', header: '提交时间', date: true },
   ]
   wb.SheetNames.push('培训答题记录')
-  wb.Sheets['培训答题记录'] = XLSX.utils.aoa_to_sheet(buildSheetAOA(records, recordCols))
+  wb.Sheets['培训答题记录'] = toSheet(buildSheetAOA(records, recordCols))
   totalCount += records.length
 
   // ── 开工资料：目录 / 资料包 / 文件 ──
@@ -273,7 +294,7 @@ async function backupNow() {
     { key: 'created_at', header: '创建时间', date: true },
   ]
   wb.SheetNames.push('开工资料目录')
-  wb.Sheets['开工资料目录'] = XLSX.utils.aoa_to_sheet(buildSheetAOA(docCatalog, docCatalogCols))
+  wb.Sheets['开工资料目录'] = toSheet(buildSheetAOA(docCatalog, docCatalogCols))
   totalCount += docCatalog.length
 
   const [docPackage] = await pool.query('SELECT id, unit_name, unit_short, project_name, reporter_name, reporter_phone, status, created_at, updated_at FROM t_doc_package ORDER BY id')
@@ -289,7 +310,7 @@ async function backupNow() {
     { key: 'updated_at', header: '更新时间', date: true },
   ]
   wb.SheetNames.push('开工资料包')
-  wb.Sheets['开工资料包'] = XLSX.utils.aoa_to_sheet(buildSheetAOA(docPackage, docPackageCols))
+  wb.Sheets['开工资料包'] = toSheet(buildSheetAOA(docPackage, docPackageCols))
   totalCount += docPackage.length
 
   const [docFile] = await pool.query('SELECT id, package_id, catalog_id, catalog_name, category, original_name, sys_name, cos_key, cos_url, file_ext, file_size, uploader_name, uploader_phone, uploaded_at FROM t_doc_file ORDER BY id')
@@ -310,7 +331,7 @@ async function backupNow() {
     { key: 'uploaded_at', header: '上传时间', date: true },
   ]
   wb.SheetNames.push('开工资料文件')
-  wb.Sheets['开工资料文件'] = XLSX.utils.aoa_to_sheet(buildSheetAOA(docFile, docFileCols))
+  wb.Sheets['开工资料文件'] = toSheet(buildSheetAOA(docFile, docFileCols))
   totalCount += docFile.length
 
   // ── 承包商单位 ──
@@ -331,7 +352,7 @@ async function backupNow() {
     { key: 'created_at', header: '创建时间', date: true },
   ]
   wb.SheetNames.push('承包商单位')
-  wb.Sheets['承包商单位'] = XLSX.utils.aoa_to_sheet(buildSheetAOA(units, unitCols))
+  wb.Sheets['承包商单位'] = toSheet(buildSheetAOA(units, unitCols))
   totalCount += units.length
 
   const filename = `full_backup_${ts()}.xlsx`
@@ -433,7 +454,7 @@ async function exportReport(opts = {}) {
   const wb = XLSX.utils.book_new()
   const sheetName = type === 'ledger' ? '隐患台账' : type === 'weekly' ? '隐患周报' : '隐患月报'
   wb.SheetNames.push(sheetName)
-  wb.Sheets[sheetName] = XLSX.utils.aoa_to_sheet(aoa)
+  wb.Sheets[sheetName] = toSheet(aoa)
   const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' })
 
   // 文件名（设计 §8.6）
