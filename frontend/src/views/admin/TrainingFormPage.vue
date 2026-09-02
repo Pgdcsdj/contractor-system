@@ -376,6 +376,12 @@
         <div v-if="importResult" class="result-msg" :class="importResult.error ? 'error' : 'ok'">
           {{ importResult.error || importResult.message }}
         </div>
+        <div v-if="importResult && importResult.error && /模板格式|题型|下载模板/.test(importResult.error)" class="template-tip">
+          <p>标准模板第 1 行应为：<code>题型 | 题目内容 | 选项A | 选项B | 选项C | 选项D | 正确答案 | 解析 | 分值</code></p>
+          <button class="btn btn-secondary" :disabled="downloading" @click="downloadTemplate">
+            {{ downloading ? '下载中…' : '下载标准模板' }}
+          </button>
+        </div>
         <div class="form-actions">
           <button class="btn btn-primary" @click="$router.push('/admin/trainings')">返回培训列表</button>
         </div>
@@ -906,4 +912,13 @@ h2 { font-size: 18px; margin-bottom: 20px; }
 }
 .result-msg.ok { background: #e6f4ea; color: var(--success); }
 .result-msg.error { background: #fce8e6; color: var(--danger); }
+.template-tip {
+  margin-top: 12px; padding: 12px 14px; border-radius: 8px;
+  background: #fff8e1; border: 1px solid #fde293; font-size: 13px; color: #795548;
+}
+.template-tip code {
+  display: inline-block; margin: 4px 0 10px; padding: 4px 8px;
+  background: #fff; border-radius: 4px; font-size: 12px; color: #333;
+  word-break: break-all;
+}
 </style>

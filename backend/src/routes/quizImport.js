@@ -82,8 +82,16 @@ router.post('/import', adminAuth, upload.single('file'), async (req, res) => {
     const ws = wb.Sheets[wb.SheetNames[0]]
     const rows = XLSX.utils.sheet_to_json(ws, { header: 1 })
 
-    if (rows.length < 2) return res.status(400).json({ error: '文件为空' })
-    if (!rows[0] || rows[0][0] !== '题型') return res.status(400).json({ error: '模板格式不对，请先下载模板' })
+    if (rows.length < 2) return res.status(400).json({ error: '文件为空或只有表头，请按模板填写题目后重试' })
+
+    // 表头容错：首行首格归一化后含「题型」字样即通过（兼容「题型（必填）」「题目类型」及前后空格/BOM）
+    const header0 = String(rows[0]?.[0] ?? '').replace(/^﻿/, '').trim()
+    const isHeaderOk = /题型|题目类型|试题类型|类型/.test(header0)
+    if (!isHeaderOk) {
+      return res.status(400).json({
+        error: `模板格式不对：第1行第1列应为「题型」，当前是「${header0 || '（空）'}」。请先点「下载模板」按标准格式填写。`,
+      })
+    }
 
     const { material_id, exam_single_num, exam_multiple_num, exam_judgment_num } = req.body
     if (!material_id) return res.status(400).json({ error: '请指定目标题库ID' })
