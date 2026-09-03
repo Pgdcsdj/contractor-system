@@ -645,6 +645,7 @@ router.get('/list', async (req, res) => {
             pass_score,
             time_limit,
             exam_single_num, exam_multiple_num, exam_judgment_num,
+            exam_single_score, exam_multiple_score, exam_judgment_score,
           CASE
             WHEN status = 3 THEN 'published'
             WHEN status = 4 THEN 'closed'
@@ -988,9 +989,14 @@ router.put('/:id/exam-config', adminAuth, async (req, res) => {
     exam_single_num = 0,
     exam_multiple_num = 0,
     exam_judgment_num = 0,
+    exam_single_score = 0,
+    exam_multiple_score = 0,
+    exam_judgment_score = 0,
   } = req.body || {}
 
   const toSafeNum = (v) => Math.min(9999, Math.max(0, parseInt(v, 10) || 0))
+  // 每题分数：0 = 沿用题目自身分值；保留 1 位小数
+  const toSafeScore = (v) => Math.min(1000, Math.max(0, Math.round((Number(v) || 0) * 10) / 10))
 
   try {
     const [[material]] = await pool.execute(
@@ -1000,9 +1006,11 @@ router.put('/:id/exam-config', adminAuth, async (req, res) => {
 
     await pool.execute(
       `UPDATE t_material
-          SET exam_single_num = ?, exam_multiple_num = ?, exam_judgment_num = ?
+          SET exam_single_num = ?, exam_multiple_num = ?, exam_judgment_num = ?,
+              exam_single_score = ?, exam_multiple_score = ?, exam_judgment_score = ?
         WHERE id = ?`,
-      [toSafeNum(exam_single_num), toSafeNum(exam_multiple_num), toSafeNum(exam_judgment_num), id]
+      [toSafeNum(exam_single_num), toSafeNum(exam_multiple_num), toSafeNum(exam_judgment_num),
+       toSafeScore(exam_single_score), toSafeScore(exam_multiple_score), toSafeScore(exam_judgment_score), id]
     )
 
     res.json({
@@ -1015,6 +1023,9 @@ router.put('/:id/exam-config', adminAuth, async (req, res) => {
         exam_single_num:   toSafeNum(exam_single_num),
         exam_multiple_num: toSafeNum(exam_multiple_num),
         exam_judgment_num: toSafeNum(exam_judgment_num),
+        exam_single_score:   toSafeScore(exam_single_score),
+        exam_multiple_score: toSafeScore(exam_multiple_score),
+        exam_judgment_score: toSafeScore(exam_judgment_score),
       },
     })
   } catch (err) {
@@ -1027,8 +1038,11 @@ router.put('/:id/exam-config', adminAuth, async (req, res) => {
 // 无文件创建培训（用于导入题库流程）
 router.post('/create', adminAuth, async (req, res) => {
   const { title, category_id, pass_score, time_limit, mode } = req.body
-  // 考试抽题配置（可选；0 或留空 = 该题型全抽）
-  const { exam_single_num = 0, exam_multiple_num = 0, exam_judgment_num = 0 } = req.body
+  // 考试抽题配置（可选；0 或留空 = 该题型全抽；每题分数 0 = 沿用题目自身分值）
+  const {
+    exam_single_num = 0, exam_multiple_num = 0, exam_judgment_num = 0,
+    exam_single_score = 0, exam_multiple_score = 0, exam_judgment_score = 0,
+  } = req.body
 
   if (!title || !title.trim()) {
     return res.status(400).json({ error: '培训标题不能为空' })
@@ -1039,16 +1053,19 @@ router.post('/create', adminAuth, async (req, res) => {
   const safeCategoryId = category_id ? Number(category_id) : null
   const safeMode = normalizeModeParam(mode)
   const toSafeNum = (v) => Math.min(9999, Math.max(0, parseInt(v, 10) || 0))
+  const toSafeScore = (v) => Math.min(1000, Math.max(0, Math.round((Number(v) || 0) * 10) / 10))
 
   try {
     const [result] = await pool.execute(
       `INSERT INTO t_material
          (title, pass_score, time_limit, status, ai_status, category_id, created_by, mode,
-          exam_single_num, exam_multiple_num, exam_judgment_num)
-       VALUES (?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?)`,
+          exam_single_num, exam_multiple_num, exam_judgment_num,
+          exam_single_score, exam_multiple_score, exam_judgment_score)
+       VALUES (?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         title.trim(), safePassScore, safeTimeLimit, safeCategoryId, req.admin.id, safeMode,
         toSafeNum(exam_single_num), toSafeNum(exam_multiple_num), toSafeNum(exam_judgment_num),
+        toSafeScore(exam_single_score), toSafeScore(exam_multiple_score), toSafeScore(exam_judgment_score),
       ]
     )
 

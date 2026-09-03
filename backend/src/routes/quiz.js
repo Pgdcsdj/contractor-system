@@ -515,13 +515,22 @@ router.get('/:materialId/result', authMiddleware, async (req, res) => {
     if (!record) return sendError(res, 'NO_RECORD')
 
     const [[material]] = await pool.execute(
-      'SELECT pass_score FROM t_material WHERE id = ?',
+      `SELECT pass_score, mode,
+              exam_single_score, exam_multiple_score, exam_judgment_score
+       FROM t_material WHERE id = ?`,
       [materialId]
     )
     const passScore = material ? material.pass_score : 60
     // 模式严格取自本记录的实际作答模式（t_record.mode），回退到素材默认模式，
     // 不能回退到 m.material.mode，否则回顾页徽章/重新答题会错配到默认模式。
     const mode = record.mode || (material ? material.mode : QUIZ_MODES.EXAM)
+    // 各题型每题分数覆盖（与抽题下发/交卷判分口径一致；仅考试模式生效）
+    const scoreCfg = material ? {
+      single:   Number(material.exam_single_score)   || 0,
+      multiple: Number(material.exam_multiple_score) || 0,
+      judgment: Number(material.exam_judgment_score) || 0,
+    } : {}
+    const scoreOf = (q) => (mode === QUIZ_MODES.EXAM && scoreCfg[q.type] > 0 ? scoreCfg[q.type] : q.score)
 
     const [questions] = await pool.execute(
       `SELECT id, type, question, options, answer, analysis, score, sort_order
@@ -552,7 +561,7 @@ router.get('/:materialId/result', authMiddleware, async (req, res) => {
         correctAnswer: q.answer,
         userAnswer:   userAns.answer ?? null,
         isCorrect:    userAns.isCorrect ?? false,
-        score:        q.score,
+        score:        scoreOf(q),
         earnedScore:  userAns.score ?? 0,
         analysis:     q.analysis,
         aiGrading:    userAns.aiGrading ?? null,
@@ -598,7 +607,8 @@ router.get('/:materialId', authMiddleware, async (req, res) => {
     // 1) 题库存在性 & 发布态
     const [[material]] = await pool.execute(
       `SELECT id, title, status, time_limit, pass_score, mode, attempt_limit, shuffle, category_id, ai_grading,
-              exam_single_num, exam_multiple_num, exam_judgment_num
+              exam_single_num, exam_multiple_num, exam_judgment_num,
+              exam_single_score, exam_multiple_score, exam_judgment_score
        FROM t_material WHERE id = ?`,
       [materialId]
     )
@@ -651,6 +661,15 @@ router.get('/:materialId', authMiddleware, async (req, res) => {
           ...pick(byType.multiple, cfg.multiple),
           ...pick(byType.judgment, cfg.judgment),
         ])
+        // 各题型每题分数覆盖（0 = 沿用题目自身分值；仅考试模式生效）
+        const scoreCfg = {
+          single:   Number(material.exam_single_score)   || 0,
+          multiple: Number(material.exam_multiple_score) || 0,
+          judgment: Number(material.exam_judgment_score) || 0,
+        }
+        for (const q of finalQuestions) {
+          if (scoreCfg[q.type] > 0) q.score = scoreCfg[q.type]
+        }
         // 抽题后题量可能少于题库总量，更新下发总量提示
         console.log(`[quiz.detail] exam 抽题：配置(${cfg.single}/${cfg.multiple}/${cfg.judgment}) 实际抽 ${finalQuestions.length}/${questions.length}`)
       }
@@ -715,12 +734,21 @@ router.post('/:materialId/submit', authMiddleware, async (req, res) => {
     }
 
     const [[material]] = await pool.execute(
-      'SELECT id, pass_score, ai_grading, attempt_limit, mode FROM t_material WHERE id = ?',
+      `SELECT id, pass_score, ai_grading, attempt_limit, mode,
+              exam_single_score, exam_multiple_score, exam_judgment_score
+       FROM t_material WHERE id = ?`,
       [materialId]
     )
     if (!material) return sendError(res, 'MATERIAL_NOT_FOUND')
     const passScore = material.pass_score
     const aiGradingOn = material.ai_grading === 1
+    // 各题型每题分数覆盖（与 GET /:materialId 抽题下发口径严格一致；0 = 用题目自身分值）
+    const scoreCfg = {
+      single:   Number(material.exam_single_score)   || 0,
+      multiple: Number(material.exam_multiple_score) || 0,
+      judgment: Number(material.exam_judgment_score) || 0,
+    }
+    const scoreOf = (q) => (scoreCfg[q.type] > 0 ? scoreCfg[q.type] : q.score)
 
     // 考试次数限制（轻量拦截：基于已有记录数；P0 采用覆盖式提交，仅做提示性拦截）
     if (material.attempt_limit > 0 && mode === QUIZ_MODES.EXAM) {
@@ -752,7 +780,7 @@ router.post('/:materialId/submit', authMiddleware, async (req, res) => {
       const q = qMap[qa.questionId]
       if (!q) continue
 
-      maxScore += q.score
+      maxScore += scoreOf(q)
       let isCorrect = false
       let earned = 0
       let aiGrading = null
@@ -764,12 +792,12 @@ router.post('/:materialId/submit', authMiddleware, async (req, res) => {
               question: q.question,
               reference: q.answer,
               userAnswer: String(qa.answer ?? ''),
-              maxScore: q.score,
+              maxScore: scoreOf(q),
             })
             if (r && typeof r.score === 'number') {
               aiGrading = r
-              earned = Math.max(0, Math.min(q.score, r.score))
-              isCorrect = earned >= Math.ceil(q.score / 2)
+              earned = Math.max(0, Math.min(scoreOf(q), r.score))
+              isCorrect = earned >= Math.ceil(scoreOf(q) / 2)
             }
           } catch (e) {
             console.error('[aiGrading]', e)
@@ -783,7 +811,7 @@ router.post('/:materialId/submit', authMiddleware, async (req, res) => {
         }
       } else {
         isCorrect = normalizeAnswer(q.type, q.answer, qa.answer)
-        earned = isCorrect ? q.score : 0
+        earned = isCorrect ? scoreOf(q) : 0
       }
 
       if (isCorrect) totalScore += earned

@@ -573,6 +573,19 @@ async function autoMigrate() {
       }
     }
 
+    // 9.6 考试随机抽题配置：各题型每题分数（0 = 沿用题目自身分值，保持旧行为）
+    for (const col of [
+      { name: 'exam_single_score',   ddl: "ALTER TABLE t_material ADD COLUMN exam_single_score   DOUBLE NOT NULL DEFAULT 0 COMMENT '考试单选题每题分数，0=用题目自身分值'" },
+      { name: 'exam_multiple_score', ddl: "ALTER TABLE t_material ADD COLUMN exam_multiple_score DOUBLE NOT NULL DEFAULT 0 COMMENT '考试多选题每题分数，0=用题目自身分值'" },
+      { name: 'exam_judgment_score', ddl: "ALTER TABLE t_material ADD COLUMN exam_judgment_score DOUBLE NOT NULL DEFAULT 0 COMMENT '考试判断题每题分数，0=用题目自身分值'" },
+    ]) {
+      if (!(await ensureColumn('t_material', col.name))) {
+        console.log(`[migrate] 正在添加 t_material.${col.name} 字段...`)
+        await pool.execute(col.ddl)
+        console.log(`[migrate] ✅ t_material.${col.name} 字段添加完成`)
+      }
+    }
+
     // ── 10. 出题质量量化校验与追踪机制 ──────────────────────────────────
     //     10.1 t_question 质量标注列（5 列）
     //     10.2 t_material.source_keypoints（源文档关键点缓存）

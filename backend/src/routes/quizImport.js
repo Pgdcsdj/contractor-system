@@ -120,7 +120,10 @@ router.post('/import', adminAuth, upload.single('file'), async (req, res) => {
       })
     }
 
-    const { material_id, exam_single_num, exam_multiple_num, exam_judgment_num } = req.body
+    const {
+      material_id, exam_single_num, exam_multiple_num, exam_judgment_num,
+      exam_single_score, exam_multiple_score, exam_judgment_score,
+    } = req.body
     if (!material_id) return res.status(400).json({ error: '请指定目标题库ID' })
 
     // 检查题库是否存在
@@ -199,12 +202,16 @@ router.post('/import', adminAuth, upload.single('file'), async (req, res) => {
     const examSingle = Math.max(0, Number(exam_single_num) || 0)
     const examMultiple = Math.max(0, Number(exam_multiple_num) || 0)
     const examJudgment = Math.max(0, Number(exam_judgment_num) || 0)
+    // 每题分数：0 = 沿用题目自身分值
+    const toSafeScore = (v) => Math.min(1000, Math.max(0, Math.round((Number(v) || 0) * 10) / 10))
     await pool.execute(
       `UPDATE t_material
        SET question_cnt = ?, status = ?, ai_status = 2,
-           exam_single_num = ?, exam_multiple_num = ?, exam_judgment_num = ?
+           exam_single_num = ?, exam_multiple_num = ?, exam_judgment_num = ?,
+           exam_single_score = ?, exam_multiple_score = ?, exam_judgment_score = ?
        WHERE id = ?`,
-      [cnt, MATERIAL_STATUS_AFTER, examSingle, examMultiple, examJudgment, material_id]
+      [cnt, MATERIAL_STATUS_AFTER, examSingle, examMultiple, examJudgment,
+       toSafeScore(exam_single_score), toSafeScore(exam_multiple_score), toSafeScore(exam_judgment_score), material_id]
     )
 
     const fail = failList.length
@@ -253,7 +260,10 @@ router.post('/import-docx', adminAuth, uploadDocx.fields([
   }
   const aFile = files.answers && files.answers[0]
 
-  const { material_id, exam_single_num, exam_multiple_num, exam_judgment_num } = req.body
+  const {
+    material_id, exam_single_num, exam_multiple_num, exam_judgment_num,
+    exam_single_score, exam_multiple_score, exam_judgment_score,
+  } = req.body
   if (!material_id) return res.status(400).json({ error: '请指定目标题库ID' })
   const [material] = await pool.execute('SELECT id FROM t_material WHERE id = ?', [material_id])
   if (!material.length) return res.status(400).json({ error: '题库不存在' })
@@ -286,12 +296,16 @@ router.post('/import-docx', adminAuth, uploadDocx.fields([
     const examSingle = Math.max(0, Number(exam_single_num) || 0)
     const examMultiple = Math.max(0, Number(exam_multiple_num) || 0)
     const examJudgment = Math.max(0, Number(exam_judgment_num) || 0)
+    // 每题分数：0 = 沿用题目自身分值
+    const toSafeScore = (v) => Math.min(1000, Math.max(0, Math.round((Number(v) || 0) * 10) / 10))
     await pool.execute(
       `UPDATE t_material
        SET question_cnt = ?, status = ?, ai_status = 2,
-           exam_single_num = ?, exam_multiple_num = ?, exam_judgment_num = ?
+           exam_single_num = ?, exam_multiple_num = ?, exam_judgment_num = ?,
+           exam_single_score = ?, exam_multiple_score = ?, exam_judgment_score = ?
        WHERE id = ?`,
-      [cnt, MATERIAL_STATUS_AFTER, examSingle, examMultiple, examJudgment, material_id]
+      [cnt, MATERIAL_STATUS_AFTER, examSingle, examMultiple, examJudgment,
+       toSafeScore(exam_single_score), toSafeScore(exam_multiple_score), toSafeScore(exam_judgment_score), material_id]
     )
 
     res.json({

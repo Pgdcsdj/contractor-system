@@ -283,12 +283,18 @@
         <!-- 考试抽题配置（与题库导入页「🎯 考试抽题配置」字段、文案保持一致） -->
         <div class="exam-config">
           <h3>🎯 考试抽题配置</h3>
-          <p class="hint">规定考试中各题型随机抽取数量（题库题目通常 &gt;100 道，避免一次考完全部）。留空或填 0 表示考该题型全部题目。仅「考试」模式生效，学习 / 练习模式使用全部题目。</p>
+          <p class="hint">规定考试中各题型随机抽取数量与每题分数（题库题目通常 &gt;100 道，避免一次考完全部）。数量留空或填 0 表示考该题型全部题目；分数留空或填 0 表示沿用题目自身分值。仅「考试」模式生效，学习 / 练习模式使用全部题目。</p>
           <div class="config-row">
             <label>单选题 <input type="number" min="0" v-model.number="importForm.exam_single_num" placeholder="0" /></label>
             <label>多选题 <input type="number" min="0" v-model.number="importForm.exam_multiple_num" placeholder="0" /></label>
             <label>判断题 <input type="number" min="0" v-model.number="importForm.exam_judgment_num" placeholder="0" /></label>
           </div>
+          <div class="config-row">
+            <label>单选每题分 <input type="number" min="0" step="0.5" v-model.number="importForm.exam_single_score" placeholder="0" /></label>
+            <label>多选每题分 <input type="number" min="0" step="0.5" v-model.number="importForm.exam_multiple_score" placeholder="0" /></label>
+            <label>判断每题分 <input type="number" min="0" step="0.5" v-model.number="importForm.exam_judgment_score" placeholder="0" /></label>
+          </div>
+          <p v-if="examTotalScore > 0" class="hint">预计满分：<b>{{ examTotalScore }}</b> 分（数量 × 每题分，未填分数的题型按题目自身分值估算，简答题按题目分值计）</p>
         </div>
         </div><!-- /.form-body -->
 
@@ -425,7 +431,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { request } from '@/utils/request'
 import { MODE_LABELS } from '@/utils/quizModes'
@@ -658,10 +664,22 @@ const importForm = reactive({
   time_limit: 30,
   mode: 'exam',
   difficulty: 3,
-  // 考试随机抽题配置：0 = 该题型全抽（字段与 QuizImportPage 的 exam_single/multiple/judgment 对齐）
+  // 考试随机抽题配置：数量 0 = 该题型全抽；每题分数 0 = 沿用题目自身分值（字段与 QuizImportPage 对齐）
   exam_single_num: 0,
   exam_multiple_num: 0,
   exam_judgment_num: 0,
+  exam_single_score: 0,
+  exam_multiple_score: 0,
+  exam_judgment_score: 0,
+})
+// 预计满分 = Σ(数量 × 每题分)；未填数量的题型按全抽估算不可知，仅统计显式配置部分
+const examTotalScore = computed(() => {
+  const t = (n, s) => (Number(n) > 0 && Number(s) > 0 ? Number(n) * Number(s) : 0)
+  return Math.round(
+    (t(importForm.exam_single_num, importForm.exam_single_score) +
+     t(importForm.exam_multiple_num, importForm.exam_multiple_score) +
+     t(importForm.exam_judgment_num, importForm.exam_judgment_score)) * 10
+  ) / 10
 })
 const importFileInput = ref(null)
 const importFile = ref(null)
@@ -734,6 +752,9 @@ async function handleImportSubmit() {
       exam_single_num: Math.max(0, Number(importForm.exam_single_num) || 0),
       exam_multiple_num: Math.max(0, Number(importForm.exam_multiple_num) || 0),
       exam_judgment_num: Math.max(0, Number(importForm.exam_judgment_num) || 0),
+      exam_single_score: Math.max(0, Number(importForm.exam_single_score) || 0),
+      exam_multiple_score: Math.max(0, Number(importForm.exam_multiple_score) || 0),
+      exam_judgment_score: Math.max(0, Number(importForm.exam_judgment_score) || 0),
     })
     const materialId = createRes.data?.data?.materialId
     if (!materialId) throw new Error('创建培训失败')
@@ -741,10 +762,13 @@ async function handleImportSubmit() {
     // 步骤2：导入题目（Excel 用 file；Word 用 questions + 可选 answers）
     const fd = new FormData()
     fd.append('material_id', materialId)
-    // 导入接口会按这三个字段覆盖题库抽题配置，必须透传，否则前面的设置会被清零
+    // 导入接口会按这些字段覆盖题库抽题配置，必须透传，否则前面的设置会被清零
     fd.append('exam_single_num', Math.max(0, Number(importForm.exam_single_num) || 0))
     fd.append('exam_multiple_num', Math.max(0, Number(importForm.exam_multiple_num) || 0))
     fd.append('exam_judgment_num', Math.max(0, Number(importForm.exam_judgment_num) || 0))
+    fd.append('exam_single_score', Math.max(0, Number(importForm.exam_single_score) || 0))
+    fd.append('exam_multiple_score', Math.max(0, Number(importForm.exam_multiple_score) || 0))
+    fd.append('exam_judgment_score', Math.max(0, Number(importForm.exam_judgment_score) || 0))
     let url
     if (importTab.value === 'excel') {
       fd.append('file', await fileToBlob(importFile.value), importFile.value.name)

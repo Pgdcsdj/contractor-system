@@ -212,8 +212,8 @@
         <h3>🎯 考试抽题配置</h3>
         <p class="modal-hint">{{ examConfigForm.title }}</p>
         <p class="exam-tip">
-          设置考试时各题型<b>随机抽取</b>的题目数量。留空或填 <b>0</b> 表示该题型<b>全部抽取</b>；
-          三项均为 0 则考题库全部题目。<br />
+          设置考试时各题型<b>随机抽取</b>的题目数量与<b>每题分数</b>。数量留空或填 <b>0</b> 表示该题型<b>全部抽取</b>；
+          三项均为 0 则考题库全部题目；分数留空或填 <b>0</b> 表示沿用题目自身分值。<br />
           仅 <b>考试</b> 模式生效，学习 / 练习模式始终使用全部题目。
         </p>
         <div class="config-row">
@@ -228,6 +228,20 @@
           <label>
             判断题
             <input type="number" min="0" v-model.number="examConfigForm.exam_judgment_num" placeholder="0" />
+          </label>
+        </div>
+        <div class="config-row">
+          <label>
+            单选每题分
+            <input type="number" min="0" step="0.5" v-model.number="examConfigForm.exam_single_score" placeholder="0" />
+          </label>
+          <label>
+            多选每题分
+            <input type="number" min="0" step="0.5" v-model.number="examConfigForm.exam_multiple_score" placeholder="0" />
+          </label>
+          <label>
+            判断每题分
+            <input type="number" min="0" step="0.5" v-model.number="examConfigForm.exam_judgment_score" placeholder="0" />
           </label>
         </div>
         <p v-if="examConfigForm.mode && examConfigForm.mode !== 'exam'" class="mode-warn">
@@ -266,7 +280,7 @@ const categories = ref([])
 
 // ── 发布目标人群：单位 / 指定人员 ──
 const allUnits = ref([])
-const allPositions = ref(['管理岗', '操作岗'])
+const allPositions = ref(['管理岗', '操作岗', '中层干部'])
 const userSearch = ref('')
 const allUsers = ref([])
 const loadingUsers = ref(false)
@@ -354,6 +368,9 @@ const examConfigForm = ref({
   exam_single_num: 0,
   exam_multiple_num: 0,
   exam_judgment_num: 0,
+  exam_single_score: 0,
+  exam_multiple_score: 0,
+  exam_judgment_score: 0,
 })
 
 // 该题库是否已配置了抽题（三项之和 > 0）
@@ -382,6 +399,9 @@ function openExamConfig(t) {
     exam_single_num: Number(t.exam_single_num) || 0,
     exam_multiple_num: Number(t.exam_multiple_num) || 0,
     exam_judgment_num: Number(t.exam_judgment_num) || 0,
+    exam_single_score: Number(t.exam_single_score) || 0,
+    exam_multiple_score: Number(t.exam_multiple_score) || 0,
+    exam_judgment_score: Number(t.exam_judgment_score) || 0,
   }
   showExamConfig.value = true
 }
@@ -394,6 +414,9 @@ async function saveExamConfig() {
       exam_single_num: Math.max(0, Number(examConfigForm.value.exam_single_num) || 0),
       exam_multiple_num: Math.max(0, Number(examConfigForm.value.exam_multiple_num) || 0),
       exam_judgment_num: Math.max(0, Number(examConfigForm.value.exam_judgment_num) || 0),
+      exam_single_score: Math.max(0, Number(examConfigForm.value.exam_single_score) || 0),
+      exam_multiple_score: Math.max(0, Number(examConfigForm.value.exam_multiple_score) || 0),
+      exam_judgment_score: Math.max(0, Number(examConfigForm.value.exam_judgment_score) || 0),
     })
     showExamConfig.value = false
     await fetchTrainings()

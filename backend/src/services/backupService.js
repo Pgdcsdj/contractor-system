@@ -197,7 +197,7 @@ async function backupNow() {
 
   // ── 培训：材料 / 题库 / 人员 / 答题记录 ──
   const MAT_STATUS = { 0: '待审核', 1: '已发布', 2: '待审核', 3: '已驳回' }
-  const [materials] = await pool.query('SELECT id, title, file_type, file_size, category_id, mode, status, ai_status, question_cnt, pass_score, time_limit, exam_single_num, exam_multiple_num, exam_judgment_num, target_type, target_value, created_by, created_at, content_text FROM t_material ORDER BY id')
+  const [materials] = await pool.query('SELECT id, title, file_type, file_size, category_id, mode, status, ai_status, question_cnt, pass_score, time_limit, exam_single_num, exam_multiple_num, exam_judgment_num, exam_single_score, exam_multiple_score, exam_judgment_score, target_type, target_value, created_by, created_at, content_text FROM t_material ORDER BY id')
   const materialCols = [
     { key: 'id', header: 'ID' },
     { key: 'title', header: '标题' },
@@ -213,6 +213,9 @@ async function backupNow() {
     { key: 'exam_single_num', header: '考试单选抽题' },
     { key: 'exam_multiple_num', header: '考试多选抽题' },
     { key: 'exam_judgment_num', header: '考试判断抽题' },
+    { key: 'exam_single_score', header: '考试单选每题分' },
+    { key: 'exam_multiple_score', header: '考试多选每题分' },
+    { key: 'exam_judgment_score', header: '考试判断每题分' },
     { key: 'target_type', header: '适用对象类型' },
     { key: 'target_value', header: '适用对象', raw: (r) => (r.target_value ? JSON.stringify(r.target_value) : '') },
     { key: 'created_by', header: '创建人ID' },

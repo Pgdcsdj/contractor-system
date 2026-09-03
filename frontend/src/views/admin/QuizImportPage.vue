@@ -61,11 +61,16 @@
 
       <div class="exam-config">
         <h3>🎯 考试抽题配置</h3>
-        <p class="hint">规定考试中各题型随机抽取数量（题库题目通常 &gt;100 道，避免一次考完全部）。留空或填 0 表示考该题型全部题目。</p>
+        <p class="hint">规定考试中各题型随机抽取数量与每题分数（题库题目通常 &gt;100 道，避免一次考完全部）。数量留空或填 0 表示考该题型全部题目；分数留空或填 0 表示沿用题目自身分值。</p>
         <div class="config-row">
           <label>单选题 <input type="number" min="0" v-model="examSingle" placeholder="0" /></label>
           <label>多选题 <input type="number" min="0" v-model="examMultiple" placeholder="0" /></label>
           <label>判断题 <input type="number" min="0" v-model="examJudgment" placeholder="0" /></label>
+        </div>
+        <div class="config-row">
+          <label>单选每题分 <input type="number" min="0" step="0.5" v-model="examSingleScore" placeholder="0" /></label>
+          <label>多选每题分 <input type="number" min="0" step="0.5" v-model="examMultipleScore" placeholder="0" /></label>
+          <label>判断每题分 <input type="number" min="0" step="0.5" v-model="examJudgmentScore" placeholder="0" /></label>
         </div>
       </div>
 
@@ -113,6 +118,10 @@ const result = ref(null)
 const examSingle = ref(0)
 const examMultiple = ref(0)
 const examJudgment = ref(0)
+// 每题分数：0 = 沿用题目自身分值
+const examSingleScore = ref(0)
+const examMultipleScore = ref(0)
+const examJudgmentScore = ref(0)
 
 const canImport = computed(() => {
   if (mode.value === 'excel') return !!selectedFile.value
@@ -159,6 +168,9 @@ async function handleImport() {
     fd.append('exam_single_num', Number(examSingle.value) || 0)
     fd.append('exam_multiple_num', Number(examMultiple.value) || 0)
     fd.append('exam_judgment_num', Number(examJudgment.value) || 0)
+    fd.append('exam_single_score', Number(examSingleScore.value) || 0)
+    fd.append('exam_multiple_score', Number(examMultipleScore.value) || 0)
+    fd.append('exam_judgment_score', Number(examJudgmentScore.value) || 0)
     let url
     if (mode.value === 'excel') {
       // 读入内存后上传，规避源文件被占用导致的上传中断

@@ -49,7 +49,7 @@
             <select v-model="publishForm.target_type" class="form-input" @change="onTargetTypeChange">
               <option value="all">全员</option>
               <option value="unit">指定承包商所有人员</option>
-              <option value="position">指定岗位（管理岗/操作岗）</option>
+              <option value="position">指定岗位（管理岗/操作岗/中层干部）</option>
               <option value="specific">指定人员</option>
             </select>
           </div>
@@ -162,7 +162,7 @@ const showPublish = ref(false)
 const publishing = ref(false)
 const categories = ref([])
 const allUnits = ref([])
-const allPositions = ref(['管理岗', '操作岗'])
+const allPositions = ref(['管理岗', '操作岗', '中层干部'])
 const userSearch = ref('')
 const allUsers = ref([])
 const loadingUsers = ref(false)
