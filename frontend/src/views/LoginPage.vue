@@ -4,17 +4,18 @@
     <div class="brand">
       <div class="brand-logo"><img :src="logoUrl" class="brand-img" alt="通南巴气田安全管理" /></div>
       <h1 class="brand-title">通南巴项目部</h1>
-      <p class="brand-sub">承包商安全培训考核</p>
+      <p class="brand-sub">培训</p>
     </div>
 
     <!-- 登录区域 -->
     <div class="card login-card" v-if="!showRegister">
       <h2 class="section-title">登录</h2>
+      <p class="login-hint">用户名为姓名；登录密码为身份证后四位（X 为 0）</p>
       <div class="form-group">
-        <input v-model="name" class="form-input" placeholder="姓名" type="text" @keyup.enter="handleManualLogin" />
+        <input v-model="name" class="form-input" placeholder="用户名（姓名）" type="text" @keyup.enter="handleManualLogin" />
       </div>
       <div class="form-group">
-        <input v-model="idCard" class="form-input" placeholder="身份证后4位" type="text" maxlength="4" @keyup.enter="handleManualLogin" />
+        <input v-model="idCard" class="form-input" placeholder="登录密码（身份证后四位，X为0）" type="text" maxlength="4" @keyup.enter="handleManualLogin" />
       </div>
       <button class="btn btn-primary full-btn" @click="handleManualLogin" :disabled="loading || !name || !idCard">
         {{ loading ? '验证中…' : '开始答题' }}
@@ -156,7 +157,8 @@ async function handleRegister() {
 .brand-sub { font-size: 15px; color: #5f6368; margin-top: 5px; }
 
 .card { width: 100%; max-width: 400px; padding: 24px; }
-.section-title { font-size: 16px; font-weight: 600; margin-bottom: 16px; text-align: center; }
+.section-title { font-size: 16px; font-weight: 600; margin-bottom: 10px; text-align: center; }
+.login-hint { font-size: 13px; color: var(--text-secondary); text-align: center; margin-bottom: 14px; line-height: 1.6; }
 .register-hint { font-size: 13px; color: var(--text-secondary); text-align: center; margin-bottom: 16px; }
 
 .form-group { margin-bottom: 10px; }
