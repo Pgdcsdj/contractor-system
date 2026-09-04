@@ -4,6 +4,7 @@
       <button class="back-btn" @click="$router.push('/login')">←</button>
       <h1>我的培训</h1>
       <span class="user-name">{{ auth.user?.name }}</span>
+      <button class="logout-btn" @click="handleLogout">退出</button>
     </div>
 
     <!-- 加载中 -->
@@ -61,10 +62,16 @@
           </button>
         </div>
 
-        <!-- 已完成：分数 + 回顾 -->
-        <div v-if="m.completed" class="card-footer">
-          <span :class="['score-mini', m.passed ? 'pass' : 'fail']">{{ m.score }} / {{ m.maxScore }}</span>
-          <button class="btn btn-outline btn-sm" @click="goReview(m)">查看回顾</button>
+        <!-- 已完成 / 考试中：重考入口 + 回顾 -->
+        <div v-if="m.completed || hasInProgress(m.trainingId, 'exam')" class="card-footer">
+          <span v-if="m.completed" :class="['score-mini', m.passed ? 'pass' : 'fail']">{{ m.score }} / {{ m.maxScore }}</span>
+          <span v-else class="score-mini doing-tag">考试进行中</span>
+          <div class="footer-actions">
+            <button class="btn btn-primary btn-sm" @click="retakeExam(m)">
+              {{ m.completed ? '🔄 再考一次' : '🔄 重新开始' }}
+            </button>
+            <button v-if="m.completed" class="btn btn-outline btn-sm" @click="goReview(m)">查看回顾</button>
+          </div>
         </div>
       </section>
 
@@ -91,7 +98,7 @@ import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useQuizStore } from '@/stores/quiz'
 import { MODE_LABELS, MODE_ORDER } from '@/utils/quizModes'
-import { listInProgress } from '@/utils/progressStorage'
+import { listInProgress, clearProgress, clearServerProgress } from '@/utils/progressStorage'
 
 const auth = useAuthStore()
 const quizStore = useQuizStore()
@@ -139,11 +146,37 @@ function goMode(m, modeKey) {
 function goReview(m) {
   router.push(`/result/${m.trainingId}`)
 }
+
+// 退出登录：清 token/用户缓存后回登录页（否则登录页会把已登录用户弹回列表）
+function handleLogout() {
+  if (!window.confirm('确定退出当前账号吗？')) return
+  auth.logout()
+  router.replace('/login')
+}
+
+// 再考一次 / 重新开始：先清除本地 + 服务端断点进度，再带 restart=1 进入，确保从头计时
+function retakeExam(m) {
+  clearProgress(m.trainingId, 'exam')
+  clearServerProgress(m.trainingId, 'exam').catch(() => {})
+  router.push(`/quiz/${m.trainingId}?mode=exam&restart=1`)
+}
 </script>
 
 <style scoped>
 .page-header { justify-content: space-between; }
 .user-name { font-size: 13px; opacity: 0.8; margin-left: auto; }
+.logout-btn {
+  margin-left: 10px;
+  flex-shrink: 0;
+  background: rgba(255,255,255,0.2);
+  border: 1px solid rgba(255,255,255,0.5);
+  color: #fff;
+  font-size: 12px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.logout-btn:active { background: rgba(255,255,255,0.35); }
 
 /* 物料卡片列表 */
 .material-list { padding: 8px 12px 20px; display: flex; flex-direction: column; gap: 12px; }
@@ -225,6 +258,8 @@ function goReview(m) {
 .score-mini { font-size: 15px; font-weight: 700; }
 .score-mini.pass { color: var(--c-success, #16A34A); }
 .score-mini.fail { color: var(--c-danger, #DC2626); }
+.score-mini.doing-tag { font-size: 13px; color: var(--primary); }
+.footer-actions { display: flex; gap: 8px; flex-shrink: 0; }
 .btn-sm { padding: 6px 12px; font-size: 12px; width: auto; }
 
 .hint { font-size: 12px; color: var(--text-secondary); margin-top: 6px; }

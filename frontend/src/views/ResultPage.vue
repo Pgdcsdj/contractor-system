@@ -169,6 +169,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { MODE_LABELS, QUIZ_MODES, isRevealing } from '@/utils/quizModes'
 import { useQuizStore } from '@/stores/quiz'
+import { clearProgress, clearServerProgress } from '@/utils/progressStorage'
 
 const route  = useRoute()
 const router = useRouter()
@@ -314,9 +315,11 @@ function optionClass(item, oi) {
   return ''
 }
 
-// 重新答题：跳转回答题页并携带原模式（后端已支持覆盖式提交）
+// 重新答题：清掉本地 + 服务端断点后带 restart=1 进入，确保从头计时（后端已支持覆盖式提交）
 function retakeQuiz() {
-  router.push(`/quiz/${trainingId}?mode=${resultMode.value}`)
+  clearProgress(trainingId, resultMode.value)
+  clearServerProgress(trainingId, resultMode.value).catch(() => {})
+  router.push(`/quiz/${trainingId}?mode=${resultMode.value}&restart=1`)
 }
 </script>
 

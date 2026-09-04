@@ -20,6 +20,19 @@
       ✅ 已恢复上次作答进度，可继续答题
     </div>
 
+    <!-- 限时到点自动交卷失败：停止计时并给出恢复入口，避免卡在 0 秒反复重试 -->
+    <div v-if="timeUpFailed" class="timeout-block">
+      <p class="timeout-title">⏰ 考试时间已用完，自动交卷未成功</p>
+      <p class="timeout-err">{{ errorMsg }}</p>
+      <div class="timeout-actions">
+        <button class="btn btn-primary" :disabled="submitting" @click="retrySubmit">
+          {{ submitting ? '交卷中…' : '重新交卷' }}
+        </button>
+        <button class="btn btn-outline" @click="restartExam">重新开始考试</button>
+        <button class="btn btn-outline" @click="goBackList">返回列表</button>
+      </div>
+    </div>
+
     <!-- 加载中 -->
     <div v-if="loading" class="loading">
       <div class="spinner"></div>
@@ -229,6 +242,10 @@ const submitting = ref(false)
 const errorMsg = ref('')
 const showImageModal = ref(false)
 const resumed = ref(false)
+// 限时到点自动交卷只触发一次（避免提交失败后被计时器反复触发 → 卡在 0 秒）
+const autoSubmitted = ref(false)
+// 限时到点自动交卷失败：停止计时并给出恢复入口，不再每秒重试
+const timeUpFailed = ref(false)
 
 // 题号圆点区是否展开（默认收起，点开关切换）
 const dotsExpanded = ref(false)
@@ -566,10 +583,12 @@ function startTimer() {
     // 仅考试模式限时：倒计时归零自动交卷；学习/练习只累计用时，永不过期
     if (mode.value === QUIZ_MODES.EXAM) {
       const limit = (quiz.value?.timeLimit || 0) * 60
-      if (limit > 0 && elapsedSec.value >= limit) {
+      // autoSubmitted 保证只自动交卷一次：否则提交失败后重启计时会每秒重试，界面卡在 0 秒
+      if (limit > 0 && elapsedSec.value >= limit && !autoSubmitted.value) {
+        autoSubmitted.value = true
         clearInterval(timerInterval)
         timerInterval = null
-        handleSubmit() // 考试倒计时归零自动交卷
+        handleSubmit(true) // 考试倒计时归零自动交卷
       }
     }
   }, 1000)
@@ -616,10 +635,14 @@ watch(currentIndex, () => persistProgress())
 watch(() => quizStore.answers, () => persistProgress(), { deep: true })
 
 // ── 提交 / 退出 ───────────────────────────────────────────────
-async function handleSubmit() {
+// auto：是否由「限时到点」自动触发。模板里 @click 会把事件对象作为首参传入，
+// 因此统一用 `auto === true` 判定，避免 MouseEvent 被当作 true。
+async function handleSubmit(auto) {
   if (submitting.value) return
+  const isAuto = auto === true
   submitting.value = true
   errorMsg.value = ''
+  timeUpFailed.value = false
   if (timerInterval) { clearInterval(timerInterval); timerInterval = null }
 
   const result = await quizStore.submitQuiz(trainingId, {
@@ -635,14 +658,41 @@ async function handleSubmit() {
     clearServerProgress(trainingId, mode.value) // 清除服务端断点
     attemptNo.value += 1
     router.replace(`/result/${trainingId}`)
-  } else if (result.offline) {
-    // 网络失败：保留断点、恢复计时、明确提示，不静默跳转（避免"假成功"导致错题不记录）
-    startTimer()
-    errorMsg.value = '⚠️ 提交失败（网络异常），答案未上传服务器，错题不会被记录。请检查网络后点击「交卷」重试。'
+    return
+  }
+
+  // 提交失败：限时自动交卷场景不再重启计时（否则会 1 秒一次死循环、界面卡在 0 秒），
+  // 改为停止计时 + 弹出恢复面板（重新交卷 / 重新开始 / 返回列表）。
+  if (isAuto) {
+    timeUpFailed.value = true
   } else {
     startTimer()
+  }
+
+  if (result.offline) {
+    errorMsg.value = '⚠️ 提交失败（网络异常），答案未上传服务器，错题不会被记录。请检查网络后点击「交卷」重试。'
+  } else {
     errorMsg.value = result.error || '提交失败，请检查网络后重试'
   }
+}
+
+// 限时到点交卷失败后的三个恢复入口
+function retrySubmit() {
+  handleSubmit(false)
+}
+
+function restartExam() {
+  clearProgress(trainingId, mode.value)
+  clearServerProgress(trainingId, mode.value).catch(() => {})
+  const url = router.resolve({
+    path: `/quiz/${trainingId}`,
+    query: { mode: mode.value, restart: '1' },
+  }).href
+  window.location.replace(url)
+}
+
+function goBackList() {
+  router.replace('/quiz')
 }
 
 // 学习模式：提交（记录进度）后返回列表
@@ -709,30 +759,38 @@ onMounted(async () => {
 
       // 恢复断点进度（按 materialId + mode 独立续做）
       // 优先从服务端读取（跨设备/重登可用），失败回退本地 localStorage 缓存。
+      // ?restart=1（再考一次 / 重新开始）：清掉本地与服务端断点，从头开始、重新计时。
       quizStore.resetAnswers()
+      const isRestart = route.query.restart === '1'
       let progress = null
-      try {
-        progress = await fetchServerProgress(trainingId, mode.value)
-      } catch (e) {
-        console.warn('[QuizPage] 服务端进度读取失败，回退本地', e)
-      }
-      if (!progress) {
-        progress = loadProgress(trainingId, mode.value)
-      } else if (progress.answers && Object.keys(progress.answers).length) {
-        // 服务端有数据则同步回本地缓存，保证离线也能续
-        saveProgress(trainingId, mode.value, progress)
-      }
+      if (isRestart) {
+        clearProgress(trainingId, mode.value)
+        try { await clearServerProgress(trainingId, mode.value) } catch (e) { /* 清断点失败不阻断 */ }
+        resumed.value = false
+      } else {
+        try {
+          progress = await fetchServerProgress(trainingId, mode.value)
+        } catch (e) {
+          console.warn('[QuizPage] 服务端进度读取失败，回退本地', e)
+        }
+        if (!progress) {
+          progress = loadProgress(trainingId, mode.value)
+        } else if (progress.answers && Object.keys(progress.answers).length) {
+          // 服务端有数据则同步回本地缓存，保证离线也能续
+          saveProgress(trainingId, mode.value, progress)
+        }
 
-      // 仅当存在真实进度（答过题 / 不在第一题 / 已用时）才标记"已恢复"，
-      // 避免空进度误弹"已恢复上次作答进度"的虚假提示。
-      const hasReal = progress &&
-        ((progress.answers && Object.keys(progress.answers).length > 0) ||
-         (progress.currentIndex > 0) || (progress.elapsedSec > 0))
-      if (hasReal) {
-        Object.assign(quizStore.answers, progress.answers || {})
-        currentIndex.value = progress.currentIndex || 0
-        elapsedSec.value = progress.elapsedSec || 0
-        resumed.value = true
+        // 仅当存在真实进度（答过题 / 不在第一题 / 已用时）才标记"已恢复"，
+        // 避免空进度误弹"已恢复上次作答进度"的虚假提示。
+        const hasReal = progress &&
+          ((progress.answers && Object.keys(progress.answers).length > 0) ||
+           (progress.currentIndex > 0) || (progress.elapsedSec > 0))
+        if (hasReal) {
+          Object.assign(quizStore.answers, progress.answers || {})
+          currentIndex.value = progress.currentIndex || 0
+          elapsedSec.value = progress.elapsedSec || 0
+          resumed.value = true
+        }
       }
       startTimer()
     } else if (data === null) {
@@ -835,6 +893,18 @@ onUnmounted(() => {
   padding: 8px 14px;
   text-align: center;
 }
+
+/* 限时到点交卷失败的恢复面板 */
+.timeout-block {
+  background: #FFF4F4;
+  border-bottom: 1px solid #F6C9C9;
+  padding: 14px 16px;
+  text-align: center;
+}
+.timeout-title { font-size: 15px; font-weight: 700; color: #DC2626; margin-bottom: 6px; }
+.timeout-err { font-size: 13px; color: #7F1D1D; line-height: 1.6; margin-bottom: 12px; }
+.timeout-actions { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+.timeout-actions .btn { width: auto; padding: 8px 14px; font-size: 13px; }
 
 /* padding-bottom 由内联样式按题号区展开状态动态设置（收起 110px / 展开 222px），此处仅为兜底 */
 .quiz-body { padding: 16px 12px 110px; overscroll-behavior-x: contain; touch-action: pan-y; }
