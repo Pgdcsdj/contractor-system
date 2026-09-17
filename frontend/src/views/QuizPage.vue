@@ -2,7 +2,7 @@
   <div class="quiz-page">
     <!-- 顶部状态栏 -->
     <div class="quiz-topbar">
-      <button class="back-btn" @click="confirmExit">←</button>
+      <button class="back-btn" @click="confirmExit" aria-label="返回个人培训题库">← 个人题库</button>
       <div class="quiz-progress">
         <span>{{ currentIndex + 1 }} / {{ questions.length }}</span>
         <div class="progress-bar" style="width:80px">
@@ -729,7 +729,7 @@ function confirmExit() {
     persistProgress()
     // 立即把进度刷到服务端，确保关门重登也能续上
     flushServerProgress()
-    alert('已保存进度，可继续作答')
+    alert('已保存进度，可在「我的培训」继续作答')
   }
   router.replace('/quiz')
 }
@@ -849,11 +849,14 @@ onUnmounted(() => {
   background: rgba(255,255,255,0.2);
   border: none;
   color: #fff;
-  width: 34px; height: 34px;
-  border-radius: 50%;
-  display: flex; align-items: center; justify-content: center;
+  height: 34px;
+  padding: 0 12px;
+  border-radius: 17px;
+  display: flex; align-items: center; gap: 2px;
   cursor: pointer;
-  font-size: 16px;
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
   flex-shrink: 0;
 }
 .quiz-progress {
