@@ -849,6 +849,7 @@ onUnmounted(() => {
   background: rgba(255,255,255,0.2);
   border: none;
   color: #fff;
+  width: auto; /* 覆盖全局 style.css 的 .back-btn{width:36px}（圆形箭头），否则文字溢出与题号重叠 */
   height: 34px;
   padding: 0 12px;
   border-radius: 17px;
