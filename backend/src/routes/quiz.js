@@ -550,7 +550,16 @@ router.get('/:materialId/result', authMiddleware, async (req, res) => {
     const answerMap = {}
     for (const a of userAnswers) answerMap[a.questionId] = a
 
-    const reviewList = questions.map(q => {
+    // 仅回顾"本次考试实际抽中的题目"：考试模式可能只随机抽取题库的一部分下发，
+    // 若直接遍历全量题库，未抽中的题会因 answerMap 缺失被置为"答错/未答"而混入回顾页。
+    // 故把数据源收窄到 record.answers 命中的题目集（即考试实际作答的题），并保留考试展示顺序。
+    const orderIndex = new Map(userAnswers.map((a, i) => [a.questionId, i]))
+    const reviewQuestions = userAnswers.length > 0
+      ? questions.filter(q => orderIndex.has(q.id))
+                 .sort((a, b) => orderIndex.get(a.id) - orderIndex.get(b.id))
+      : questions  // 兜底：无作答记录（历史/异常）时回退全量，避免空白页
+
+    const reviewList = reviewQuestions.map(q => {
       const userAns = answerMap[q.id] || {}
       return {
         id:           q.id,
