@@ -244,6 +244,13 @@
             <input type="number" min="0" step="0.5" v-model.number="examConfigForm.exam_judgment_score" placeholder="0" />
           </label>
         </div>
+        <div class="config-row" style="margin-top:10px;align-items:center">
+          <label style="flex:0 0 auto">默认模式</label>
+          <select v-model="examConfigForm.mode" class="form-input" style="max-width:220px">
+            <option v-for="(label, val) in MODE_LABELS" :key="val" :value="val">{{ label }}</option>
+          </select>
+          <span class="mode-tip">扫码进入 / 学员默认进入的模式</span>
+        </div>
         <p v-if="examConfigForm.mode && examConfigForm.mode !== 'exam'" class="mode-warn">
           ⚠️ 该题库默认模式为「{{ MODE_LABELS[examConfigForm.mode] || examConfigForm.mode }}」，
           抽题配置仅在以「考试」模式作答时生效。
@@ -411,6 +418,7 @@ async function saveExamConfig() {
   savingExamConfig.value = true
   try {
     await request.put(`/api/material/${examConfigForm.value.id}/exam-config`, {
+      mode: examConfigForm.value.mode,
       exam_single_num: Math.max(0, Number(examConfigForm.value.exam_single_num) || 0),
       exam_multiple_num: Math.max(0, Number(examConfigForm.value.exam_multiple_num) || 0),
       exam_judgment_num: Math.max(0, Number(examConfigForm.value.exam_judgment_num) || 0),

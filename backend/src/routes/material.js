@@ -986,6 +986,7 @@ router.delete('/:id', async (req, res) => {
 router.put('/:id/exam-config', adminAuth, async (req, res) => {
   const { id } = req.params
   const {
+    mode,
     exam_single_num = 0,
     exam_multiple_num = 0,
     exam_judgment_num = 0,
@@ -997,6 +998,8 @@ router.put('/:id/exam-config', adminAuth, async (req, res) => {
   const toSafeNum = (v) => Math.min(9999, Math.max(0, parseInt(v, 10) || 0))
   // 每题分数：0 = 沿用题目自身分值；保留 1 位小数
   const toSafeScore = (v) => Math.min(1000, Math.max(0, Math.round((Number(v) || 0) * 10) / 10))
+  // 默认模式：接收 exam/study/practice，非法/缺失时保留原值
+  const safeMode = (mode && normalizeModeParam(mode)) || null
 
   try {
     const [[material]] = await pool.execute(
@@ -1004,22 +1007,28 @@ router.put('/:id/exam-config', adminAuth, async (req, res) => {
     )
     if (!material) return res.status(404).json({ error: '题库不存在' })
 
+    // 未传 mode（旧客户端）时保留素材原有默认模式
+    const newMode = safeMode || material.mode || 'exam'
+
     await pool.execute(
       `UPDATE t_material
           SET exam_single_num = ?, exam_multiple_num = ?, exam_judgment_num = ?,
-              exam_single_score = ?, exam_multiple_score = ?, exam_judgment_score = ?
+              exam_single_score = ?, exam_multiple_score = ?, exam_judgment_score = ?,
+              mode = ?
         WHERE id = ?`,
       [toSafeNum(exam_single_num), toSafeNum(exam_multiple_num), toSafeNum(exam_judgment_num),
-       toSafeScore(exam_single_score), toSafeScore(exam_multiple_score), toSafeScore(exam_judgment_score), id]
+       toSafeScore(exam_single_score), toSafeScore(exam_multiple_score), toSafeScore(exam_judgment_score),
+       newMode, id]
     )
 
     res.json({
       success: true,
-      message: material.mode === 'exam'
+      message: newMode === 'exam'
         ? '考试抽题配置已保存'
-        : '抽题配置已保存（当前题库默认模式非「考试」，仅考试模式生效）',
+        : `抽题配置已保存（当前题库默认模式为「${newMode}」，仅考试模式生效）`,
       data: {
         materialId: Number(id),
+        mode: newMode,
         exam_single_num:   toSafeNum(exam_single_num),
         exam_multiple_num: toSafeNum(exam_multiple_num),
         exam_judgment_num: toSafeNum(exam_judgment_num),

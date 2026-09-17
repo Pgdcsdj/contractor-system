@@ -606,14 +606,8 @@ router.get('/:materialId/result', authMiddleware, async (req, res) => {
 router.get('/:materialId', authMiddleware, async (req, res) => {
   try {
     const { materialId } = req.params
-    // mode 来自 query；无效值回退到 exam（不揭示答案）
-    const reqMode = req.query.mode
-    const mode = (reqMode && QUIZ_MODES[String(reqMode).toUpperCase()])
-      ? QUIZ_MODES[String(reqMode).toUpperCase()]
-      : QUIZ_MODES.EXAM
-    const reveal = mode !== QUIZ_MODES.EXAM // study/practice 下发答案 + 解析
 
-    // 1) 题库存在性 & 发布态
+    // 1) 题库存在性 & 发布态（先取素材以拿到其默认 mode）
     const [[material]] = await pool.execute(
       `SELECT id, title, status, time_limit, pass_score, mode, attempt_limit, shuffle, category_id, ai_grading,
               exam_single_num, exam_multiple_num, exam_judgment_num,
@@ -624,7 +618,19 @@ router.get('/:materialId', authMiddleware, async (req, res) => {
     if (!material) return sendError(res, 'MATERIAL_NOT_FOUND')
     if (material.status !== 3) return sendError(res, 'NOT_PUBLISHED')
 
-    // 2) 启用题目（status = 1）
+    // 2) 运行模式：显式 ?mode= 优先；缺失时回退到素材默认模式（material.mode），
+    //    使管理员在后台配置的"默认模式"对扫码进入（/quiz/:id 不带 mode）实时生效，
+    //    无需重新生成二维码。
+    const reqMode = req.query.mode
+    const explicitMode = (reqMode && QUIZ_MODES[String(reqMode).toUpperCase()])
+      ? QUIZ_MODES[String(reqMode).toUpperCase()]
+      : null
+    const mode = explicitMode
+      || (material.mode && QUIZ_MODES[String(material.mode).toUpperCase()])
+      || QUIZ_MODES.EXAM
+    const reveal = mode !== QUIZ_MODES.EXAM // study/practice 下发答案 + 解析
+
+    // 3) 启用题目（status = 1）
     const [questions] = await pool.execute(
       `SELECT id, type, question, options, answer, analysis, score, sort_order
        FROM t_question
@@ -707,7 +713,7 @@ router.get('/:materialId', authMiddleware, async (req, res) => {
       data: {
         materialId:  Number(materialId),
         title:       material.title,
-        mode:        material.mode || QUIZ_MODES.EXAM,
+        mode:        mode, // 解析后的有效模式（显式 ?mode 或素材默认模式）
         timeLimit:   material.time_limit,
         passScore:   material.pass_score,
         attemptLimit: material.attempt_limit,

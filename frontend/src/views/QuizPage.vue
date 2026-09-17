@@ -741,21 +741,27 @@ onMounted(async () => {
   dotsExpanded.value = false
   const timer = setTimeout(() => { loading.value = false }, 10000)
   try {
-    // 运行模式严格取自路由 ?mode=，非法/缺失值由 normalizeMode 兜底为 exam；
-    // 不依赖素材默认 mode（解决"默认模式"与"运行时模式"被混淆的根因）。
-    mode.value = normalizeMode(route.query.mode, QUIZ_MODES.EXAM)
+    // 运行模式：显式 ?mode= 优先；缺失时由后端按素材默认模式（material.mode）解析，
+    // 使扫码进入（/quiz/:id 不带 mode）实时使用后台配置的默认模式。
+    const paramMode = route.query.mode
+    const effectiveParam = paramMode ? normalizeMode(paramMode, QUIZ_MODES.EXAM) : undefined
+    // 占位初值；若走素材默认模式，会在数据返回后校正为后端解析出的有效模式
+    mode.value = effectiveParam || QUIZ_MODES.EXAM
     // 错题练习模式：透传筛选条件（来自错题库页「练习筛选结果」）
     const extra = {}
     if (route.query.type) extra.type = route.query.type
     if (route.query.materialId) extra.materialId = route.query.materialId
     if (route.query.minWrong) extra.minWrong = route.query.minWrong
-    const data = await quizStore.fetchQuiz(trainingId, mode.value, extra)
+    const data = await quizStore.fetchQuiz(trainingId, effectiveParam, extra)
     clearTimeout(timer)
 
     if (data && data.questions && data.questions.length) {
       quiz.value = data
       questions.value = data.questions
-      // 注：此处 mode 已来自路由 query，不再回退到 data.mode（素材默认模式）
+      // 无显式 ?mode 时，以素材默认模式为准（后端已按 material.mode 计算题目与答案揭示）
+      if (!paramMode) {
+        mode.value = normalizeMode(data.mode, QUIZ_MODES.EXAM)
+      }
 
       // 恢复断点进度（按 materialId + mode 独立续做）
       // 优先从服务端读取（跨设备/重登可用），失败回退本地 localStorage 缓存。
