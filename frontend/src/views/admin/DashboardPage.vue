@@ -90,21 +90,23 @@
       </div>
     </div>
 
-    <!-- 未完成名单 -->
+    <!-- 已完成名单（今日已答题人员） -->
     <div class="card">
-      <h3 class="card-title">今日未完成人员</h3>
-      <div v-if="incompleteUsers.length === 0" class="empty-row">
-        <Icon name="check" :size="18" /> 全部完成！
+      <h3 class="card-title">今日已完成人员（{{ completedUsers.length }} 人）</h3>
+      <div v-if="completedUsers.length === 0" class="empty-row">
+        <Icon name="check" :size="18" /> 今日暂无人完成答题
       </div>
       <table v-else class="data-table">
         <thead>
-          <tr><th>姓名</th><th>单位</th><th>手机</th></tr>
+          <tr><th>姓名</th><th>单位</th><th>手机</th><th>答题次数</th><th>最近提交</th></tr>
         </thead>
         <tbody>
-          <tr v-for="u in incompleteUsers" :key="u.id">
+          <tr v-for="u in completedUsers" :key="u.id">
             <td>{{ u.name }}</td>
-            <td>{{ u.unit }}</td>
-            <td class="mono">{{ u.phone }}</td>
+            <td>{{ u.unit || '-' }}</td>
+            <td class="mono">{{ u.phone || '-' }}</td>
+            <td>{{ u.record_count }}</td>
+            <td class="mono">{{ fmtTime(u.last_submit) }}</td>
           </tr>
         </tbody>
       </table>
@@ -122,20 +124,30 @@ const stats = ref({
   todayIncomplete: 0, todayCompleted: 0, todayTotal: 0,
   todayPassed: 0, completionRate: 0, passRate: 0,
 })
-const incompleteUsers = ref([])
+const completedUsers = ref([])
 
 const rateCircumference = 2 * Math.PI * 40
 const completionOffset = computed(() => rateCircumference - (stats.value.completionRate / 100) * rateCircumference)
 const passOffset = computed(() => rateCircumference - (stats.value.passRate / 100) * rateCircumference)
 
+/** 最近提交时间：MM-DD HH:mm */
+function fmtTime(v) {
+  if (!v) return '-'
+  const d = new Date(v)
+  if (Number.isNaN(d.getTime())) return String(v).slice(5, 16).replace('T', ' ')
+  const p = (n) => String(n).padStart(2, '0')
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
 onMounted(async () => {
   try {
-    const [summary, incomplete] = await Promise.all([
+    const [summary, completed] = await Promise.all([
       request.get('/api/record/summary'),
-      request.get('/api/record/incomplete'),
+      request.get('/api/record/completed'),
     ])
-    stats.value = summary.data
-    incompleteUsers.value = incomplete.data?.list || []
+    // 响应体为 { success, data: {...} }，须取两层 data（与 RecordsPage 的 res.data?.data?.list 同口径）
+    stats.value = summary.data?.data || stats.value
+    completedUsers.value = completed.data?.data?.list || []
   } catch (e) {
     console.error('[Dashboard] 数据加载失败', e)
   }

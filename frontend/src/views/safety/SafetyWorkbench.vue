@@ -173,10 +173,14 @@
 
         <div class="edit-form">
           <div class="form-grid">
-            <!-- 隐患排查项目 -->
+            <!-- 隐患排查项目（下拉选已有项目；最底部可新增并返回） -->
             <div class="form-group">
               <label>隐患排查项目</label>
-              <input v-model="editForm.hazard_investigation_item" class="form-input" placeholder="如：集团公司第3期类比排查" />
+              <select v-model="editForm.hazard_investigation_item" class="form-input" @change="onInvestigationChange">
+                <option value="">请选择隐患排查项目…</option>
+                <option v-for="it in investigationItems" :key="'ii' + it" :value="it">{{ it }}</option>
+                <option value="__add_new__">＋ 新增排查项目…</option>
+              </select>
             </div>
 
             <!-- 责任单位 -->
@@ -197,7 +201,7 @@
             <!-- 业务部门 -->
             <div class="form-group">
               <label>业务部门</label>
-              <select v-model="editForm.business_dept" class="form-input">
+              <select v-model="editForm.business_dept" class="form-input" @change="applyAutoHead">
                 <option value="">请选择业务部门…</option>
                 <option v-for="d in businessDepts" :key="d.code" :value="d.name">{{ d.name }}</option>
               </select>
@@ -208,7 +212,7 @@
               <label>业务部门负责人</label>
               <select v-model="editForm.business_dept_head" class="form-input">
                 <option value="">请选择业务部门负责人…</option>
-                <option v-for="d in businessDeptHeads" :key="d.code" :value="d.name">{{ d.name }}</option>
+                <option v-for="(n, i) in deptHeadOptions" :key="'h' + i" :value="n">{{ n }}</option>
               </select>
             </div>
 
@@ -253,6 +257,21 @@
             {{ saving ? '保存中…' : '保存' }}
           </button>
         </div>
+
+        <!-- 新增排查项目浮层（覆盖在编辑弹窗之上；返回即回到本表单，已填内容不丢） -->
+        <div v-if="showAddItem" class="modal-overlay inner-overlay" @click.self="showAddItem = false">
+          <div class="modal add-item-modal">
+            <h3>新增隐患排查项目</h3>
+            <p class="modal-hint">保存后自动选入当前隐患表单</p>
+            <input v-model="newItemName" class="form-input" placeholder="如：集团公司第4期类比排查" @keyup.enter="submitNewItem" />
+            <div class="modal-actions">
+              <button class="btn btn-outline" type="button" @click="showAddItem = false">返回</button>
+              <button class="btn btn-primary" type="button" @click="submitNewItem" :disabled="savingItem">
+                {{ savingItem ? '保存中…' : '保存并选中' }}
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -289,6 +308,8 @@ import {
   getContractorUnits,
   getHazardDict,
   getHazardDetail,
+  createHazardDict,
+  getRectifyUnitBiz,
 } from '@/api/hazard'
 import HazardImportModal from '@/views/admin/components/HazardImportModal.vue'
 import { statusLabel, statusBadge, levelBadge } from '@/utils/hazardStatus'
@@ -329,6 +350,33 @@ const units = ref([])
 const levels = ref([])
 const businessDepts = ref([])
 const businessDeptHeads = ref([])
+// 隐患排查项目：字典项 + 历史录入值（去重合并），下拉最底部提供"新增项目"
+const investigationItemDict = ref([])
+const investigationItemsFromList = ref([])
+// 责任单位·业务口 → 负责人 关联表（t_rectify_unit_biz），用于自动带出业务部门负责人
+const bizLinks = ref([])
+const showAddItem = ref(false)
+const newItemName = ref('')
+const savingItem = ref(false)
+const prevInvestigationItem = ref('')
+
+/** 隐患排查项目下拉选项：字典 ∪ 历史录入 ∪ 当前值 */
+const investigationItems = computed(() => {
+  const set = new Set()
+  investigationItemDict.value.forEach((d) => d && d.name && set.add(d.name))
+  investigationItemsFromList.value.forEach((n) => n && set.add(n))
+  if (editForm.hazard_investigation_item) set.add(editForm.hazard_investigation_item)
+  return [...set].sort((a, b) => String(a).localeCompare(String(b), 'zh'))
+})
+
+/** 业务部门负责人下拉选项：字典 ∪ 关联表负责人 ∪ 当前值（修复：原来只用空字典，导致已存值显示为空） */
+const deptHeadOptions = computed(() => {
+  const set = new Set()
+  businessDeptHeads.value.forEach((d) => d && d.name && set.add(d.name))
+  bizLinks.value.forEach((l) => l && l.head_name && set.add(l.head_name))
+  if (editForm.business_dept_head) set.add(editForm.business_dept_head)
+  return [...set]
+})
 
 // 删除确认
 const deleteTarget = ref(null)
@@ -392,6 +440,11 @@ async function fetchList() {
     const d = res.data?.data
     list.value = d?.list || []
     total.value = d?.total || 0
+    // 汇总本页出现过的隐患排查项目，补充进下拉（历史项目即便字典里没有也可直接选）
+    const fromList = list.value.map((h) => h.hazard_investigation_item).filter(Boolean)
+    if (fromList.length) {
+      investigationItemsFromList.value = [...new Set([...investigationItemsFromList.value, ...fromList])]
+    }
   } catch (e) {
     list.value = []
     total.value = 0
@@ -457,7 +510,15 @@ function openEdit(h) {
   editForm.location = h.location || ''
   editForm.business_dept = h.business_dept || ''
   editForm.business_dept_head = h.business_dept_head || ''
+  // 历史记录负责人为空时，按「责任单位 + 业务部门」从关联表自动补出（修复：编辑页该栏常年为空）
+  if (!editForm.business_dept_head) {
+    const link = bizLinks.value.find(
+      (l) => l.rectify_unit === editForm.unit_name && l.business_dept === editForm.business_dept
+    )
+    if (link && link.head_name) editForm.business_dept_head = link.head_name
+  }
   editForm.hazard_investigation_item = h.hazard_investigation_item || ''
+  prevInvestigationItem.value = editForm.hazard_investigation_item
   editForm.hazard_level = h.hazard_level || ''
   editForm.description = h.description || ''
   editForm.rectify_measures = h.rectify_measures || ''
@@ -527,18 +588,72 @@ function onImported() {
 /** 加载编辑弹窗所需的下拉字典 */
 async function loadEditOptions() {
   try {
-    const [uRes, lRes, bdRes, bhRes] = await Promise.all([
+    const [uRes, lRes, bdRes, bhRes, iiRes, bizRes] = await Promise.all([
       getContractorUnits(),
       getHazardDict('level'),
       getHazardDict('business_dept'),
       getHazardDict('business_dept_head'),
+      getHazardDict('hazard_investigation_item'),
+      getRectifyUnitBiz(),
     ])
     units.value = uRes.data?.data?.list || uRes.data?.data || []
     levels.value = lRes.data?.data || []
     businessDepts.value = bdRes.data?.data || []
     businessDeptHeads.value = bhRes.data?.data || []
+    investigationItemDict.value = iiRes.data?.data || []
+    bizLinks.value = bizRes.data?.data || []
   } catch (e) {
     showToast(e.response?.data?.error || '字典加载失败', 'error')
+  }
+}
+
+/** 隐患排查项目切换：选中"＋新增"则打开新增浮层并还原原值 */
+function onInvestigationChange() {
+  if (editForm.hazard_investigation_item === '__add_new__') {
+    editForm.hazard_investigation_item = prevInvestigationItem.value || ''
+    newItemName.value = ''
+    showAddItem.value = true
+  } else {
+    prevInvestigationItem.value = editForm.hazard_investigation_item
+  }
+}
+
+/** 选齐「责任单位 + 业务部门」后，从关联表自动带出业务部门负责人（与新增表单同口径） */
+function applyAutoHead() {
+  if (!editForm.unit_name || !editForm.business_dept) return
+  const link = bizLinks.value.find(
+    (l) => l.rectify_unit === editForm.unit_name && l.business_dept === editForm.business_dept
+  )
+  if (link && link.head_name) editForm.business_dept_head = link.head_name
+}
+
+/** 保存新增排查项目 → 自动选中；"返回"按钮仅关闭浮层，表单内容保持不变 */
+async function submitNewItem() {
+  const name = newItemName.value.trim()
+  if (!name) return showToast('请输入项目名称', 'error')
+  if (investigationItems.value.includes(name)) {
+    editForm.hazard_investigation_item = name
+    prevInvestigationItem.value = name
+    showAddItem.value = false
+    return showToast('该项目已存在，已为你选中', 'success')
+  }
+  savingItem.value = true
+  try {
+    await createHazardDict({
+      type: 'hazard_investigation_item',
+      code: 'HI' + Date.now(), // 字典编码唯一即可（业务上按 name 展示）
+      name,
+      sort_order: 0,
+    })
+    investigationItemDict.value.push({ name })
+    editForm.hazard_investigation_item = name
+    prevInvestigationItem.value = name
+    showAddItem.value = false
+    showToast('已新增并选中：' + name, 'success')
+  } catch (e) {
+    showToast(e.response?.data?.error || '新增项目失败', 'error')
+  } finally {
+    savingItem.value = false
   }
 }
 
@@ -552,6 +667,11 @@ onMounted(() => {
 
 <style scoped>
 .workbench-page { max-width: 1320px; }
+
+/* 新增排查项目浮层：覆盖在"编辑隐患"弹窗之上 */
+.inner-overlay { z-index: 1300; }
+.add-item-modal { max-width: 420px; }
+.add-item-modal .form-input { width: 100%; margin: 10px 0 4px; box-sizing: border-box; }
 
 .welcome-card {
   display: flex; align-items: center; justify-content: space-between;

@@ -1,12 +1,12 @@
 /**
- * 问题依据库路由（标准依据条款）
+ * 问题依据库路由（底层数据 = 安全违章库 t_violation，8 列）
  *
  * GET    /api/hazards/standard-basis          列表（?page&pageSize&keyword）
  * POST   /api/hazards/standard-basis          新增
  * PUT    /api/hazards/standard-basis/:id       修改
  * DELETE /api/hazards/standard-basis/:id       删除
- * POST   /api/hazards/standard-basis/match     单条匹配（body {category}）
- * POST   /api/hazards/standard-basis/import    导入（xlsx，multipart file）
+ * POST   /api/hazards/standard-basis/match     单条匹配（body {category: 关键词}）
+ * POST   /api/hazards/standard-basis/import    导入（xlsx，multipart file，8 列）
  * GET    /api/hazards/standard-basis/template  下载模板
  * GET    /api/hazards/standard-basis/export     导出 xlsx
  *
@@ -57,7 +57,7 @@ router.get('/', requireAdminOrSafety, async (req, res) => {
   }
 })
 
-// ─── 单条匹配 ────────────────────────────────────────────────────────────────
+// ─── 单条匹配（录入隐患时自动匹配依据）────────────────────────────────────────
 router.post('/match', requireAdminOrSafety, async (req, res) => {
   try {
     const { category } = req.body || {}
@@ -68,7 +68,7 @@ router.post('/match', requireAdminOrSafety, async (req, res) => {
   }
 })
 
-// ─── 导入 ────────────────────────────────────────────────────────────────────
+// ─── 导入（8 列：违章编号/适用场所/违章分类/细分环节/检查对象/违章条款具体内容/检查依据/扣分风险等级）──
 router.post('/import', requireAdminOrSafety, upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ success: false, error: '请上传 xlsx 文件' })
@@ -79,24 +79,36 @@ router.post('/import', requireAdminOrSafety, upload.single('file'), async (req, 
     let headerIdx = -1
     for (let i = 0; i < raw.length; i++) {
       const row = (raw[i] || []).map((c) => String(c ?? '').trim())
-      if (row.includes('排查项目') || row.includes('标准依据')) { headerIdx = i; break }
+      if (row.includes('违章分类') || row.includes('违章条款具体内容') || row.includes('检查依据') || row.includes('标准依据')) { headerIdx = i; break }
     }
-    if (headerIdx < 0) return res.status(400).json({ success: false, error: '未识别到表头（需含「排查项目」「标准依据」）' })
+    if (headerIdx < 0) return res.status(400).json({ success: false, error: '未识别到表头（需含「违章分类」「违章条款具体内容」「检查依据」之一）' })
     const header = (raw[headerIdx] || []).map((c) => String(c ?? '').trim())
-    const idx = (name) => header.indexOf(name)
-    const iCat = idx('排查项目')
-    const iBasis = idx('标准依据')
-    const iSource = idx('来源标准')
-    if (iCat < 0 || iBasis < 0) return res.status(400).json({ success: false, error: '模板缺少「排查项目」或「标准依据」列' })
+    const idx = (names) => names.map((n) => header.indexOf(n)).find((i) => i >= 0)
+
+    // 每个目标字段支持多个表头别名（兼容旧「排查项目/标准依据/来源标准」模板）
+    const iCode = idx(['违章编号', '编号'])
+    const iPlace = idx(['适用场所', '场所'])
+    const iCat = idx(['违章分类', '排查项目', '分类'])
+    const iSeg = idx(['细分环节'])
+    const iObj = idx(['检查对象'])
+    const iContent = idx(['违章条款具体内容', '标准依据', '条款内容'])
+    const iBasis = idx(['检查依据', '来源标准', '依据'])
+    const iDeduct = idx(['扣分风险等级', '风险等级'])
+    if (iCat < 0 || iContent < 0) return res.status(400).json({ success: false, error: '模板缺少「违章分类」或「违章条款具体内容」列' })
 
     const rows = []
     for (let i = headerIdx + 1; i < raw.length; i++) {
       const r = raw[i] || []
       if (r.every((c) => !String(c ?? '').trim())) continue
       rows.push({
+        code: iCode >= 0 ? String(r[iCode] ?? '').trim() : '',
+        place: iPlace >= 0 ? String(r[iPlace] ?? '').trim() : '',
         category: iCat >= 0 ? String(r[iCat] ?? '').trim() : '',
-        standard_basis: iBasis >= 0 ? String(r[iBasis] ?? '').trim() : '',
-        source: iSource >= 0 ? String(r[iSource] ?? '').trim() : '',
+        sub_segment: iSeg >= 0 ? String(r[iSeg] ?? '').trim() : '',
+        inspect_object: iObj >= 0 ? String(r[iObj] ?? '').trim() : '',
+        standard_basis: iContent >= 0 ? String(r[iContent] ?? '').trim() : '',
+        source: iBasis >= 0 ? String(r[iBasis] ?? '').trim() : '',
+        deduct_level: iDeduct >= 0 ? String(r[iDeduct] ?? '').trim() : '',
       })
     }
     const { success, fail } = await svc.importLibrary(rows)
@@ -121,16 +133,16 @@ router.get('/template', requireAdminOrSafety, (req, res) => {
   }
 })
 
-// ─── 导出 ────────────────────────────────────────────────────────────────────
+// ─── 导出（8 列）──────────────────────────────────────────────────────────────
 router.get('/export', requireAdminOrSafety, async (req, res) => {
   try {
     const rows = await svc.exportLibrary()
-    const aoa = [['排查项目', '标准依据', '来源标准']]
-    for (const r of rows) aoa.push([r.category, r.standard_basis, r.source])
+    const aoa = [['违章编号', '适用场所', '违章分类', '细分环节', '检查对象', '违章条款具体内容', '检查依据', '扣分风险等级']]
+    for (const r of rows) aoa.push([r.code, r.place, r.category, r.sub_segment, r.inspect_object, r.content, r.basis, r.deduct_level])
     const ws = XLSX.utils.aoa_to_sheet(aoa)
     const wb = XLSX.utils.book_new()
-    wb.SheetNames.push('问题依据库')
-    wb.Sheets['问题依据库'] = ws
+    wb.SheetNames.push('安全违章依据库')
+    wb.Sheets['安全违章依据库'] = ws
     const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' })
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     res.setHeader('Content-Disposition', 'attachment; filename="standard_basis_export.xlsx"')
@@ -143,8 +155,8 @@ router.get('/export', requireAdminOrSafety, async (req, res) => {
 // ─── 新增 ────────────────────────────────────────────────────────────────────
 router.post('/', requireAdminOrSafety, async (req, res) => {
   try {
-    const { category, standard_basis, source, sort_order } = req.body || {}
-    const item = await svc.create({ category, standard_basis, source, sort_order })
+    const { category, standard_basis, source, place, sub_segment, inspect_object, deduct_level, code } = req.body || {}
+    const item = await svc.create({ category, standard_basis, source, place, sub_segment, inspect_object, deduct_level, code })
     res.json({ success: true, data: item })
   } catch (e) {
     res.status(400).json({ success: false, error: e.message })

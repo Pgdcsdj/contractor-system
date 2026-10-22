@@ -14,10 +14,14 @@
       </div>
 
       <div class="form-grid">
-        <!-- 隐患排查项目（自由文本，非必填） -->
+        <!-- 隐患排查项目（下拉选已有项目；最底部可新增并返回） -->
         <div class="form-group">
           <label>隐患排查项目</label>
-          <input v-model="form.hazard_investigation_item" class="form-input" placeholder="如：集团公司第3期类比排查" />
+          <select v-model="form.hazard_investigation_item" class="form-input" @change="onInvestigationChange">
+            <option value="">请选择隐患排查项目…</option>
+            <option v-for="it in investigationItems" :key="'ii' + it" :value="it">{{ it }}</option>
+            <option value="__add_new__">＋ 新增排查项目…</option>
+          </select>
         </div>
 
         <!-- 整改单位（责任单位） -->
@@ -104,6 +108,21 @@
       </div>
     </div>
 
+    <!-- 新增排查项目浮层（覆盖在当前表单之上；返回即回到录入界面，已填内容不丢） -->
+    <div v-if="showAddItem" class="modal-overlay inner-overlay" @click.self="showAddItem = false">
+      <div class="modal add-item-modal">
+        <h3>新增隐患排查项目</h3>
+        <p class="modal-hint">保存后自动选入当前隐患表单</p>
+        <input v-model="newItemName" class="form-input" placeholder="如：集团公司第4期类比排查" @keyup.enter="submitNewItem" />
+        <div class="modal-actions">
+          <button class="btn btn-outline" type="button" @click="showAddItem = false">返回</button>
+          <button class="btn btn-primary" type="button" @click="submitNewItem" :disabled="savingItem">
+            {{ savingItem ? '保存中…' : '保存并选中' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- toast -->
     <transition name="toast">
       <div v-if="toast.show" class="toast" :class="toast.type">{{ toast.msg }}</div>
@@ -112,9 +131,9 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { getHazardDict, getContractorUnits, getRectifyUnitBiz, reportHazard } from '@/api/hazard'
+import { getHazardDict, getContractorUnits, getRectifyUnitBiz, reportHazard, createHazardDict } from '@/api/hazard'
 import HazardPhotoUpload from '@/views/admin/components/HazardPhotoUpload.vue'
 
 const router = useRouter()
@@ -125,6 +144,19 @@ const businessDepts = ref([])
 const bizLinks = ref([])
 const photoUrls = ref([])
 const submitting = ref(false)
+// 隐患排查项目下拉：字典项（"＋新增"走浮层，保存后自动选中）
+const investigationItemDict = ref([])
+const showAddItem = ref(false)
+const newItemName = ref('')
+const savingItem = ref(false)
+const prevInvestigationItem = ref('')
+
+const investigationItems = computed(() => {
+  const set = new Set()
+  investigationItemDict.value.forEach((d) => d && d.name && set.add(d.name))
+  if (form.hazard_investigation_item) set.add(form.hazard_investigation_item)
+  return [...set].sort((a, b) => String(a).localeCompare(String(b), 'zh'))
+})
 
 const form = reactive({
   contractor_unit_id: '',
@@ -184,6 +216,7 @@ function resetForm() {
   form.location = ''
   form.business_dept = ''
   form.hazard_investigation_item = ''
+  prevInvestigationItem.value = ''
   form.business_dept_head = ''
   form.hazard_level = ''
   form.description = ''
@@ -230,18 +263,61 @@ async function handleSubmit() {
 
 async function loadOptions() {
   try {
-    const [uRes, lRes, bdRes, bizRes] = await Promise.all([
+    const [uRes, lRes, bdRes, bizRes, iiRes] = await Promise.all([
       getContractorUnits(),
       getHazardDict('level'),
       getHazardDict('business_dept'),
       getRectifyUnitBiz(),
+      getHazardDict('hazard_investigation_item'),
     ])
     units.value = uRes.data?.data?.list || uRes.data?.data || []
     levels.value = lRes.data?.data || []
     businessDepts.value = bdRes.data?.data || []
     bizLinks.value = bizRes.data?.data || []
+    investigationItemDict.value = iiRes.data?.data || []
   } catch (e) {
     showToast(e.response?.data?.error || '字典加载失败', 'error')
+  }
+}
+
+/** 隐患排查项目切换：选中"＋新增"则打开新增浮层并还原原值 */
+function onInvestigationChange() {
+  if (form.hazard_investigation_item === '__add_new__') {
+    form.hazard_investigation_item = prevInvestigationItem.value || ''
+    newItemName.value = ''
+    showAddItem.value = true
+  } else {
+    prevInvestigationItem.value = form.hazard_investigation_item
+  }
+}
+
+/** 保存新增排查项目 → 自动选中；"返回"按钮仅关闭浮层，表单内容保持不变 */
+async function submitNewItem() {
+  const name = newItemName.value.trim()
+  if (!name) return showToast('请输入项目名称', 'error')
+  if (investigationItems.value.includes(name)) {
+    form.hazard_investigation_item = name
+    prevInvestigationItem.value = name
+    showAddItem.value = false
+    return showToast('该项目已存在，已为你选中', 'success')
+  }
+  savingItem.value = true
+  try {
+    await createHazardDict({
+      type: 'hazard_investigation_item',
+      code: 'HI' + Date.now(),
+      name,
+      sort_order: 0,
+    })
+    investigationItemDict.value.push({ name })
+    form.hazard_investigation_item = name
+    prevInvestigationItem.value = name
+    showAddItem.value = false
+    showToast('已新增并选中：' + name, 'success')
+  } catch (e) {
+    showToast(e.response?.data?.error || '新增项目失败', 'error')
+  } finally {
+    savingItem.value = false
   }
 }
 
@@ -250,6 +326,11 @@ onMounted(loadOptions)
 
 <style scoped>
 .safety-report-page { max-width: 920px; }
+
+/* 新增排查项目浮层 */
+.inner-overlay { z-index: 1300; }
+.add-item-modal { max-width: 420px; }
+.add-item-modal .form-input { width: 100%; margin: 10px 0 4px; box-sizing: border-box; }
 .report-card { padding: 24px; }
 .card-head { display: flex; align-items: center; gap: 12px; margin-bottom: 22px; }
 .card-head .head-text { flex: 1; min-width: 180px; padding-right: 12px; }

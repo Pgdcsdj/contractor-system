@@ -31,11 +31,13 @@ const safetyAuthRoutes     = require('./routes/safetyAuth')
 const accountRoutes        = require('./routes/accountManage')
 const dataManageRoutes     = require('./routes/dataManage')
 const { startSchedulers } = require('./services/hazardScheduler')
+const { refreshCache: refreshNotifyCache } = require('./services/notifyConfig')
+const notifyConfigRoutes  = require('./routes/notifyConfig')
 const backupService       = require('./services/backupService')
 const dingtalkRoutes       = require('./routes/dingtalk')        // 钉钉 OAuth 桥接 → Memos 个人工作日志
 const contractorDocRoutes   = require('./routes/contractorDoc')   // 承包商开工资料电子化上报（需求 C）
 const qualityRoutes         = require('./routes/quality')         // 出题质量量化校验与追踪
-const standardBasisRoutes   = require('./routes/standardBasis')    // 问题依据库（标准依据条款）
+const standardBasisRoutes   = require('./routes/standardBasis')    // 问题依据库（底层=安全违章库 t_violation）
 
 // ─── 系统版本常量（与前端 src/version.js 保持一致）─────────────────────
 const { APP_VERSION, BUILD_DATE } = require('./version')
@@ -436,6 +438,9 @@ async function autoMigrate() {
     if (!(await ensureColumn('t_user', 'contractor_unit_id'))) {
       await pool.execute('ALTER TABLE t_user ADD COLUMN contractor_unit_id INT UNSIGNED DEFAULT NULL COMMENT \'关联承包商单位ID（按单位聚合绩效）\'')
     }
+    if (!(await ensureColumn('t_user', 'self_registered'))) {
+      await pool.execute('ALTER TABLE t_user ADD COLUMN self_registered TINYINT NOT NULL DEFAULT 0 COMMENT \'1=自助注册（补全信息）待核实\'')
+    }
 
     // STEP 7：钉钉通知审计日志表（与 migrations/002_dingtalk_notify_log.sql 同源）
     await ensureTable(`
@@ -453,6 +458,8 @@ async function autoMigrate() {
         INDEX idx_created (created_at)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='钉钉通知审计日志'
     `)
+    // 钉钉通知配置缓存预热（热路径同步读缓存，先异步载入 DB 配置）
+    refreshNotifyCache().catch((e) => console.error('[migrate] 通知配置预热失败', e.message))
     // 隐患定时任务（超期扫描 + 周报），需在 last_overdue_notify_at 列就绪后启动
     try {
       startSchedulers(pool)
@@ -611,6 +618,10 @@ async function autoMigrate() {
       {
         name: 'quality_round',
         ddl: "ALTER TABLE t_question ADD COLUMN quality_round INT NOT NULL DEFAULT 1 COMMENT '所属出题轮次（每次重新生成 +1）'",
+      },
+      {
+        name: 'image_url',
+        ddl: "ALTER TABLE t_question ADD COLUMN image_url VARCHAR(1024) DEFAULT NULL COMMENT '题目配图（现场违章照等）COS 公网 URL'",
       },
     ]
     for (const col of questionQualityCols) {
@@ -796,7 +807,7 @@ app.use('/api/notify', notifyRoutes)                  // 钉钉通知（Sprint 1
 app.use('/api/contractor-units', contractorUnitRoutes)  // 承包商单位 CRUD + 导入（S1-3）
 app.use('/api/hazard', hazardRoutes)                    // 隐患照片上传（S1-4）
 app.use('/api/hazard-dict', hazardDictRoutes)            // 隐患分类/等级字典（S2 / P1-1）
-app.use('/api/hazards/standard-basis', standardBasisRoutes)  // 问题依据库（必须早于 /api/hazards，否则被 /:id 吞掉）
+app.use('/api/hazards/standard-basis', standardBasisRoutes)  // 问题依据库（底层=安全违章库 t_violation，必须早于 /api/hazards，否则被 /:id 吞掉）
 app.use('/api/hazards', hazardLoopRoutes)                // 隐患闭环状态机（S2 / P0）
 app.use('/api/rectify-unit-biz', rectifyUnitBizRoutes)   // 整改单位→业务口关联（S2 / 关联维护）
 app.use('/api/safety',  safetyAuthRoutes)                 // 安全员登录（公开，无需鉴权）
@@ -805,6 +816,7 @@ app.use('/api/data',    dataManageRoutes)                 // 数据备份/导出
 app.use('/api/dingtalk', dingtalkRoutes)                   // 钉钉 OAuth 桥接 → Memos 个人工作日志（T01/T02）
 app.use('/api/contractor-docs', contractorDocRoutes)        // 承包商开工资料电子化上报（需求 C）
 app.use('/api/quality', qualityRoutes)                      // 出题质量量化校验与追踪
+app.use('/api/notify-config', notifyConfigRoutes)            // 钉钉通知开关配置（后台可设）
 
 // ─── 定时备份（每周日 23:00）────────────────────────────────────────────────
 // P1：服务进程内 node-cron；失败仅 console.error + 写审计日志（未建），不阻塞主进程。

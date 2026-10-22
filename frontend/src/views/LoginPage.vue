@@ -8,7 +8,7 @@
     </div>
 
     <!-- 登录区域 -->
-    <div class="card login-card" v-if="!showRegister">
+    <div class="card login-card" v-if="!showRegister && !showComplete">
       <h2 class="section-title">登录</h2>
       <p class="login-hint">用户名为姓名；登录密码为身份证后四位（X 为 0）</p>
       <div class="form-group">
@@ -23,7 +23,38 @@
       <p class="toggle-link" @click="showRegister = true">没有账号？点击注册</p>
     </div>
 
-    <!-- 注册区域 -->
+    <!-- 补全信息区域（登录失败且库里没有该名员工，自动弹出） -->
+    <div class="card complete-card" v-else-if="showComplete">
+      <h2 class="section-title">补全信息并注册</h2>
+      <p class="complete-hint">系统未找到「<b>{{ completeName }}</b>」，请补全以下信息，即可自动注册并开始答题。</p>
+      <div class="form-group">
+        <input :value="completeName" class="form-input" placeholder="姓名" type="text" disabled />
+      </div>
+      <div class="form-group">
+        <input v-model="compIdCard" class="form-input" placeholder="完整身份证号（18位，末位X为0）" type="text" maxlength="18" />
+      </div>
+      <div class="form-group">
+        <select v-model="compUnitId" class="form-input" @change="onUnitChange">
+          <option value="">所属承包商单位（下拉选择，可空）</option>
+          <option v-for="u in units" :key="u.id" :value="u.id">{{ u.unit_name }}</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <input v-model="compSupervisingUnit" class="form-input" placeholder="主管单位（甲方）" type="text" />
+      </div>
+      <div class="form-group">
+        <input v-model="compPhone" class="form-input" placeholder="手机号" type="text" />
+      </div>
+      <div class="form-group">
+        <input v-model="compPosition" class="form-input" placeholder="岗位" type="text" />
+      </div>
+      <button class="btn btn-primary full-btn" @click="handleComplete" :disabled="loading || !compIdCard">
+        {{ loading ? '提交中…' : '补全并进入' }}
+      </button>
+      <p class="toggle-link" @click="backToLogin">返回登录</p>
+    </div>
+
+    <!-- 临时注册区域（手动兜底入口） -->
     <div class="card register-card" v-else>
       <h2 class="section-title">临时注册</h2>
       <p class="register-hint">未录入系统的承包商人员，请先注册</p>
@@ -62,6 +93,7 @@
 import { ref, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { request } from '@/utils/request'
 import logoUrl from '@/assets/logo.jpg'
 // offlineDb 动态加载，已移除静态导入
 
@@ -70,8 +102,20 @@ const route = useRoute()
 const auth = useAuthStore()
 
 const showRegister = ref(false)
+const showComplete = ref(false)
 const name = ref('')
 const idCard = ref('')
+// 补全信息态
+const completeName = ref('')
+const completeLast4 = ref('')
+const compIdCard = ref('')
+const compUnitId = ref('')
+const compUnitName = ref('')
+const compSupervisingUnit = ref('')
+const compPhone = ref('')
+const compPosition = ref('')
+const units = ref([])
+// 手动注册态
 const regName = ref('')
 const regIdCard = ref('')
 const regUnit = ref('')
@@ -80,6 +124,11 @@ const regPhone = ref('')
 const loading = ref(false)
 const errorMsg = ref('')
 const pendingCount = ref(0)
+
+// 归一：身份证末位 X 视为 0
+function normLast4(s) {
+  return String(s || '').toUpperCase().replace(/X$/, '0')
+}
 
 onMounted(async () => {
   // 首页表单跳转带参：?name=&last4= → 预填并自动登录，直达答题
@@ -100,6 +149,19 @@ onMounted(async () => {
   } catch {}
 })
 
+async function loadUnits() {
+  if (units.value.length) return
+  try {
+    const res = await request.get('/api/contractor-docs/units')
+    if (res.data?.success) units.value = res.data.data || []
+  } catch {}
+}
+
+function onUnitChange() {
+  const u = units.value.find(x => String(x.id) === String(compUnitId.value))
+  compUnitName.value = u ? u.unit_name : ''
+}
+
 async function handleManualLogin() {
   if (!name.value || !idCard.value) return
   loading.value = true
@@ -108,7 +170,48 @@ async function handleManualLogin() {
     await auth.manualLogin(name.value, idCard.value)
     router.replace(route.query.redirect || '/quiz')
   } catch (e) {
-    errorMsg.value = e.response?.data?.error || '登录失败，请检查姓名和身份证后4位'
+    const data = e.response?.data
+    // 库里没有该名员工 → 自动切到补全信息流程
+    if (data?.code === 'USER_NOT_FOUND') {
+      completeName.value = data.name || name.value
+      completeLast4.value = idCard.value
+      showComplete.value = true
+      await loadUnits()
+      return
+    }
+    errorMsg.value = data?.error || '登录失败，请检查姓名和身份证后4位'
+  } finally {
+    loading.value = false
+  }
+}
+
+async function handleComplete() {
+  if (!compIdCard.value) return
+  const trimmed = compIdCard.value.trim().toUpperCase()
+  if (!/^\d{17}[\dX]$/.test(trimmed)) {
+    errorMsg.value = '身份证号格式不正确，应为18位'
+    return
+  }
+  if (normLast4(trimmed.slice(-4)) !== normLast4(completeLast4.value)) {
+    errorMsg.value = '身份证号末四位与登录填写不一致'
+    return
+  }
+  loading.value = true
+  errorMsg.value = ''
+  try {
+    await auth.register({
+      name: completeName.value,
+      id_card: trimmed,
+      unit: compUnitName.value,
+      supervising_unit: compSupervisingUnit.value,
+      phone: compPhone.value,
+      position: compPosition.value,
+      contractor_unit_id: compUnitId.value || null,
+      last4: completeLast4.value,
+    })
+    router.replace(route.query.redirect || '/quiz')
+  } catch (e) {
+    errorMsg.value = e.response?.data?.error || '注册失败，请检查信息'
   } finally {
     loading.value = false
   }
@@ -132,6 +235,11 @@ async function handleRegister() {
   } finally {
     loading.value = false
   }
+}
+
+function backToLogin() {
+  showComplete.value = false
+  errorMsg.value = ''
 }
 </script>
 
@@ -160,6 +268,8 @@ async function handleRegister() {
 .section-title { font-size: 16px; font-weight: 600; margin-bottom: 10px; text-align: center; }
 .login-hint { font-size: 13px; color: var(--text-secondary); text-align: center; margin-bottom: 14px; line-height: 1.6; }
 .register-hint { font-size: 13px; color: var(--text-secondary); text-align: center; margin-bottom: 16px; }
+.complete-hint { font-size: 13px; color: var(--text-secondary); text-align: center; margin-bottom: 16px; line-height: 1.6; }
+.complete-hint b { color: #1a73e8; }
 
 .form-group { margin-bottom: 10px; }
 .form-input {

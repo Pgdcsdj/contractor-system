@@ -4,44 +4,58 @@
     <div class="toolbar card">
       <div class="search-wrap">
         <span class="search-icon"><Icon name="search" :size="17" /></span>
-        <input v-model="keyword" class="search-input" placeholder="搜索排查项目 / 标准依据 / 来源…" @input="onSearchChange" />
+        <input v-model="keyword" class="search-input" placeholder="搜索编号 / 场所 / 分类 / 条款 / 依据 / 扣分等级…" @input="onSearchChange" />
       </div>
       <div class="toolbar-right">
         <span class="total-count">共 {{ total }} 条</span>
         <button class="btn btn-outline" @click="downloadTemplate"><Icon name="download" :size="17" />模板</button>
-        <button class="btn btn-outline" @click="exportLib"><Icon name="export" :size="17" />导出</button>
+        <button class="btn btn-outline" @click="exportLib"><Icon name="download" :size="17" />导出</button>
         <button class="btn btn-outline" @click="showImport = true"><Icon name="upload" :size="17" />导入</button>
         <button class="btn btn-primary" @click="openAdd"><Icon name="plus" :size="17" />新增依据</button>
       </div>
     </div>
 
-    <!-- 表格 -->
+    <!-- 表格（横向滚动承载 8 列） -->
     <div class="card table-card">
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th>排查项目</th><th>标准依据</th><th>来源标准</th><th>排序</th><th>操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-if="loading">
-            <td colspan="5" class="empty-cell"><div class="spinner" style="margin:0 auto"></div></td>
-          </tr>
-          <tr v-else-if="list.length === 0">
-            <td colspan="5" class="empty-cell">暂无依据数据，点击「新增依据」或「导入」</td>
-          </tr>
-          <tr v-for="item in list" :key="item.id">
-            <td><strong>{{ item.category }}</strong></td>
-            <td class="basis-cell">{{ item.standard_basis }}</td>
-            <td>{{ item.source || '-' }}</td>
-            <td class="mono">{{ item.sort_order || 0 }}</td>
-            <td>
-              <button class="action-link" @click="openEdit(item)"><Icon name="pencil" :size="14" /> 编辑</button>
-              <button class="action-link danger" @click="removeItem(item)"><Icon name="trash" :size="14" /> 删除</button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>违章编号</th>
+              <th>适用场所</th>
+              <th>违章分类</th>
+              <th>细分环节</th>
+              <th>检查对象</th>
+              <th>违章条款具体内容</th>
+              <th>检查依据</th>
+              <th>扣分风险等级</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-if="loading">
+              <td colspan="9" class="empty-cell"><div class="spinner" style="margin:0 auto"></div></td>
+            </tr>
+            <tr v-else-if="list.length === 0">
+              <td colspan="9" class="empty-cell">暂无依据数据，点击「新增依据」或「导入」</td>
+            </tr>
+            <tr v-for="item in list" :key="item.id">
+              <td class="mono">{{ item.code }}</td>
+              <td>{{ item.place || '-' }}</td>
+              <td><strong>{{ item.category }}</strong></td>
+              <td>{{ item.sub_segment || '-' }}</td>
+              <td>{{ item.inspect_object || '-' }}</td>
+              <td class="basis-cell">{{ item.standard_basis }}</td>
+              <td>{{ item.source || '-' }}</td>
+              <td>{{ item.deduct_level || '-' }}</td>
+              <td class="op-cell">
+                <button class="action-link" @click="openEdit(item)"><Icon name="pencil" :size="14" /> 编辑</button>
+                <button class="action-link danger" @click="removeItem(item)"><Icon name="trash" :size="14" /> 删除</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
 
       <div class="pagination" v-if="totalPages > 1">
         <button class="pg-btn" :disabled="page === 1" @click="page--"><Icon name="chevronLeft" :size="18" /></button>
@@ -53,10 +67,11 @@
     <!-- 导入弹窗 -->
     <div v-if="showImport" class="modal-overlay" @click.self="showImport = false">
       <div class="modal">
-        <h3><Icon name="upload" :size="19" /> Excel 导入问题依据库</h3>
+        <h3><Icon name="upload" :size="19" /> Excel 导入安全违章依据库</h3>
         <p class="modal-hint">
-          请上传 .xlsx 文件，表头列名需包含：<strong>排查项目</strong>（必填）、
-          <strong>标准依据</strong>（必填）、<strong>来源标准</strong>（选填）。同一排查项目重复导入将更新。
+          请上传 .xlsx 文件，表头列名需包含：<strong>违章分类</strong>（必填）、
+          <strong>违章条款具体内容</strong>（必填）、<strong>检查依据</strong>（选填）。<br />
+          可选列：违章编号 / 适用场所 / 细分环节 / 检查对象 / 扣分风险等级。同一违章编号重复导入将更新。
         </p>
         <div class="file-upload" @click="triggerFile">
           <span class="upload-icon"><Icon name="file" :size="40" /></span>
@@ -86,20 +101,36 @@
         <h3><Icon :name="editing ? 'pencil' : 'plus'" :size="19" /> {{ editing ? '编辑依据' : '新增依据' }}</h3>
         <div class="edit-form">
           <div class="form-group">
-            <label>排查项目 *</label>
-            <input v-model="form.category" class="form-input" placeholder="如：动火作业" />
+            <label>违章编号</label>
+            <input v-model="form.code" class="form-input" placeholder="留空自动生成（M 开头）" />
+          </div>
+          <div class="form-group">
+            <label>违章分类 *</label>
+            <input v-model="form.category" class="form-input" placeholder="如：直接作业安全" />
+          </div>
+          <div class="form-group">
+            <label>适用场所</label>
+            <input v-model="form.place" class="form-input" placeholder="如：陆上油气场站" />
+          </div>
+          <div class="form-group">
+            <label>细分环节</label>
+            <input v-model="form.sub_segment" class="form-input" placeholder="如：动火作业" />
+          </div>
+          <div class="form-group">
+            <label>检查对象</label>
+            <input v-model="form.inspect_object" class="form-input" placeholder="如：作业人员" />
+          </div>
+          <div class="form-group">
+            <label>扣分风险等级</label>
+            <input v-model="form.deduct_level" class="form-input" placeholder="如：扣2分/高风险" />
           </div>
           <div class="form-group full">
-            <label>标准依据 *</label>
+            <label>违章条款具体内容 *</label>
             <textarea v-model="form.standard_basis" class="form-input" rows="3" placeholder="违反的标准条款正文"></textarea>
           </div>
-          <div class="form-group">
-            <label>来源标准</label>
+          <div class="form-group full">
+            <label>检查依据</label>
             <input v-model="form.source" class="form-input" placeholder="如 GB 30871-2022" />
-          </div>
-          <div class="form-group">
-            <label>排序</label>
-            <input v-model.number="form.sort_order" class="form-input" type="number" />
           </div>
         </div>
         <div class="modal-actions">
@@ -161,31 +192,36 @@ async function loadList() {
 const showForm = ref(false)
 const editing = ref(null)
 const saving = ref(false)
-const form = reactive({ category: '', standard_basis: '', source: '', sort_order: 0 })
+const form = reactive({ code: '', category: '', place: '', sub_segment: '', inspect_object: '', standard_basis: '', source: '', deduct_level: '' })
 
 function openAdd() {
   editing.value = null
-  Object.assign(form, { category: '', standard_basis: '', source: '', sort_order: 0 })
+  Object.assign(form, { code: '', category: '', place: '', sub_segment: '', inspect_object: '', standard_basis: '', source: '', deduct_level: '' })
   showForm.value = true
 }
 function openEdit(item) {
   editing.value = item.id
   Object.assign(form, {
-    category: item.category,
-    standard_basis: item.standard_basis,
+    code: item.code || '',
+    category: item.category || '',
+    place: item.place || '',
+    sub_segment: item.sub_segment || '',
+    inspect_object: item.inspect_object || '',
+    standard_basis: item.standard_basis || '',
     source: item.source || '',
-    sort_order: item.sort_order || 0,
+    deduct_level: item.deduct_level || '',
   })
   showForm.value = true
 }
 async function handleSave() {
   saving.value = true
   try {
+    const payload = { ...form }
     if (editing.value) {
-      await updateStandardBasis(editing.value, { ...form })
+      await updateStandardBasis(editing.value, payload)
       showToast('已保存', 'success')
     } else {
-      await createStandardBasis({ ...form })
+      await createStandardBasis(payload)
       showToast('已新增', 'success')
     }
     showForm.value = false
@@ -197,7 +233,7 @@ async function handleSave() {
   }
 }
 async function removeItem(item) {
-  if (!confirm(`确认删除「${item.category}」的依据？`)) return
+  if (!confirm(`确认删除「${item.category}（${item.code}）」的依据？`)) return
   try {
     await deleteStandardBasis(item.id)
     showToast('已删除', 'success')
@@ -284,18 +320,20 @@ onMounted(loadList)
 </script>
 
 <style scoped>
-.users-page { max-width: 1080px; }
+.users-page { max-width: 1280px; }
 .toolbar { display: flex; align-items: center; gap: 12px; padding: 14px 18px; margin-bottom: 16px; flex-wrap: wrap; }
-.search-wrap { position: relative; flex: 1; min-width: 220px; }
+.search-wrap { position: relative; flex: 1; min-width: 240px; }
 .search-icon { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--c-text-2); }
 .search-input { width: 100%; padding: 9px 12px 9px 38px; border: 1px solid var(--c-border); border-radius: 10px; background: var(--c-bg); color: var(--c-text); }
 .toolbar-right { display: flex; align-items: center; gap: 8px; }
 .total-count { font-size: 13px; color: var(--c-text-2); white-space: nowrap; }
 .table-card { padding: 8px 0 16px; }
-.data-table { width: 100%; border-collapse: collapse; }
-.data-table th, .data-table td { padding: 12px 14px; text-align: left; border-bottom: 1px solid var(--c-border); font-size: 14px; }
-.data-table th { font-size: 12px; color: var(--c-text-2); font-weight: 600; background: var(--c-bg-soft); }
-.basis-cell { max-width: 420px; white-space: pre-wrap; word-break: break-word; line-height: 1.5; }
+.table-scroll { overflow-x: auto; }
+.data-table { width: 100%; border-collapse: collapse; min-width: 1100px; }
+.data-table th, .data-table td { padding: 12px 14px; text-align: left; border-bottom: 1px solid var(--c-border); font-size: 14px; vertical-align: top; }
+.data-table th { font-size: 12px; color: var(--c-text-2); font-weight: 600; background: var(--c-bg-soft); white-space: nowrap; }
+.basis-cell { max-width: 380px; white-space: pre-wrap; word-break: break-word; line-height: 1.5; }
+.op-cell { white-space: nowrap; }
 .mono { font-family: ui-monospace, monospace; }
 .empty-cell { text-align: center; color: var(--c-text-2); padding: 28px; }
 .action-link { background: none; border: none; color: var(--c-primary); cursor: pointer; font-size: 13px; margin-right: 10px; }

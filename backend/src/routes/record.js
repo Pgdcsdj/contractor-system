@@ -16,13 +16,24 @@ const { signRecord }         = require('../utils/hashHelper')
 
 const router = express.Router()
 
+// 本路由全部为管理端统计/导出接口，统一鉴权（此前 summary/incomplete/list/export 裸奔，
+// 未登录即可拉取全员姓名+手机，属数据泄露风险）
+router.use(adminAuth)
+
 // ─── JWT 鉴权中间件（与 admin.js 同款）─────────────────────────────────────────
 function adminAuth(req, res, next) {
   const authHeader = req.headers['authorization']
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+  let token = null
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    token = authHeader.slice(7)
+  } else if (req.query && req.query.token) {
+    // 兼容浏览器新窗口直链下载（window.open 无法携带 Authorization 头），
+    // 与 /api/data/backup-file 的 token 直链模式保持一致
+    token = String(req.query.token)
+  }
+  if (!token) {
     return res.status(401).json({ error: '未登录，请先登录管理员账号' })
   }
-  const token = authHeader.slice(7)
   const payload = verifyAdminToken(token)
   if (!payload) {
     return res.status(401).json({ error: '登录已过期，请重新登录' })
@@ -38,18 +49,19 @@ function sendError(res, status, message) {
 
 // ─── GET /api/record/list ───────────────────────────────────────────────────
 router.get('/list', async (req, res) => {
-  const { userId, materialId, unit, dateFrom, dateTo, page, pageSize } = req.query
+  // keyword/passed 必须透传（此前漏接导致页面"及格/不及格"筛选完全失效，export 路由早已补接）
+  const { userId, materialId, unit, dateFrom, dateTo, keyword, passed, page, pageSize } = req.query
 
-  const result = await queryRecords({ userId, materialId, unit, dateFrom, dateTo, page, pageSize })
+  const result = await queryRecords({ userId, materialId, unit, dateFrom, dateTo, keyword, passed, page, pageSize })
   res.json({ success: true, data: result })
 })
 
 // ─── GET /api/record/export ─────────────────────────────────────────────────
 router.get('/export', async (req, res) => {
-  const { userId, materialId, unit, dateFrom, dateTo } = req.query
+  const { userId, materialId, unit, dateFrom, dateTo, keyword, passed } = req.query
 
-  // 最多导出 5000 条（防内存溢出）
-  const result = await queryRecords({ userId, materialId, unit, dateFrom, dateTo, pageSize: 5000 })
+  // 与页面筛选完全同口径导出（含 keyword/passed）；allowLarge 放开 pageSize 钳制，最多 5000 条（防内存溢出）
+  const result = await queryRecords({ userId, materialId, unit, dateFrom, dateTo, keyword, passed, pageSize: 5000, allowLarge: true })
   const buffer = exportRecordsToExcel(result.list)
 
   const now      = new Date().toLocaleDateString('zh-CN').replace(/\//g, '')
@@ -63,7 +75,9 @@ router.get('/export', async (req, res) => {
 // ─── GET /api/record/summary ────────────────────────────────────────────────
 // Dashboard 看板数据：返回前端 stats 所需的全部字段
 router.get('/summary', async (req, res) => {
-  const today = new Date().toISOString().slice(0, 10)
+  // 日期口径统一走 DB 的 CURDATE()（DB 会话时区为北京时间）。
+  // 修复：原用 new Date().toISOString() 取 UTC 日期，北京 0:00~8:00 期间会算成"昨天"，
+  // 导致早班时段看板"今日完成/未完成"整体错位一天。
 
   // 系统总人数（活跃）
   const [[{ totalUsers }]] = await pool.execute(
@@ -83,15 +97,13 @@ router.get('/summary', async (req, res) => {
   // 今日已答人数（去重）
   const [[{ todayCompleted }]] = await pool.execute(
     `SELECT COUNT(DISTINCT user_id) AS todayCompleted
-     FROM t_record WHERE DATE(submitted_at) = ?`,
-    [today]
+     FROM t_record WHERE DATE(submitted_at) = CURDATE()`
   )
 
   // 今日通过人数（score >= 60 视为通过）
   const [[{ todayPassed }]] = await pool.execute(
     `SELECT COUNT(DISTINCT user_id) AS todayPassed
-     FROM t_record WHERE DATE(submitted_at) = ? AND score >= 60`,
-    [today]
+     FROM t_record WHERE DATE(submitted_at) = CURDATE() AND score >= 60`
   )
 
   // 今日应答总人数（有今日活跃培训的人员，简化为系统总人数）
@@ -139,22 +151,41 @@ router.get('/incomplete', async (req, res) => {
       [materialId]
     )
   } else {
-    // 不指定：查今日未答任何题的活跃用户
-    const today = new Date().toISOString().slice(0, 10)
+    // 不指定：查今日未答任何题的活跃用户（CURDATE() = DB 北京日期）
     ;[rows] = await pool.execute(
       `SELECT u.id, u.name, u.unit, u.phone
        FROM t_user u
        WHERE u.status = 1
          AND NOT EXISTS (
            SELECT 1 FROM t_record r
-           WHERE r.user_id = u.id AND DATE(r.submitted_at) = ?
+           WHERE r.user_id = u.id AND DATE(r.submitted_at) = CURDATE()
          )
-       ORDER BY u.unit, u.name`,
-      [today]
+       ORDER BY u.unit, u.name`
     )
   }
 
   res.json({ success: true, data: { total: rows.length, list: rows } })
+})
+
+// ─── GET /api/record/completed ──────────────────────────────────────────────
+// 今日已答题人员列表（Dashboard 展示用）：按人汇总答题次数与最近提交时间
+router.get('/completed', async (req, res) => {
+  try {
+    const [rows] = await pool.execute(
+      `SELECT u.id, u.name, u.unit, u.phone,
+              COUNT(*) AS record_count,
+              MAX(r.submitted_at) AS last_submit
+         FROM t_record r
+         JOIN t_user u ON u.id = r.user_id
+        WHERE DATE(r.submitted_at) = CURDATE()
+        GROUP BY u.id, u.name, u.unit, u.phone
+        ORDER BY last_submit DESC`
+    )
+    res.json({ success: true, data: { total: rows.length, list: rows } })
+  } catch (err) {
+    console.error('[record completed]', err.message)
+    res.status(500).json({ success: false, error: '查询失败：' + err.message })
+  }
 })
 
 // ─── GET /api/record/:id ─────────────────────────────────────────────────────
@@ -329,6 +360,91 @@ router.patch('/:id/essay-grade', adminAuth, async (req, res) => {
   } catch (err) {
     sendError(res, 500, '服务器内部错误')
     console.error('[record.essay-grade]', err)
+  }
+})
+
+// ─── GET /api/record/:id/detail ───────────────────────────────────────────
+// 答题逐题明细：管理员点击成绩后查看具体作答情况（题干/选项/用户答案/正确答案/配图/解析/对错/分值）
+// 以用户实际作答顺序(answers 快照)为准，从题库补全 options/image_url/answer/analysis，组装成可直接渲染的明细数组
+// ⚠️ 注册在静态路由(export/summary/completed)之后、/:id 之后均可——Express 按路径段数区分，/123/detail 不会被 /:id 吞
+router.get('/:id/detail', adminAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id)
+    if (!Number.isInteger(id) || id <= 0) return sendError(res, 400, '记录ID不合法')
+
+    const rec = await getRecordById(id)
+    if (!rec) return sendError(res, 404, '答题记录不存在')
+
+    // answers 快照（提交时存档：{questionId, answer, isCorrect, score, analysis}）
+    let answers = rec.answers
+    if (typeof answers === 'string') {
+      try { answers = JSON.parse(answers) } catch { answers = [] }
+    }
+    if (!Array.isArray(answers)) answers = []
+
+    // 该题库全部启用题目（含选项/配图/正确答案/解析），用于匹配补全展示信息
+    const [questions] = await pool.query(
+      `SELECT id, type, question, options, answer, analysis, score, image_url, sort_order
+       FROM t_question WHERE material_id = ? AND status = 1`,
+      [rec.material_id]
+    )
+    const qMap = new Map(questions.map(q => [Number(q.id), q]))
+
+    // 合并明细：顺序 = 用户实际作答顺序（exam 即为本次卷面；study/practice 为全量）
+    const detail = answers.map((a, idx) => {
+      const q = qMap.get(Number(a.questionId)) || {}
+      let options = null
+      if (q.options) {
+        try { options = typeof q.options === 'string' ? JSON.parse(q.options) : q.options } catch { options = null }
+      }
+      return {
+        index: idx + 1,
+        questionId: Number(a.questionId),
+        type: q.type || '',
+        question: q.question || '',
+        imageUrl: q.image_url || null,
+        options,                                       // {A:'..',B:'..'} 或 null（判断题）
+        userAnswer: a.answer == null ? '' : String(a.answer),
+        correctAnswer: q.answer == null ? '' : String(q.answer),
+        isCorrect: !!a.isCorrect,
+        score: Number(a.score) || 0,
+        maxScore: Number(q.score) || 0,
+        analysis: q.analysis || a.analysis || '',
+        comment: a.comment || null,                   // 人工批改评语（essay 题）
+      }
+    })
+
+    const maxScore = Number(rec.max_score) || 0
+    const passed = maxScore > 0 && Math.round(Number(rec.score) / maxScore * 100) >= Number(rec.pass_score || 0)
+
+    res.json({
+      success: true,
+      data: {
+        record: {
+          id: rec.id,
+          userName: rec.user_name,
+          unit: rec.unit,
+          supervisingUnit: rec.supervising_unit,
+          materialId: rec.material_id,
+          materialTitle: rec.material_title,
+          score: Number(rec.score),
+          maxScore,
+          passScore: Number(rec.pass_score || 0),
+          passed,
+          durationSec: rec.duration_sec,
+          submittedAt: rec.submitted_at,
+          mode: rec.mode,
+          isOffline: rec.is_offline,
+          essayGraded: rec.essay_graded || 0,
+        },
+        totalCorrect: detail.filter(d => d.isCorrect).length,
+        totalCount: detail.length,
+        detail,
+      },
+    })
+  } catch (err) {
+    sendError(res, 500, '服务器内部错误')
+    console.error('[record.detail]', err)
   }
 })
 

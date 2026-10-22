@@ -89,9 +89,11 @@ async function hasCompleted(userId, materialId) {
 /**
  * 管理员查询答题记录列表
  * 支持筛选：userId / materialId / unit / dateFrom / dateTo / keyword(姓名或手机) / passed(0|1)
+ * allowLarge: 导出场景专用——放开 100 条钳制（上限 5000）；普通列表一律钳 100，防滥用
  */
-async function queryRecords({ userId, materialId, unit, dateFrom, dateTo, keyword, passed, page = 1, pageSize = 20 }) {
-  const safePageSize = Math.min(100, Math.max(1, Number(pageSize) || 20))
+async function queryRecords({ userId, materialId, unit, dateFrom, dateTo, keyword, passed, page = 1, pageSize = 20, allowLarge = false }) {
+  const cap = allowLarge ? 5000 : 100
+  const safePageSize = Math.min(cap, Math.max(1, Number(pageSize) || 20))
   const safeOffset   = (Math.max(1, Number(page) || 1) - 1) * safePageSize
   let where = 'WHERE 1=1'
   const params = []

@@ -23,10 +23,16 @@ const router = express.Router()
 // ─── JWT 鉴权中间件 ───────────────────────────────────────────────────────────
 function adminAuth(req, res, next) {
   const authHeader = req.headers['authorization']
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+  let token = null
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    token = authHeader.slice(7)
+  } else if (req.query && req.query.token) {
+    // 兼容 <a href> / window.open 直链下载题库 Excel（浏览器直链无法带 Authorization 头）
+    token = String(req.query.token)
+  }
+  if (!token) {
     return res.status(401).json({ error: '未登录，请先登录管理员账号' })
   }
-  const token = authHeader.slice(7)
   const payload = verifyAdminToken(token)
   if (!payload) return res.status(401).json({ error: '登录已过期' })
   req.admin = payload

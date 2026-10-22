@@ -294,31 +294,28 @@ const loadingUsers = ref(false)
 const searchTimer = ref(null)
 
 const filteredUsers = computed(() => {
-  const kw = userSearch.value.trim().toLowerCase()
-  if (!kw) return allUsers.value
-  return allUsers.value.filter(u =>
-    (u.name || '').toLowerCase().includes(kw) ||
-    (u.unit || '').toLowerCase().includes(kw) ||
-    (u.id_card || '').toLowerCase().includes(kw)
-  )
+  // 后端已按 keyword 过滤返回结果，直接展示
+  return allUsers.value
 })
 
 function onTargetTypeChange() {
   publishForm.value.target_value = []
   userSearch.value = ''
-  if (publishForm.value.target_type === 'specific') loadAllUsers()
+  if (publishForm.value.target_type === 'specific') loadAllUsers('')
 }
 
 function filterUsers() {
   clearTimeout(searchTimer.value)
-  searchTimer.value = setTimeout(() => {}, 150)
+  // 把搜索词发给后端，跨全库检索（不再只筛本地前100条）
+  searchTimer.value = setTimeout(() => {
+    loadAllUsers(userSearch.value.trim())
+  }, 250)
 }
 
-async function loadAllUsers() {
-  if (allUsers.value.length > 0) return
+async function loadAllUsers(keyword = '') {
   loadingUsers.value = true
   try {
-    const res = await request.get('/api/admin/users', { params: { pageSize: 100 } })
+    const res = await request.get('/api/admin/users', { params: { pageSize: 200, keyword } })
     allUsers.value = res.data?.data?.list || []
   } catch (e) {
     console.error('[loadAllUsers]', e)

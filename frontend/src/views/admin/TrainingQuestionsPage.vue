@@ -23,7 +23,7 @@
           <button class="btn btn-outline" @click="$router.push(`/admin/trainings/${material.id}/import`)">
             📥 导入题目
           </button>
-          <a :href="`/api/admin/quiz-import/export/${material.id}`" class="btn btn-outline" target="_blank">
+          <a :href="exportUrl" class="btn btn-outline" target="_blank">
             📤 导出题目
           </a>
           <button class="btn btn-outline" @click="retryAi" v-if="material.ai_status === 3">
@@ -136,6 +136,13 @@ const material = ref({})
 const questions = ref([])
 const loading = ref(true)
 
+// 导出题目走浏览器直链（<a target="_blank">），无法携带 Authorization 头，
+// 故 token 通过 query 传递（后端 adminAuth 已兼容 query.token）
+const exportUrl = computed(() => {
+  const token = encodeURIComponent(localStorage.getItem('tnb_admin_token') || '')
+  return `/api/admin/quiz-import/export/${material.value.id || ''}?token=${token}`
+})
+
 const typeMap = { single: '单选题', multiple: '多选题', judgment: '判断题', essay: '简答题' }
 const aiStatusMap = {
   0: { label: '未触发', cls: 'badge-muted' },
@@ -170,35 +177,30 @@ const searchTimer = ref(null)
 const publishForm = ref({ category_id: null, target_type: 'all', target_value: [] })
 
 const filteredUsers = computed(() => {
-  const kw = userSearch.value.trim().toLowerCase()
-  if (!kw) return allUsers.value
-  return allUsers.value.filter(u =>
-    (u.name || '').toLowerCase().includes(kw) ||
-    (u.unit || '').toLowerCase().includes(kw) ||
-    (u.id_card || '').toLowerCase().includes(kw)
-  )
+  // 后端已按 keyword 过滤返回结果，直接展示
+  return allUsers.value
 })
 
 function onTargetTypeChange() {
   publishForm.value.target_value = []
   userSearch.value = ''
   if (publishForm.value.target_type === 'specific') {
-    loadAllUsers()
+    loadAllUsers('')
   }
 }
 
 function filterUsers() {
   clearTimeout(searchTimer.value)
+  // 把搜索词发给后端，跨全库检索（不再只筛本地前100条）
   searchTimer.value = setTimeout(() => {
-    // 本地过滤，无需后端请求
-  }, 150)
+    loadAllUsers(userSearch.value.trim())
+  }, 250)
 }
 
-async function loadAllUsers() {
-  if (allUsers.value.length > 0) return
+async function loadAllUsers(keyword = '') {
   loadingUsers.value = true
   try {
-    const res = await request.get('/api/admin/users', { params: { pageSize: 100 } })
+    const res = await request.get('/api/admin/users', { params: { pageSize: 200, keyword } })
     allUsers.value = res.data?.data?.list || []
   } catch (e) {
     console.error('[loadAllUsers]', e)

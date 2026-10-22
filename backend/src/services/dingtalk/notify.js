@@ -21,6 +21,7 @@
 const { pool } = require('../../db/db')
 const { sendGroupRobot } = require('./groupRobot')
 const schedulerConfig = require('../schedulerConfig')
+const { loadNotifyConfig, EVENT_TO_KEY } = require('../notifyConfig')
 
 // ─── 内部 helper：合并多个手机号数组，扁平化 + trim + 去空 + 去重 ────────────────
 /**
@@ -264,16 +265,35 @@ async function logNotify({ event, receiver, content, status, errmsg }) {
  * @returns {Promise<{ok:boolean}>}
  */
 async function sendHazardNotification(event, payload = {}) {
+  // ── 总开关 / 事件开关拦截（钉钉通知设置）──
+  const cfg = loadNotifyConfig()
+  if (!cfg.enabled) {
+    console.log(`[notify] 钉钉通知总开关关闭，跳过 ${event}`)
+    return { ok: true, skipped: true, reason: 'disabled' }
+  }
+  const evKey = EVENT_TO_KEY[event]
+  if (evKey && !cfg.events[evKey]) {
+    console.log(`[notify] 事件开关关闭，跳过 ${event}`)
+    return { ok: true, skipped: true, reason: 'event_disabled' }
+  }
+
+  // ── @范围过滤（仅对含分类字段的事件生效；overdue/weekly_excel 由调用方组装时过滤）──
+  const inP = { ...payload }
+  const scope = cfg.at_scope || { owner: true, party_a: true, safety_office: true }
+  if (!scope.owner && 'ownerMobile' in inP) inP.ownerMobile = ''
+  if (!scope.party_a && 'partyAMobiles' in inP) inP.partyAMobiles = []
+  if (!scope.safety_office && 'safetyOfficeMobiles' in inP) inP.safetyOfficeMobiles = []
+
   let msg
   switch (event) {
-    case 'REPORT':  msg = buildReportMsg(payload);  break
-    case 'ASSIGN':  msg = buildAssignMsg(payload);  break
-    case 'VERIFY':  msg = buildVerifyMsg(payload);  break
-    case 'OVERDUE': msg = buildOverdueMsg(payload); break
-    case 'OVERDUE_DIGEST': msg = buildOverdueDigestMsg(payload); break
-    case 'WEEKLY':  msg = buildWeeklyMsg(payload);  break
-    case 'DIGEST':  msg = buildDailyDigestMsg(payload);  break
-    case 'WEEKLY_EXCEL': msg = buildWeeklyExcelMsg(payload); break
+    case 'REPORT':  msg = buildReportMsg(inP);  break
+    case 'ASSIGN':  msg = buildAssignMsg(inP);  break
+    case 'VERIFY':  msg = buildVerifyMsg(inP);  break
+    case 'OVERDUE': msg = buildOverdueMsg(inP); break
+    case 'OVERDUE_DIGEST': msg = buildOverdueDigestMsg(inP); break
+    case 'WEEKLY':  msg = buildWeeklyMsg(inP);  break
+    case 'DIGEST':  msg = buildDailyDigestMsg(inP);  break
+    case 'WEEKLY_EXCEL': msg = buildWeeklyExcelMsg(inP); break
     default: throw new Error('未知事件类型: ' + event)
   }
 

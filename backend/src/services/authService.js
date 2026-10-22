@@ -75,7 +75,14 @@ async function loginByManual(name, last4) {
     [name.trim(), inputLast4.slice(0, 3)]
   )
 
-  if (!rows.length)          throw new Error('姓名或身份证后四位不正确')
+  if (!rows.length) {
+    // 结构化未找到错误：供 manual-login 路由返回 404 USER_NOT_FOUND，
+    // 前端据此自动切换到「补全信息」注册流程（姓名+后4位不匹配即判定为库里没有该名员工）
+    const e = new Error('姓名或身份证后四位不正确')
+    e.code = 'USER_NOT_FOUND'
+    e.payload = { name: name.trim(), inputLast4 }
+    throw e
+  }
   if (rows[0].status === 0)  throw new Error('账号已被禁用，请联系管理员')
 
   const user = rows[0]

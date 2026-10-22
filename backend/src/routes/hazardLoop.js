@@ -22,6 +22,7 @@ const { pool } = require('../db/db')
 const { verifyAdminToken } = require('../services/adminAuth')
 const { generateHazardCode } = require('../services/hazardCode')
 const { sendHazardNotification } = require('../services/dingtalk/notify')
+const { loadNotifyConfig, EVENT_TO_KEY } = require('../services/notifyConfig')
 const schedulerConfig = require('../services/schedulerConfig')
 const { STATUS, LEVELS } = require('../constants/hazardStates')
 const { applyRecorderScope, resolveRecorderContext } = require('../services/permission')
@@ -79,12 +80,15 @@ const HAZARD_COLUMNS = [
 const OVERDUE_EXPR = `CASE WHEN status <> 'closed' AND plan_finish_time IS NOT NULL AND plan_finish_time < NOW() THEN 1 ELSE 0 END`
 
 // ─── 钉钉通知 fire-and-forget ────────────────────────────────────────────────
-// 模块三：只保留「超期」通知（自动超期扫描 OVERDUE_DIGEST / 手动超期走 L628 直调 sendHazardNotification）。
-// 上报(REPORT)/分派(ASSIGN)/验收(VERIFY) 即时通知一律在白名单外静默跳过（不打日志）。
-const NOTIFY_EVENTS = ['OVERDUE', 'OVERDUE_DIGEST']
-
+// 事件开关统一收口到「钉钉通知设置」配置（t_system_config.dingtalk_notify_config）：
+//   - 总开关 enabled=false → 全部静默跳过
+//   - 各事件开关（events.report/assign/verify/overdue/...）关闭 → 对应事件静默跳过
+//   - 手动超期通知（L628）不经此处，保留直接发送（仍受总开关/事件开关拦截于 sendHazardNotification 内）
 async function fireNotify(event, payload) {
-  if (!NOTIFY_EVENTS.includes(event)) return // 白名单外静默跳过
+  const cfg = loadNotifyConfig()
+  if (!cfg.enabled) return
+  const key = EVENT_TO_KEY[event]
+  if (!key || !cfg.events[key]) return
   try {
     await sendHazardNotification(event, payload)
   } catch (e) {

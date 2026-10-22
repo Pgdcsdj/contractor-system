@@ -10,7 +10,7 @@
  * 设计要点：
  *  - 所有 handler 均包 try/catch，未捕获异常会导致 Node 进程崩溃（历史上 502 的根因之一）。
  *  - GET /:materialId 不再笼统 404，按「不存在 / 未发布 / 无启用题目」返回结构化错误码。
- *  - 不再引用 t_question.image_url（线上表无此列，引用即崩溃），统一置 imageUrl=null。
+ *  - t_question.image_url 列由 autoMigrate 幂等增补（见 server.js questionQualityCols），无图时 imageUrl 仍为 null。
  */
 
 const express = require('express')
@@ -533,7 +533,7 @@ router.get('/:materialId/result', authMiddleware, async (req, res) => {
     const scoreOf = (q) => (mode === QUIZ_MODES.EXAM && scoreCfg[q.type] > 0 ? scoreCfg[q.type] : q.score)
 
     const [questions] = await pool.execute(
-      `SELECT id, type, question, options, answer, analysis, score, sort_order
+      `SELECT id, type, question, options, answer, analysis, score, sort_order, image_url
        FROM t_question
        WHERE material_id = ? AND status = 1
        ORDER BY sort_order ASC`,
@@ -565,7 +565,7 @@ router.get('/:materialId/result', authMiddleware, async (req, res) => {
         id:           q.id,
         type:         q.type,
         question:     q.question,
-        imageUrl:     null,
+        imageUrl:     q.image_url || null,
         options:      parseOptions(q.options),
         correctAnswer: q.answer,
         userAnswer:   userAns.answer ?? null,
@@ -632,7 +632,7 @@ router.get('/:materialId', authMiddleware, async (req, res) => {
 
     // 3) 启用题目（status = 1）
     const [questions] = await pool.execute(
-      `SELECT id, type, question, options, answer, analysis, score, sort_order
+      `SELECT id, type, question, options, answer, analysis, score, sort_order, image_url
        FROM t_question
        WHERE material_id = ? AND status = 1
        ORDER BY sort_order ASC`,
@@ -695,7 +695,7 @@ router.get('/:materialId', authMiddleware, async (req, res) => {
         id:        q.id,
         type:      q.type,
         question:  q.question,
-        imageUrl:  null, // 线上 t_question 无 image_url 列，统一置 null
+        imageUrl:  q.image_url || null, // 题目配图（现场违章照等），无图则 null
         options:   parseOptions(q.options),
         score:     q.score,
         sortOrder: q.sort_order,
@@ -742,6 +742,7 @@ router.post('/:materialId/submit', authMiddleware, async (req, res) => {
       answers,
       durationSec = 0,
       isOffline = false,
+      questionIds = null, // 考试卷面题序（前端下发题目列表），用于未答题计 0 分的满分口径
     } = req.body
 
     if (!Array.isArray(answers) || !answers.length) {
@@ -750,6 +751,7 @@ router.post('/:materialId/submit', authMiddleware, async (req, res) => {
 
     const [[material]] = await pool.execute(
       `SELECT id, pass_score, ai_grading, attempt_limit, mode,
+              exam_single_num, exam_multiple_num, exam_judgment_num,
               exam_single_score, exam_multiple_score, exam_judgment_score
        FROM t_material WHERE id = ?`,
       [materialId]
@@ -787,13 +789,26 @@ router.post('/:materialId/submit', authMiddleware, async (req, res) => {
     const qMap = {}
     questions.forEach(q => { qMap[q.id] = q })
 
+    // ── 卷面防混题（修复 2026-10-20：满分出现 141/170/110 等 >100 的异常值）──
+    // 根因：考试随机抽题，学员中途退出后再次进入会重新抽一套新卷；
+    // 断点续答把旧卷的作答恢复进来一并提交，而判分题池用的是「题库全量」，
+    // 旧卷题照样命中计分 → 满分 = 旧卷已答分 + 新卷未答分，虚增超过卷面总分。
+    // 修复：exam 模式且前端携带卷面题序时，判分严格限定本次卷面，
+    // answers 中不属于本次卷面的题一律丢弃（不计分、不判对错、不进错题本）。
+    const paperSet = (mode === QUIZ_MODES.EXAM && Array.isArray(questionIds) && questionIds.length)
+      ? new Set(questionIds)
+      : null
+
     let totalScore = 0
     let maxScore = 0
     const graded = []
+    const answeredIds = new Set()
 
     for (const qa of answers) {
       const q = qMap[qa.questionId]
       if (!q) continue
+      if (paperSet && !paperSet.has(qa.questionId)) continue // 卷外题（断点续答残留的旧卷作答）不参与判分
+      answeredIds.add(q.id)
 
       maxScore += scoreOf(q)
       let isCorrect = false
@@ -842,6 +857,76 @@ router.post('/:materialId/submit', authMiddleware, async (req, res) => {
       graded.push(item)
     }
 
+    // ── 考试满分口径：按实际下发卷面计满分，未作答视为 0 分 ──
+    // 修复：原逻辑 maxScore 只累计「已提交的题目」，答 6 题对 5 题 = 83.3% 即判通过。
+    // 现以卷面（questionIds 命中的题）为准：未答 = 0 分 = 错题，须答完整卷才可能通过。
+    // 未携带 questionIds 时（旧版前端缓存 / 离线补传）：
+    //   ① 有按题型抽题配置 → 按配置模拟卷面满分（与 GET /:materialId 抽题口径一致：0=该题型全抽），
+    //      杜绝「全量题库 351 题按配置分求和 = 455」这类满分虚高（2026-10-22 线上案例）；
+    //   ② 配置全 0（考试默认全量下发）→ 回退题库全量。
+    // 学习/练习保持原口径：按已答题目计算正确率。
+    if (mode === QUIZ_MODES.EXAM) {
+      if (paperSet) {
+        // paperSet 基于 Set 构建，天然去重（防 questionIds 重复导致满分虚增）
+        const paperIds = [...paperSet]
+        for (const qid of paperIds) {
+          const q = qMap[qid]
+          if (!q || answeredIds.has(qid)) continue
+          maxScore += scoreOf(q)
+          graded.push({
+            questionId: q.id,
+            answer:     null,
+            isCorrect:  false,
+            score:      0,
+            analysis:   q.analysis,
+            unanswered: true, // 未作答：不计入错题本
+          })
+        }
+      } else {
+        const cfgN = {
+          single:   Number(material.exam_single_num)   || 0,
+          multiple: Number(material.exam_multiple_num) || 0,
+          judgment: Number(material.exam_judgment_num) || 0,
+        }
+        if (cfgN.single || cfgN.multiple || cfgN.judgment) {
+          // 按抽题配置模拟卷面满分（卷面题序未知，不补 unanswered 明细，仅修正满分）
+          const byType = { single: [], multiple: [], judgment: [] }
+          for (const q of questions) {
+            if (byType[q.type]) byType[q.type].push(q)
+          }
+          let paperMax = 0
+          for (const t of ['single', 'multiple', 'judgment']) {
+            const bucket = byType[t] || []
+            const n = cfgN[t] > 0 ? Math.min(cfgN[t], bucket.length) : bucket.length
+            if (!n) continue
+            if (scoreCfg[t] > 0) {
+              paperMax += n * scoreCfg[t]
+            } else {
+              // 未配置题型分值：按该题型题库平均分估算
+              const avg = bucket.reduce((s, q) => s + (Number(q.score) || 0), 0) / bucket.length
+              paperMax += Math.round(avg * n)
+            }
+          }
+          maxScore = Math.max(maxScore, paperMax)
+        } else {
+          for (const q of questions) {
+            if (answeredIds.has(q.id)) continue
+            maxScore += scoreOf(q)
+            graded.push({
+              questionId: q.id,
+              answer:     null,
+              isCorrect:  false,
+              score:      0,
+              analysis:   q.analysis,
+              unanswered: true,
+            })
+          }
+        }
+      }
+      // 卷面满分即得分上限：兜底场景下旧卷残答可能把得分顶过满分，掐头防 >100%
+      if (totalScore > maxScore) totalScore = maxScore
+    }
+
     // ── 错题本写入：答错 upsert（累计 +1），答对移出（视为已掌握）──
     // 批量处理：避免「逐题 await pool.execute」导致大题量（上千题）时提交耗时
     // 随题量线性增长（N+1 查询），手机端极易顶破前端 15s 超时 → 误入离线队列 → 错题不落库。
@@ -849,6 +934,7 @@ router.post('/:materialId/submit', authMiddleware, async (req, res) => {
     const correctQids = []
     const wrongRows = []
     for (const item of graded) {
+      if (item.unanswered) continue // 未作答不计入错题本
       if (item.isCorrect) {
         correctQids.push(item.questionId)
       } else {

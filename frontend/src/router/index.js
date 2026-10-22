@@ -162,6 +162,11 @@ const routes = [
         component: () => import('@/views/admin/HazardSettingsPage.vue'),
       },
       {
+        path: 'dingtalk-notify',
+        name: 'DingtalkNotifyConfig',
+        component: () => import('@/views/admin/DingtalkNotifyConfigPage.vue'),
+      },
+      {
         path: 'accounts',
         name: 'AccountManage',
         component: () => import('@/views/admin/AccountManagePage.vue'),

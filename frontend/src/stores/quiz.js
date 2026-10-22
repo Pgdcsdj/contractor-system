@@ -159,6 +159,8 @@ export const useQuizStore = defineStore('quiz', () => {
         questionId: Number(qid),
         answer: serializeAnswer(ans),
       })),
+      // 本次卷面完整题序（考试模式后端据此把未答题计 0 分再算通过率，防止只答几题即"通过"）
+      questionIds: (currentQuiz.value?.questions || []).map(q => q.id),
     }
     try {
       const isWrong = trainingId === 'wrong'

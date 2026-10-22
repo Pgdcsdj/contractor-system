@@ -52,20 +52,43 @@ router.post('/manual-login', async (req, res) => {
     const result = await loginByManual(name, last4)
     res.json({ success: true, ...result })
   } catch (err) {
+    // 姓名+后4位不匹配且确属库里没有该名员工 → 返回 404 结构化，前端自动弹补全注册
+    if (err.code === 'USER_NOT_FOUND') {
+      return res.status(404).json({
+        error: err.message,
+        code: 'USER_NOT_FOUND',
+        name: err.payload?.name,
+        last4: err.payload?.inputLast4,
+      })
+    }
     res.status(401).json({ error: err.message })
   }
 })
 
 // ─── POST /api/auth/register ──────────────────────────────────────────────────
-// 临时注册：未录入系统的人员自助注册
+// 自助注册：未录入系统的人员补全信息注册（支持登录失败自动跳转的补全流程）
+// 接受字段：name, id_card(完整18位), unit, supervising_unit, phone, position,
+//          contractor_unit_id, last4(登录时填写的身份证后4位，用于校验防伪造，可选)
 router.post('/register', async (req, res) => {
-  const { name, id_card, unit, supervising_unit = '', phone = '' } = req.body
+  const {
+    name, id_card, unit, supervising_unit = '', phone = '',
+    position = '', contractor_unit_id = null, last4 = '',
+  } = req.body
 
   if (!name || !name.trim())   return res.status(400).json({ error: '请输入姓名' })
   if (!id_card || !id_card.trim()) return res.status(400).json({ error: '请输入身份证号' })
 
   const trimmedName = name.trim()
-  const trimmedId   = id_card.trim()
+  const trimmedId   = id_card.trim().toUpperCase()
+
+  // 校验完整身份证末4位 ≡ 登录时后4位（末位X→0），仅当传了 last4 时校验，防伪造补全
+  if (last4) {
+    const norm = String(last4).toUpperCase().replace(/X$/, '0')
+    const cardLast4 = trimmedId.slice(-4).replace(/X$/, '0')
+    if (cardLast4 !== norm) {
+      return res.status(400).json({ error: '身份证号末四位与登录填写不一致' })
+    }
+  }
 
   // 检查是否已注册
   const [existing] = await pool.execute(
@@ -74,7 +97,7 @@ router.post('/register', async (req, res) => {
   )
 
   if (existing.length > 0) {
-    // 已存在 → 返回提示
+    // 已存在 → 直接登录（含库里已有但信息不全的老用户，无需重复建号）
     const user = existing[0]
     if (user.status === 0) return res.status(403).json({ error: '账号已被禁用，请联系管理员' })
     const token = signToken(user)
@@ -91,10 +114,12 @@ router.post('/register', async (req, res) => {
   const crypto = require('crypto')
   const qrToken = crypto.createHash('sha256').update(trimmedId).digest('hex').slice(0, 16)
 
+  const cid = contractor_unit_id != null ? Number(contractor_unit_id) : null
+
   const [result] = await pool.execute(
-    `INSERT INTO t_user (name, id_card, unit, supervising_unit, phone, qr_token, status)
-     VALUES (?, ?, ?, ?, ?, ?, 1)`,
-    [trimmedName, trimmedId, unit || '', supervising_unit, phone, qrToken]
+    `INSERT INTO t_user (name, id_card, unit, supervising_unit, phone, position, contractor_unit_id, qr_token, status, self_registered)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1)`,
+    [trimmedName, trimmedId, unit || '', supervising_unit, phone || '', position || '', cid, qrToken]
   )
 
   const token = signToken({ id: result.insertId, name: trimmedName, unit: unit || '' })

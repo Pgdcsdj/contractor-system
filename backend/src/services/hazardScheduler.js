@@ -20,6 +20,7 @@ const { sendHazardNotification, mergeMobiles } = require('./dingtalk/notify')
 const { sendWeeklyUnclosedToDingtalk } = require('./unclosedHazardReport')
 const { chooseEscalationTarget, OVERDUE_ESCALATE_OFFICE_DAYS } = require('../constants/hazardStates')
 const schedulerConfig = require('./schedulerConfig')
+const notifyConfig = require('./notifyConfig')
 
 // 周报去重：已发送的周 key（内存，进程内单实例足够）
 let lastWeeklyKey = ''
@@ -65,6 +66,7 @@ async function scanOverdueHazards(pool) {
   // 注：schedulerConfig.safetyOfficeMobile 是「未拆分的整串」（env DINGTALK_SAFETY_OFFICE_MOBILE 原值），
   //     不可直接当单个手机号使用（会注入非法 mobile）。安全环保室联系人应使用已拆好的数组 safetyOfficeMobiles。
   //     改造 2（周报）同样使用 safetyOfficeMobiles，这里保持一致。
+  const cfg = notifyConfig.loadNotifyConfig()
   const officeMobiles = schedulerConfig.safetyOfficeMobiles || []
   const units = await loadUnitOfficers(pool)
 
@@ -77,7 +79,8 @@ async function scanOverdueHazards(pool) {
       WHERE h.status <> 'closed'
         AND h.plan_finish_time IS NOT NULL
         AND h.plan_finish_time < NOW()
-        AND (h.last_overdue_notify_at IS NULL OR DATE(h.last_overdue_notify_at) < CURDATE())`
+        AND (h.last_overdue_notify_at IS NULL OR DATE(h.last_overdue_notify_at) <= DATE_SUB(CURDATE(), INTERVAL ? DAY))`,
+    [cfg.frequency.overdue_interval_days]
   )
 
   // 按「整改责任人(responsible_person)」分组：同一责任人的多条超期隐患合并成一条提醒，只 @ 一次。
@@ -131,7 +134,10 @@ async function scanOverdueHazards(pool) {
 
     // 升级语义保留：组内存在超期 > OVERDUE_ESCALATE_OFFICE_DAYS 天的隐患时，额外 @ 安全环保室全部联系人（拆分数组，非整串）。
     const escalateToOffice = maxOverdueDays > OVERDUE_ESCALATE_OFFICE_DAYS && officeMobiles.length > 0
-    const atMobiles = mergeMobiles(ownerMobile, escalateToOffice ? officeMobiles : [])
+    const atMobiles = mergeMobiles(
+      cfg.at_scope.owner ? ownerMobile : '',
+      (escalateToOffice && cfg.at_scope.safety_office) ? officeMobiles : []
+    )
 
     // 先落库（每日幂等护栏：同自然日不重复通知），再 fire-and-forget 通知（失败仅记录）。
     const ids = group.map((h) => h.id)
@@ -356,7 +362,8 @@ async function checkDailyDigest(pool) {
 async function checkWeeklyReport(pool) {
   const now = new Date()
   const cfg = schedulerConfig
-  const isTargetDay = now.getDay() === cfg.weeklyDay
+  // weeklyDay 用 1=周一…7=周日；getDay() 0=周日…6=周六，转换（7→0）
+  const isTargetDay = now.getDay() === (cfg.weeklyDay % 7)
   const isTargetHour = now.getHours() === cfg.weeklyHour
   const withinWindow = now.getMinutes() >= cfg.weeklyMin && now.getMinutes() < cfg.weeklyMin + 10
   if (!(isTargetDay && isTargetHour && withinWindow)) return false
@@ -390,8 +397,10 @@ async function sendWeeklyExcel(pool) {
 
 /** 未整改隐患周报窗口判定：每周三 01:00 - 01:09（纯函数，便于测试） */
 function isWeeklyExcelWindow(now) {
-  const isTargetDay = now.getDay() === 3 // 3 = 周三
-  const isTargetHour = now.getHours() === 1
+  const cfg = notifyConfig.loadNotifyConfig()
+  // 配置 weekly_excel_day 用 1=周一…7=周日；getDay() 用 0=周日…6=周六，需转换（7→0）
+  const isTargetDay = now.getDay() === (cfg.frequency.weekly_excel_day % 7)
+  const isTargetHour = now.getHours() === cfg.frequency.weekly_excel_hour
   const withinWindow = now.getMinutes() >= 0 && now.getMinutes() < 10
   return isTargetDay && isTargetHour && withinWindow
 }
@@ -437,7 +446,7 @@ function startSchedulers(pool) {
     `周报(每周${cfg.weeklyDay} ${hh}:${mm})与每日摘要(17:00)已按模块三停用`
   )
 
-  const scanMs = Math.max(1, cfg.scanIntervalMin) * 60 * 1000
+  const scanMs = Math.max(1, notifyConfig.loadNotifyConfig().frequency.scan_interval_min) * 60 * 1000
   setInterval(() => {
     scanOverdueHazards(pool).catch((e) => console.error('[scheduler] 超期扫描异常', e.message))
   }, scanMs)

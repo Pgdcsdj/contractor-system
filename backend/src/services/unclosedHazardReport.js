@@ -16,6 +16,7 @@ const xlsx = require('xlsx')
 const { uploadFile } = require('./cosUpload')
 const { sendHazardNotification } = require('./dingtalk/notify')
 const schedulerConfig = require('./schedulerConfig')
+const { loadNotifyConfig } = require('./notifyConfig')
 
 /** 隐患状态 → 中文（模块三约定：reported=待分派，verifying=验收中；closed 仅兜底，查询已排除） */
 const STATUS_CN = {
@@ -144,7 +145,7 @@ async function sendWeeklyUnclosedToDingtalk(pool) {
     count,
     overdueCount,
     url,
-    atMobiles: schedulerConfig.safetyOfficeMobiles,
+    atMobiles: loadNotifyConfig().at_scope.safety_office ? schedulerConfig.safetyOfficeMobiles : [],
   })
 
   return { ok: true, url, count, overdueCount }

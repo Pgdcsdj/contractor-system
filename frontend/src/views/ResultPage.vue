@@ -283,27 +283,34 @@ function hasOptions(type) {
   return ['single','choice','multiple','multi'].includes(type)
 }
 
-// 判断某个选项索引是否是用户的答案
-function isUserAnswer(item, oi) {
-  const ua = item.userAnswer
-  if (Array.isArray(ua)) return ua.includes(oi)
-  return ua === oi
+// 将选项键/答案归一为字母（A-Z）；无法归一则保留原大写串（如 '正确'/'错误'）。
+// 注意：后端下发的 options 是「以字母为键的对象」{A,B,C,D}，v-for 的 oi 即字母键，
+// 因此必须把正确答案/用户答案也归一成字母再与 oi 比较（原逻辑把字母转成数字索引再比对，永远不等）。
+function normLetter(v) {
+  if (v == null) return null
+  const s = String(v).trim()
+  if (/^[A-Za-z]$/.test(s)) return s.toUpperCase()                                  // 单字母 A/B/C
+  if (/^\d+$/.test(s)) return String.fromCharCode(65 + parseInt(s, 10))            // 数字索引 0/1/2
+  return s.toUpperCase()                                                            // 其它文本（判断题 正确/错误）
 }
 
-// 判断某个选项索引是否是正确答案
+// 判断某个选项（oi：对象键为字母 / 数组下标为数字）是否是用户的答案
+function isUserAnswer(item, oi) {
+  const ua = item.userAnswer
+  const oiL = normLetter(oi)
+  if (Array.isArray(ua)) return ua.map(normLetter).includes(oiL)
+  return normLetter(ua) === oiL
+}
+
+// 判断某个选项是否是正确答案（支持单字母 / 数字索引 / 字母数组 / 逗号串）
 function isCorrectAnswer(item, oi) {
   const ca = item.correctAnswer
-  // 正确答案可能是数字索引（0,1,2...）或字母（A,B,C...）或数组
-  if (Array.isArray(ca)) {
-    return ca.includes(oi) || ca.includes(String.fromCharCode(65 + oi))
+  const oiL = normLetter(oi)
+  if (Array.isArray(ca)) return ca.map(normLetter).includes(oiL)
+  if (typeof ca === 'string' && ca.includes(',')) {
+    return ca.split(',').map(normLetter).includes(oiL)
   }
-  const num = Number(ca)
-  if (!isNaN(num)) return num === oi
-  // 字母
-  if (typeof ca === 'string' && ca.length === 1) {
-    return ca.toUpperCase().charCodeAt(0) - 65 === oi
-  }
-  return false
+  return normLetter(ca) === oiL
 }
 
 // 选项样式

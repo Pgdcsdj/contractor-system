@@ -792,7 +792,14 @@ onMounted(async () => {
           ((progress.answers && Object.keys(progress.answers).length > 0) ||
            (progress.currentIndex > 0) || (progress.elapsedSec > 0))
         if (hasReal) {
-          Object.assign(quizStore.answers, progress.answers || {})
+          // 仅恢复属于本次卷面的作答：考试模式每次进入会重新随机抽题、卷面不同，
+          // 旧卷残留答案若不过滤会被一并提交，造成跨卷混合计分（满分出现 141/170 等 >100 的异常值）
+          const paperIdSet = new Set(questions.value.map(q => q.id))
+          const restoredAnswers = {}
+          for (const [qid, ans] of Object.entries(progress.answers || {})) {
+            if (paperIdSet.has(Number(qid)) || paperIdSet.has(qid)) restoredAnswers[qid] = ans
+          }
+          Object.assign(quizStore.answers, restoredAnswers)
           currentIndex.value = progress.currentIndex || 0
           elapsedSec.value = progress.elapsedSec || 0
           resumed.value = true
