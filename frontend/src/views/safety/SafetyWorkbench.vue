@@ -9,7 +9,7 @@
       <div class="welcome-stats">
         <div class="stat-item">
           <span class="stat-num">{{ total }}</span>
-          <span class="stat-label">我的隐患总数</span>
+          <span class="stat-label">项目部隐患总数</span>
         </div>
       </div>
     </div>
@@ -43,7 +43,7 @@
     <!-- 我的隐患列表 -->
     <div class="card">
       <div class="section-header">
-        <h3>我的隐患列表</h3>
+        <h3>项目部隐患列表</h3>
         <div class="header-actions">
           <button class="btn btn-outline import-btn" type="button" @click="openNormalImport">批量导入</button>
           <button class="btn btn-primary import-btn" type="button" @click="openVideoImport">视频督查导入</button>
@@ -101,7 +101,15 @@
               <td class="col-action" @click.stop>
                 <button class="action-link" @click="openDetail(h)">查看</button>
                 <button class="action-link" @click="openEdit(h)">编辑</button>
-                <button class="action-link danger" @click="confirmDelete(h)">删除</button>
+                <button
+                  v-if="h.status !== 'closed' && h.status !== 'verifying'"
+                  class="action-link primary" @click="pushToVerify(h)">整改完成</button>
+                <button
+                  v-if="h.status === 'verifying'"
+                  class="action-link primary" @click="openVerify(h)">验收</button>
+                <button
+                  v-if="!h.recorder_id || h.recorder_id === admin.user?.id"
+                  class="action-link danger" @click="confirmDelete(h)">删除</button>
               </td>
             </tr>
           </tbody>
@@ -159,7 +167,13 @@
           </div>
           <footer class="drawer-foot">
             <button class="btn btn-outline" type="button" @click="closeDetail">关闭</button>
-            <button class="btn btn-primary" type="button" @click="openEdit(detail)">编辑</button>
+            <button
+              v-if="detail && detail.status !== 'closed' && detail.status !== 'verifying'"
+              class="btn btn-primary" type="button" @click="pushToVerify(detail)">整改完成</button>
+            <button
+              v-if="detail && detail.status === 'verifying'"
+              class="btn btn-primary" type="button" @click="openVerify(detail)">验收</button>
+            <button class="btn btn-outline" type="button" @click="openEdit(detail)">编辑</button>
           </footer>
         </aside>
       </div>
@@ -291,6 +305,31 @@
       </div>
     </div>
 
+    <!-- 验收弹窗 -->
+    <div v-if="showVerify" class="modal-overlay" @click.self="showVerify = false">
+      <div class="modal verify-modal">
+        <h3>隐患验收 / 闭环</h3>
+        <p class="modal-hint">编号：{{ verifyTarget?.hazard_code || '-' }}　状态：{{ statusLabel(verifyTarget?.status) }}</p>
+        <div class="form-group">
+          <label>验收结论 <span class="req">*</span></label>
+          <div class="radio-row">
+            <label class="radio-item"><input type="radio" value="通过" v-model="verifyResult" /> 通过（闭环）</label>
+            <label class="radio-item"><input type="radio" value="退回" v-model="verifyResult" /> 退回整改</label>
+          </div>
+        </div>
+        <div class="form-group full">
+          <label>验收意见</label>
+          <textarea v-model="verifyComment" class="form-input" rows="3" placeholder="填写验收意见（可选）"></textarea>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-outline" type="button" @click="showVerify = false">取消</button>
+          <button class="btn btn-primary" type="button" @click="submitVerify" :disabled="verifying">
+            {{ verifying ? '提交中…' : (verifyResult === '通过' ? '确认闭环' : '确认退回') }}
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- toast -->
     <transition name="toast">
       <div v-if="toast.show" class="toast" :class="toast.type">{{ toast.msg }}</div>
@@ -310,6 +349,8 @@ import {
   getHazardDetail,
   createHazardDict,
   getRectifyUnitBiz,
+  verifyHazard,
+  rectifyHazard,
 } from '@/api/hazard'
 import HazardImportModal from '@/views/admin/components/HazardImportModal.vue'
 import { statusLabel, statusBadge, levelBadge } from '@/utils/hazardStatus'
@@ -381,6 +422,13 @@ const deptHeadOptions = computed(() => {
 // 删除确认
 const deleteTarget = ref(null)
 const deleting = ref(false)
+
+// 验收弹窗
+const showVerify = ref(false)
+const verifyTarget = ref(null)
+const verifyResult = ref('通过')
+const verifyComment = ref('')
+const verifying = ref(false)
 
 const editForm = reactive({
   id: null,
@@ -579,6 +627,47 @@ async function doDelete() {
   }
 }
 
+/** 打开验收弹窗（仅 verifying 态调用） */
+function openVerify(h) {
+  verifyTarget.value = h
+  verifyResult.value = '通过'
+  verifyComment.value = ''
+  showVerify.value = true
+}
+
+/** 提交验收结论：通过→closed（闭环）；退回→rectifying */
+async function submitVerify() {
+  if (!verifyTarget.value) return
+  if (!verifyResult.value) return showToast('请选择验收结论', 'error')
+  verifying.value = true
+  try {
+    await verifyHazard(verifyTarget.value.id, {
+      verify_result: verifyResult.value,
+      verify_comment: verifyComment.value.trim(),
+    })
+    showToast(verifyResult.value === '通过' ? '隐患已闭环' : '已退回整改', 'success')
+    showVerify.value = false
+    verifyTarget.value = null
+    detail.value = null
+    fetchList()
+  } catch (e) {
+    showToast(e.response?.data?.error || '验收失败', 'error')
+  } finally {
+    verifying.value = false
+  }
+}
+
+/** 整改完成：将非验收态隐患推进到「待验收」（verifying），供后续验收闭环 */
+async function pushToVerify(h) {
+  try {
+    await rectifyHazard(h.id, { rectify_status: '已完成' })
+    showToast('已提交整改完成，进入待验收', 'success')
+    fetchList()
+  } catch (e) {
+    showToast(e.response?.data?.error || '操作失败', 'error')
+  }
+}
+
 // 批量导入成功回调（弹窗自身已展示明细/告警，这里刷新列表并提示）
 function onImported() {
   showToast('导入完成，已刷新隐患列表', 'success')
@@ -725,6 +814,11 @@ onMounted(() => {
 .col-action { white-space: nowrap; text-align: center; }
 .action-link.danger { color: var(--c-danger); }
 .action-link.danger:hover { background: var(--c-danger-bg); }
+.action-link.primary { color: var(--c-blue-600); font-weight: 600; }
+.action-link.primary:hover { background: rgba(29,111,184,.08); }
+.radio-row { display: flex; gap: 18px; padding: 4px 0; flex-wrap: wrap; }
+.radio-item { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--c-text); cursor: pointer; }
+.verify-modal { max-width: 460px; }
 
 /* ── 详情抽屉 ── */
 .drawer-overlay {

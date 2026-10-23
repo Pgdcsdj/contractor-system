@@ -684,15 +684,22 @@ router.delete('/batch', adminAuth, async (req, res) => {
     return res.status(400).json({ success: false, error: '无效的隐患 ID' })
   }
   try {
-    // 软删除：仅标记 deleted_at，禁止物理 DELETE（设计 §8.3）；安全员越权行自动被 recorder 作用域过滤
+    // 软删除：仅标记 deleted_at，禁止物理 DELETE（设计 §8.3）。
+    // 安全员批量删：仍仅允许删除本人录入的隐患（显式守卫，不再依赖 applyRecorderScope——
+    // 因为安全员列表已放开为看项目部全部隐患，批量删若沿用作用域会误删他人隐患）。
     const placeholders = cleanIds.map(() => '?').join(', ')
-    const sc = applyRecorderScope(req.admin.role, req.admin.id)
+    let scopeClause = ''
+    const scopeParams = []
+    if (req.admin.role === 'safety') {
+      scopeClause = 'AND recorder_id = ?'
+      scopeParams.push(req.admin.id)
+    }
     const [result] = await pool.execute(
-      `UPDATE t_hazard SET deleted_at = NOW() WHERE id IN (${placeholders}) AND deleted_at IS NULL ${sc.clause}`,
-      [...cleanIds, ...sc.params]
+      `UPDATE t_hazard SET deleted_at = NOW() WHERE id IN (${placeholders}) AND deleted_at IS NULL ${scopeClause}`,
+      [...cleanIds, ...scopeParams]
     )
     if (req.admin.role === 'safety' && result.affectedRows === 0) {
-      return res.status(403).json({ success: false, error: '无权删除该隐患' })
+      return res.status(403).json({ success: false, error: '无权删除该隐患（仅可删除本人录入的）' })
     }
     res.json({ success: true, data: { deleted: result.affectedRows } })
   } catch (err) {

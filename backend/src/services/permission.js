@@ -3,7 +3,8 @@
  *
  * - requireRole(...roles)：Express 中间件工厂，校验 req.admin.role，越权 → 403。
  * - applyRecorderScope(role, adminId)：返回录入人(recorder)作用域 SQL 片段与参数；
- *      role==='safety' → `AND recorder_id = ?`，其余角色返回空片段。
+ *      当前安全员放开为看项目部全部隐患（返回空片段）；其余角色亦返回空片段。
+ *      （删除权限的越权守卫在 hazardLoop 中显式实现，不依赖本函数。）
  * - resolveRecorderContext(admin)：从 t_admin / t_contractor_unit 解析录入人四字段
  *      （id / name / unit_id / unit_name），供 hazardLoop 写入 t_hazard 时复用。
  *
@@ -46,8 +47,12 @@ function requireRole(...roles) {
  * @returns {{ clause: string, params: any[] }}
  */
 function applyRecorderScope(role, adminId) {
+  // 安全员：列表/详情放开为看项目部全部隐患（等同管理员）。
+  // 背景：本系统服务于单一项目部（通南巴），安全员需闭环"本单位"全部隐患，包括他人录入的；
+  // 当前 t_admin.unit_id 与 t_hazard.recorder_unit_id 普遍为空，无法按单位精确隔离，
+  // "本单位"在此即等于"全部"。删除权限仍由 hazardLoop 中显式守卫控制（安全员仅可删本人录入的）。
   if (role === 'safety') {
-    return { clause: 'AND recorder_id = ?', params: [Number(adminId)] }
+    return { clause: '', params: [] }
   }
   return { clause: '', params: [] }
 }
