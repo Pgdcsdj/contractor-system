@@ -221,6 +221,18 @@ const routes = [
         meta: { title: '作业过程管控', desc: '作业过程管控模块（后续对接分公司电子作业票系统），功能开发中，敬请期待。' },
       },
       {
+        path: 'work-permit',
+        name: 'WorkPermit',
+        component: () => import('@/views/admin/PlaceholderPage.vue'),
+        meta: { title: '直接作业许可管理', desc: '直接作业许可管理（对接 GB30871 与分公司电子作业票系统），功能开发中，敬请期待。' },
+      },
+      {
+        path: 'contractor-access',
+        name: 'ContractorAccess',
+        component: () => import('@/views/admin/PlaceholderPage.vue'),
+        meta: { title: '承包商准入与资质管理', desc: '承包商准入资质管理模块（资质审查 / 名录 / 合同与 HSE 协议），功能开发中，敬请期待。' },
+      },
+      {
         path: 'contractor-assess',
         name: 'ContractorAssess',
         component: () => import('@/views/admin/PlaceholderPage.vue'),

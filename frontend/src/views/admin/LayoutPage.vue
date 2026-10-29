@@ -8,6 +8,14 @@
       </div>
 
       <nav class="sidebar-nav">
+        <!-- 分组〇：承包商准入（菜单预留，功能开发中） -->
+        <div v-if="!sidebarCollapsed" class="nav-group-title">承包商准入</div>
+        <router-link to="/admin/contractor-access" class="nav-item nav-item--reserved">
+          <Icon name="building" :size="20" class="nav-icon" />
+          <span v-if="!sidebarCollapsed" class="nav-label">承包商准入与资质管理</span>
+          <span v-if="!sidebarCollapsed" class="nav-reserved-tag">预留</span>
+        </router-link>
+
         <!-- 分组一：承包商人员培训 -->
         <div v-if="!sidebarCollapsed" class="nav-group-title">承包商人员培训</div>
         <router-link to="/admin/dashboard" class="nav-item">
@@ -84,6 +92,11 @@
         <router-link to="/admin/work-appointment" class="nav-item nav-item--reserved">
           <Icon name="file" :size="20" class="nav-icon" />
           <span v-if="!sidebarCollapsed" class="nav-label">作业预约报备</span>
+          <span v-if="!sidebarCollapsed" class="nav-reserved-tag">预留</span>
+        </router-link>
+        <router-link to="/admin/work-permit" class="nav-item nav-item--reserved">
+          <Icon name="shield" :size="20" class="nav-icon" />
+          <span v-if="!sidebarCollapsed" class="nav-label">直接作业许可管理</span>
           <span v-if="!sidebarCollapsed" class="nav-reserved-tag">预留</span>
         </router-link>
         <router-link to="/admin/work-control" class="nav-item nav-item--reserved">
@@ -179,7 +192,9 @@ const routeMap = {
   QuizImport: '题目导入',
   ContractorDocs: '承包商开工资料',
   HazardVerify: '排查验证',
+  ContractorAccess: '承包商准入与资质管理',
   WorkAppointment: '作业预约报备',
+  WorkPermit: '直接作业许可管理',
   WorkControl: '作业过程管控',
   ContractorAssess: '承包商考核',
 }
