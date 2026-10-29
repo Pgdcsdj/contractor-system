@@ -65,12 +65,36 @@
           <Icon name="inbox" :size="20" class="nav-icon" />
           <span v-if="!sidebarCollapsed" class="nav-label">数据管理</span>
         </router-link>
+        <!-- 预留栏目：排查验证 -->
+        <router-link to="/admin/hazard-verify" class="nav-item nav-item--reserved">
+          <Icon name="check" :size="20" class="nav-icon" />
+          <span v-if="!sidebarCollapsed" class="nav-label">排查验证</span>
+          <span v-if="!sidebarCollapsed" class="nav-reserved-tag">预留</span>
+        </router-link>
 
         <!-- 分组三：开工资料 -->
         <div v-if="!sidebarCollapsed" class="nav-group-title">开工资料</div>
         <router-link to="/admin/contractor-docs" class="nav-item">
           <Icon name="building" :size="20" class="nav-icon" />
           <span v-if="!sidebarCollapsed" class="nav-label">承包商开工资料</span>
+        </router-link>
+
+        <!-- 分组四：作业与考核（菜单预留，功能开发中） -->
+        <div v-if="!sidebarCollapsed" class="nav-group-title">作业与考核</div>
+        <router-link to="/admin/work-appointment" class="nav-item nav-item--reserved">
+          <Icon name="file" :size="20" class="nav-icon" />
+          <span v-if="!sidebarCollapsed" class="nav-label">作业预约报备</span>
+          <span v-if="!sidebarCollapsed" class="nav-reserved-tag">预留</span>
+        </router-link>
+        <router-link to="/admin/work-control" class="nav-item nav-item--reserved">
+          <Icon name="shield" :size="20" class="nav-icon" />
+          <span v-if="!sidebarCollapsed" class="nav-label">作业过程管控</span>
+          <span v-if="!sidebarCollapsed" class="nav-reserved-tag">预留</span>
+        </router-link>
+        <router-link to="/admin/contractor-assess" class="nav-item nav-item--reserved">
+          <Icon name="list" :size="20" class="nav-icon" />
+          <span v-if="!sidebarCollapsed" class="nav-label">承包商考核</span>
+          <span v-if="!sidebarCollapsed" class="nav-reserved-tag">预留</span>
         </router-link>
 
         <router-link to="/admin/accounts" class="nav-item">
@@ -154,6 +178,10 @@ const routeMap = {
   DataManage: '数据管理',
   QuizImport: '题目导入',
   ContractorDocs: '承包商开工资料',
+  HazardVerify: '排查验证',
+  WorkAppointment: '作业预约报备',
+  WorkControl: '作业过程管控',
+  ContractorAssess: '承包商考核',
 }
 
 const currentTitle = computed(() => routeMap[route.name] || '')
@@ -218,6 +246,18 @@ function handleLogout() {
 }
 .nav-icon { flex-shrink: 0; }
 .nav-label { white-space: nowrap; }
+
+/* ── 预留栏目：虚线标签 + 略降透明度，明确"未上线" ── */
+.nav-item--reserved { opacity: .72; }
+.nav-item--reserved:hover { opacity: 1; }
+.nav-reserved-tag {
+  margin-left: auto;
+  font-size: 10.5px; font-weight: 600; letter-spacing: .5px;
+  color: #ffc53d; background: rgba(255, 197, 61, .14);
+  border: 1px dashed rgba(255, 197, 61, .5);
+  padding: 1px 7px; border-radius: 999px;
+  flex: none;
+}
 
 .nav-group-title {
   padding: 16px 13px 7px;

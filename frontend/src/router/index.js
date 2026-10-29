@@ -201,6 +201,31 @@ const routes = [
         name: 'StandardBasisLibrary',
         component: () => import('@/views/admin/StandardBasisLibraryPage.vue'),
       },
+      // ── 预留栏目（菜单已挂，功能开发中）──────────────────────────────
+      {
+        path: 'hazard-verify',
+        name: 'HazardVerify',
+        component: () => import('@/views/admin/PlaceholderPage.vue'),
+        meta: { title: '排查验证', desc: '隐患排查整改闭环中的排查验证栏目，功能开发中，敬请期待。' },
+      },
+      {
+        path: 'work-appointment',
+        name: 'WorkAppointment',
+        component: () => import('@/views/admin/PlaceholderPage.vue'),
+        meta: { title: '作业预约报备', desc: '作业预约报备模块，功能开发中，敬请期待。' },
+      },
+      {
+        path: 'work-control',
+        name: 'WorkControl',
+        component: () => import('@/views/admin/PlaceholderPage.vue'),
+        meta: { title: '作业过程管控', desc: '作业过程管控模块（后续对接分公司电子作业票系统），功能开发中，敬请期待。' },
+      },
+      {
+        path: 'contractor-assess',
+        name: 'ContractorAssess',
+        component: () => import('@/views/admin/PlaceholderPage.vue'),
+        meta: { title: '承包商考核', desc: '承包商履约考核 / 记分 / 黑名单模块，功能开发中，敬请期待。' },
+      },
     ],
   },
 ]
