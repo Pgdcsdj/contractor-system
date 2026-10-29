@@ -220,9 +220,16 @@ function handleLogout() {
 .nav-label { white-space: nowrap; }
 
 .nav-group-title {
-  padding: 14px 13px 6px;
-  font-size: 11px; font-weight: 700; letter-spacing: .8px;
-  color: rgba(255,255,255,.38); text-transform: none;
+  padding: 16px 13px 7px;
+  font-size: 14px; font-weight: 700; letter-spacing: 1px;
+  color: #ffc53d; text-transform: none;
+  display: flex; align-items: center; gap: 7px;
+}
+/* 标题左侧琥珀色小竖条，增强分组视觉锚点 */
+.nav-group-title::before {
+  content: '';
+  width: 4px; height: 14px; border-radius: 2px;
+  background: #ffc53d; flex: none;
 }
 .nav-group-title:first-child { padding-top: 4px; }
 
