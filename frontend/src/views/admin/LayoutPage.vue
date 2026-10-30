@@ -15,6 +15,10 @@
           <span v-if="!sidebarCollapsed" class="nav-label">承包商准入与资质管理</span>
           <span v-if="!sidebarCollapsed" class="nav-reserved-tag">预留</span>
         </router-link>
+        <router-link to="/admin/contractor-docs" class="nav-item">
+          <Icon name="building" :size="20" class="nav-icon" />
+          <span v-if="!sidebarCollapsed" class="nav-label">承包商开工资料</span>
+        </router-link>
 
         <!-- 分组一：承包商人员培训 -->
         <div v-if="!sidebarCollapsed" class="nav-group-title">承包商人员培训</div>
@@ -69,9 +73,10 @@
           <Icon name="book" :size="20" class="nav-icon" />
           <span v-if="!sidebarCollapsed" class="nav-label">安全违章依据库</span>
         </router-link>
-        <router-link to="/admin/data" class="nav-item">
-          <Icon name="inbox" :size="20" class="nav-icon" />
-          <span v-if="!sidebarCollapsed" class="nav-label">数据管理</span>
+        <router-link to="/admin/hazard-standard" class="nav-item nav-item--reserved">
+          <Icon name="list" :size="20" class="nav-icon" />
+          <span v-if="!sidebarCollapsed" class="nav-label">隐患排查标准</span>
+          <span v-if="!sidebarCollapsed" class="nav-reserved-tag">预留</span>
         </router-link>
         <!-- 预留栏目：排查验证 -->
         <router-link to="/admin/hazard-verify" class="nav-item nav-item--reserved">
@@ -79,12 +84,9 @@
           <span v-if="!sidebarCollapsed" class="nav-label">排查验证</span>
           <span v-if="!sidebarCollapsed" class="nav-reserved-tag">预留</span>
         </router-link>
-
-        <!-- 分组三：开工资料 -->
-        <div v-if="!sidebarCollapsed" class="nav-group-title">开工资料</div>
-        <router-link to="/admin/contractor-docs" class="nav-item">
-          <Icon name="building" :size="20" class="nav-icon" />
-          <span v-if="!sidebarCollapsed" class="nav-label">承包商开工资料</span>
+        <router-link to="/admin/data" class="nav-item">
+          <Icon name="inbox" :size="20" class="nav-icon" />
+          <span v-if="!sidebarCollapsed" class="nav-label">数据管理</span>
         </router-link>
 
         <!-- 分组四：作业与考核（菜单预留，功能开发中） -->
@@ -187,6 +189,7 @@ const routeMap = {
   HazardSettings: '隐患模块设置',
   DingtalkNotifyConfig: '钉钉通知设置',
   StandardBasisLibrary: '安全违章依据库',
+  HazardStandard: '隐患排查标准',
   AccountManage: '账号管理',
   DataManage: '数据管理',
   QuizImport: '题目导入',
