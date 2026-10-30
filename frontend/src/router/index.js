@@ -204,8 +204,8 @@ const routes = [
       {
         path: 'hazard-standard',
         name: 'HazardStandard',
-        component: () => import('@/views/admin/PlaceholderPage.vue'),
-        meta: { title: '隐患排查标准', desc: '日常隐患排查标准库（用于导入日常隐患排查标准，支撑后期隐患排查验证与考核），功能开发中，敬请期待。' },
+        component: () => import('@/views/admin/HazardStandardPage.vue'),
+        meta: { title: '隐患排查标准', desc: '日常隐患排查标准库（导入日常隐患排查标准，支撑后期隐患排查验证与考核）。' },
       },
       // ── 预留栏目（菜单已挂，功能开发中）──────────────────────────────
       {

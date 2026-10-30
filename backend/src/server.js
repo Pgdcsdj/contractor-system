@@ -38,6 +38,7 @@ const dingtalkRoutes       = require('./routes/dingtalk')        // 钉钉 OAuth
 const contractorDocRoutes   = require('./routes/contractorDoc')   // 承包商开工资料电子化上报（需求 C）
 const qualityRoutes         = require('./routes/quality')         // 出题质量量化校验与追踪
 const standardBasisRoutes   = require('./routes/standardBasis')    // 问题依据库（底层=安全违章库 t_violation）
+const hazardStandardRoutes   = require('./routes/hazardStandard')  // 隐患排查标准库（底层=t_hazard_check_standard）
 
 // ─── 系统版本常量（与前端 src/version.js 保持一致）─────────────────────
 const { APP_VERSION, BUILD_DATE } = require('./version')
@@ -313,6 +314,28 @@ async function autoMigrate() {
         UNIQUE KEY uk_category (category),
         KEY idx_sort_order (sort_order)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='问题依据库（标准依据条款，按排查项目匹配）'
+    `)
+
+    // 5.3 隐患排查标准库（排查手册导入，按 适用区域/排查项目 结构化存储）
+    await ensureTable(`
+      CREATE TABLE IF NOT EXISTS t_hazard_check_standard (
+        id               INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        code             VARCHAR(60)  NOT NULL                  COMMENT '确定性幂等码（内容生成/手动）',
+        area             VARCHAR(100) NOT NULL DEFAULT ''       COMMENT '适用区域/场所（马10脱水井场/通用/放散立管区）',
+        category         VARCHAR(200) NOT NULL DEFAULT ''       COMMENT '排查项目/设备',
+        manage_category  VARCHAR(200) NOT NULL DEFAULT ''       COMMENT '管理类别（行级：共性问题…）',
+        check_item       VARCHAR(500) NOT NULL DEFAULT ''       COMMENT '检查内容',
+        check_standard   TEXT                                  COMMENT '检查标准（正文，核心字段）',
+        responsible_post VARCHAR(200) NOT NULL DEFAULT ''       COMMENT '责任岗位',
+        frequency        VARCHAR(100) NOT NULL DEFAULT ''       COMMENT '排查频次',
+        source_file      VARCHAR(200) NOT NULL DEFAULT ''       COMMENT '来源手册文件（可追溯）',
+        sort_order       INT          NOT NULL DEFAULT 0,
+        created_at       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uk_code (code),
+        KEY idx_area (area),
+        KEY idx_category (category)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='隐患排查标准库（排查手册导入）'
     `)
 
     // 5.5 隐患分类/等级字典表（Sprint 2 / P1-1）
@@ -808,6 +831,7 @@ app.use('/api/contractor-units', contractorUnitRoutes)  // 承包商单位 CRUD 
 app.use('/api/hazard', hazardRoutes)                    // 隐患照片上传（S1-4）
 app.use('/api/hazard-dict', hazardDictRoutes)            // 隐患分类/等级字典（S2 / P1-1）
 app.use('/api/hazards/standard-basis', standardBasisRoutes)  // 问题依据库（底层=安全违章库 t_violation，必须早于 /api/hazards，否则被 /:id 吞掉）
+app.use('/api/hazards/hazard-standard', hazardStandardRoutes)  // 隐患排查标准库（底层=t_hazard_check_standard，必须早于 /api/hazards）
 app.use('/api/hazards', hazardLoopRoutes)                // 隐患闭环状态机（S2 / P0）
 app.use('/api/rectify-unit-biz', rectifyUnitBizRoutes)   // 整改单位→业务口关联（S2 / 关联维护）
 app.use('/api/safety',  safetyAuthRoutes)                 // 安全员登录（公开，无需鉴权）

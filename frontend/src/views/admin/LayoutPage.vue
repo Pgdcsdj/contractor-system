@@ -73,10 +73,9 @@
           <Icon name="book" :size="20" class="nav-icon" />
           <span v-if="!sidebarCollapsed" class="nav-label">安全违章依据库</span>
         </router-link>
-        <router-link to="/admin/hazard-standard" class="nav-item nav-item--reserved">
+        <router-link to="/admin/hazard-standard" class="nav-item">
           <Icon name="list" :size="20" class="nav-icon" />
           <span v-if="!sidebarCollapsed" class="nav-label">隐患排查标准</span>
-          <span v-if="!sidebarCollapsed" class="nav-reserved-tag">预留</span>
         </router-link>
         <!-- 预留栏目：排查验证 -->
         <router-link to="/admin/hazard-verify" class="nav-item nav-item--reserved">

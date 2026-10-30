@@ -221,3 +221,48 @@ export function getStandardBasisTemplate() {
 export function exportStandardBasis() {
   return request.get('/api/hazards/standard-basis/export', { responseType: 'blob' })
 }
+
+// ─── 隐患排查标准（hazard-standard，底层 = t_hazard_check_standard）──────────────
+/** 列表（?page&pageSize&keyword&area&category） */
+export function getHazardStandardList(params = {}) {
+  return request.get('/api/hazards/hazard-standard', { params })
+}
+
+/** 单条匹配（录入页自动匹配用，预留） */
+export function matchHazardStandard(category) {
+  return request.post('/api/hazards/hazard-standard/match', { category })
+}
+
+/** 新增 */
+export function createHazardStandard(payload) {
+  return request.post('/api/hazards/hazard-standard', payload)
+}
+
+/** 修改 */
+export function updateHazardStandard(id, payload) {
+  return request.put(`/api/hazards/hazard-standard/${id}`, payload)
+}
+
+/** 删除 */
+export function deleteHazardStandard(id) {
+  return request.delete(`/api/hazards/hazard-standard/${id}`)
+}
+
+/** 导入（xlsx），file 为 File 对象 */
+export function importHazardStandard(file) {
+  const fd = new FormData()
+  fd.append('file', file)
+  return request.post('/api/hazards/hazard-standard/import', fd, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
+}
+
+/** 下载模板（Blob） */
+export function getHazardStandardTemplate() {
+  return request.get('/api/hazards/hazard-standard/template', { responseType: 'blob' })
+}
+
+/** 导出（Blob） */
+export function exportHazardStandard() {
+  return request.get('/api/hazards/hazard-standard/export', { responseType: 'blob' })
+}
