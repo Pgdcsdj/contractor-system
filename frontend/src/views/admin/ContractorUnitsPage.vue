@@ -5,6 +5,10 @@
       <div class="search-wrap">
         <span class="search-icon"><Icon name="search" :size="17" /></span>
         <input v-model="keyword" class="search-input" placeholder="搜索单位名称 / 主管单位 / 联系人…" @input="onSearchChange" />
+        <select v-model="filterGridL2" class="filter-select" @change="onFilterChange">
+          <option value="">全部板块</option>
+          <option v-for="g in gridL2Options" :key="g" :value="g">{{ g }}</option>
+        </select>
       </div>
       <div class="toolbar-right">
         <span class="total-count">共 {{ totalCount }} 家</span>
@@ -22,19 +26,20 @@
       <table class="data-table">
         <thead>
           <tr>
-            <th>单位名称</th><th>主管单位</th><th>联系人</th><th>联系电话</th><th>安全员</th><th>状态</th><th>创建时间</th><th>操作</th>
+            <th>单位名称</th><th>主管单位</th><th>二级板块</th><th>联系人</th><th>联系电话</th><th>安全员</th><th>状态</th><th>创建时间</th><th>操作</th>
           </tr>
         </thead>
         <tbody>
           <tr v-if="loading">
-            <td colspan="8" class="empty-cell"><div class="spinner" style="margin:0 auto"></div></td>
+            <td colspan="9" class="empty-cell"><div class="spinner" style="margin:0 auto"></div></td>
           </tr>
           <tr v-else-if="list.length === 0">
-            <td colspan="8" class="empty-cell">暂无承包商单位数据</td>
+            <td colspan="9" class="empty-cell">暂无承包商单位数据</td>
           </tr>
           <tr v-for="item in paginatedList" :key="item.id">
             <td><strong>{{ item.unit_name }}</strong></td>
             <td>{{ item.supervising_unit || '-' }}</td>
+            <td><span v-if="item.grid_l2" class="grid-tag">{{ item.grid_l2 }}</span><span v-else class="grid-tag empty">未归类</span></td>
             <td>{{ item.contact_name || '-' }}</td>
             <td class="mono">{{ item.contact_phone || '-' }}</td>
             <td>{{ (item.safety_officer_name || '-') + (item.safety_officer_phone ? ' / ' + item.safety_officer_phone : '') }}</td>
@@ -63,7 +68,8 @@
         <h3><Icon name="upload" :size="19" /> Excel 导入承包商单位</h3>
         <p class="modal-hint">
           请上传 .xlsx 文件，表头列名需包含：<strong>承包商单位名称</strong>（必填），
-          <strong>甲方主管单位、联系人、联系电话、安全员姓名、安全员手机号</strong>（选填）
+          <strong>甲方主管单位、专业板块、联系人、联系电话、安全员姓名、安全员手机号</strong>（选填）。<br />
+          「专业板块」可选值：钻前工程 / 钻井工程 / 试气作业工程 / 地面工程 / 生产运行 / 技术监测中心工程监督站
         </p>
         <div class="file-upload" @click="triggerFile" :class="{ dragover: isDragover }"
           @dragover.prevent="isDragover = true"
@@ -99,6 +105,13 @@
         <div class="edit-form">
           <div class="form-group"><label>单位名称 *</label><input v-model="addForm.unit_name" class="form-input" /></div>
           <div class="form-group"><label>甲方主管单位</label><input v-model="addForm.supervising_unit" class="form-input" /></div>
+          <div class="form-group">
+            <label>二级专业板块</label>
+            <select v-model="addForm.grid_l2" class="form-input">
+              <option value="">（未归类）</option>
+              <option v-for="g in gridL2Options" :key="g" :value="g">{{ g }}</option>
+            </select>
+          </div>
           <div class="form-group"><label>联系人</label><input v-model="addForm.contact_name" class="form-input" /></div>
           <div class="form-group"><label>联系电话</label><input v-model="addForm.contact_phone" class="form-input" /></div>
           <div class="form-group"><label>安全员姓名</label><input v-model="addForm.safety_officer_name" class="form-input" /></div>
@@ -121,6 +134,13 @@
         <div class="edit-form">
           <div class="form-group"><label>单位名称</label><input v-model="editForm.unit_name" class="form-input" /></div>
           <div class="form-group"><label>甲方主管单位</label><input v-model="editForm.supervising_unit" class="form-input" /></div>
+          <div class="form-group">
+            <label>二级专业板块</label>
+            <select v-model="editForm.grid_l2" class="form-input">
+              <option value="">（未归类）</option>
+              <option v-for="g in gridL2Options" :key="g" :value="g">{{ g }}</option>
+            </select>
+          </div>
           <div class="form-group"><label>联系人</label><input v-model="editForm.contact_name" class="form-input" /></div>
           <div class="form-group"><label>联系电话</label><input v-model="editForm.contact_phone" class="form-input" /></div>
           <div class="form-group"><label>安全员姓名</label><input v-model="editForm.safety_officer_name" class="form-input" /></div>
@@ -153,9 +173,20 @@ import Icon from '@/components/Icon.vue'
 const list = ref([])
 const loading = ref(true)
 const keyword = ref('')
+const filterGridL2 = ref('')
 const page = ref(1)
 const pageSize = 20
 const totalCount = ref(0)
+
+// 二级专业板块（四级网格图：6 大板块）
+const gridL2Options = [
+  '钻前工程',
+  '钻井工程',
+  '试气作业工程',
+  '地面工程',
+  '生产运行',
+  '技术监测中心工程监督站',
+]
 
 const showImport = ref(false)
 const fileInput = ref(null)
@@ -166,14 +197,14 @@ const importResult = ref(null)
 
 const showEdit = ref(false)
 const editForm = ref({
-  id: null, unit_name: '', supervising_unit: '', contact_name: '', contact_phone: '',
+  id: null, unit_name: '', supervising_unit: '', grid_l2: '', contact_name: '', contact_phone: '',
   safety_officer_name: '', safety_officer_phone: '', is_active: 1,
 })
 const saving = ref(false)
 
 const showAdd = ref(false)
 const addForm = ref({
-  unit_name: '', supervising_unit: '', contact_name: '', contact_phone: '',
+  unit_name: '', supervising_unit: '', grid_l2: '', contact_name: '', contact_phone: '',
   safety_officer_name: '', safety_officer_phone: '',
 })
 const adding = ref(false)
@@ -182,6 +213,7 @@ const totalPages = computed(() => Math.max(1, Math.ceil(totalCount.value / pageS
 const paginatedList = computed(() => list.value)
 
 function onSearchChange() { page.value = 1; fetchList() }
+function onFilterChange() { page.value = 1; fetchList() }
 
 function formatDate(iso) {
   if (!iso) return '-'
@@ -196,7 +228,7 @@ async function handleAdd() {
   try {
     await request.post('/api/contractor-units', { ...addForm.value })
     showAdd.value = false
-    addForm.value = { unit_name: '', supervising_unit: '', contact_name: '', contact_phone: '', safety_officer_name: '', safety_officer_phone: '' }
+    addForm.value = { unit_name: '', supervising_unit: '', grid_l2: '', contact_name: '', contact_phone: '', safety_officer_name: '', safety_officer_phone: '' }
     fetchList()
   } catch (e) {
     alert(e.response?.data?.error || '添加失败')
@@ -239,6 +271,7 @@ function editItem(item) {
     id: item.id,
     unit_name: item.unit_name || '',
     supervising_unit: item.supervising_unit || '',
+    grid_l2: item.grid_l2 || '',
     contact_name: item.contact_name || '',
     contact_phone: item.contact_phone || '',
     safety_officer_name: item.safety_officer_name || '',
@@ -254,6 +287,7 @@ async function handleEdit() {
     await request.put(`/api/contractor-units/${editForm.value.id}`, {
       unit_name: editForm.value.unit_name,
       supervising_unit: editForm.value.supervising_unit,
+      grid_l2: editForm.value.grid_l2,
       contact_name: editForm.value.contact_name,
       contact_phone: editForm.value.contact_phone,
       safety_officer_name: editForm.value.safety_officer_name,
@@ -274,6 +308,7 @@ async function fetchList() {
   try {
     const params = { page: page.value, pageSize }
     if (keyword.value) params.keyword = keyword.value
+    if (filterGridL2.value) params.gridL2 = filterGridL2.value
     const res = await request.get('/api/contractor-units', { params })
     const data = res.data?.data
     list.value = data?.list || []
@@ -298,6 +333,13 @@ watch(page, fetchList)
 }
 .search-wrap { position: relative; display: flex; gap: 8px; flex: 1; flex-wrap: wrap; min-width: 240px; }
 .search-icon { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--c-text-3); pointer-events: none; }
+.filter-select {
+  padding: 10px 12px; border: 1px solid var(--c-border-strong); border-radius: var(--r);
+  font-size: 14px; background: var(--c-surface); color: var(--c-text); cursor: pointer; min-width: 150px;
+}
+.filter-select:focus { outline: none; border-color: var(--c-blue-600); }
+.grid-tag { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 500; background: var(--c-blue-50); color: var(--c-blue-600); white-space: nowrap; }
+.grid-tag.empty { background: var(--c-surface-2); color: var(--c-text-3); }
 .search-input {
   flex: 1; min-width: 220px; max-width: 320px; padding: 10px 14px 10px 38px;
   border: 1px solid var(--c-border-strong); border-radius: var(--r); font-size: 14px;

@@ -178,10 +178,14 @@
         </div>
         <div v-if="publishForm.target_type === 'unit'" class="form-group">
           <label>选择承包商单位（可多选）</label>
+          <select v-model="filterGridL2" class="form-input" style="margin-bottom:8px">
+            <option value="">全部板块</option>
+            <option v-for="g in gridL2Options" :key="g" :value="g">{{ g }}</option>
+          </select>
           <div class="multi-select">
-            <label v-for="u in allUnits" :key="u" class="checkbox-label">
-              <input type="checkbox" :value="u" v-model="publishForm.target_value" />
-              {{ u }}
+            <label v-for="u in filteredUnits" :key="u.id" class="checkbox-label">
+              <input type="checkbox" :value="u.unit_name" v-model="publishForm.target_value" />
+              {{ u.unit_name }}
             </label>
           </div>
         </div>
@@ -287,6 +291,18 @@ const categories = ref([])
 
 // ── 发布目标人群：单位 / 指定人员 ──
 const allUnits = ref([])
+const filterGridL2 = ref('')
+const gridL2Options = [
+  '钻前工程',
+  '钻井工程',
+  '试气作业工程',
+  '地面工程',
+  '生产运行',
+  '技术监测中心工程监督站',
+]
+const filteredUnits = computed(() =>
+  filterGridL2.value ? allUnits.value.filter(u => u.grid_l2 === filterGridL2.value) : allUnits.value
+)
 const allPositions = ref(['管理岗', '操作岗', '中层干部'])
 const userSearch = ref('')
 const allUsers = ref([])
@@ -301,6 +317,7 @@ const filteredUsers = computed(() => {
 function onTargetTypeChange() {
   publishForm.value.target_value = []
   userSearch.value = ''
+  filterGridL2.value = ''
   if (publishForm.value.target_type === 'specific') loadAllUsers('')
 }
 
@@ -571,12 +588,12 @@ onMounted(() => { fetchTrainings(); initPublish() })
 
 async function initPublish() {
   try {
-    const [catRes, unitRes] = await Promise.all([
+    const [catRes, optRes] = await Promise.all([
       request.get('/api/admin/categories'),
-      request.get('/api/admin/filter-options'),
+      request.get('/api/contractor-units/options'),
     ])
     categories.value = catRes.data?.data || []
-    allUnits.value = unitRes.data?.data?.units || []
+    allUnits.value = optRes.data?.data || []
   } catch {}
 }
 </script>

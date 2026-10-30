@@ -10,7 +10,7 @@
         </select>
         <select v-model="filterCompany" class="filter-select" @change="onFilterChange">
           <option value="">全部承包商</option>
-          <option v-for="c in companies" :key="c" :value="c">{{ c }}</option>
+          <option v-for="c in companies" :key="c.id" :value="c.unit_name">{{ c.unit_name }}</option>
         </select>
       </div>
       <div class="toolbar-right">
@@ -133,7 +133,13 @@
         <div class="edit-form">
           <div class="form-group"><label>姓名 *</label><input v-model="addForm.name" class="form-input" /></div>
           <div class="form-group"><label>身份证号 *</label><input v-model="addForm.id_card" class="form-input" maxlength="18" /></div>
-          <div class="form-group"><label>承包商单位</label><input v-model="addForm.unit" class="form-input" /></div>
+          <div class="form-group">
+            <label>承包商单位</label>
+            <select v-model="addForm.contractor_unit_id" class="form-input" @change="syncUnitFromContractor(addForm)">
+              <option :value="null">（未选择 / 手动录入）</option>
+              <option v-for="c in companies" :key="c.id" :value="c.id">{{ c.unit_name }}</option>
+            </select>
+          </div>
           <div class="form-group"><label>主管单位</label><input v-model="addForm.supervising_unit" class="form-input" /></div>
           <div class="form-group"><label>岗位</label><input v-model="addForm.position" class="form-input" placeholder="如：焊工 / 安全员" /></div>
           <div class="form-group"><label>手机号</label><input v-model="addForm.phone" class="form-input" /></div>
@@ -162,7 +168,10 @@
           </div>
           <div class="form-group">
             <label>承包商单位</label>
-            <input v-model="editForm.unit" class="form-input" />
+            <select v-model="editForm.contractor_unit_id" class="form-input" @change="syncUnitFromContractor(editForm)">
+              <option :value="null">（未选择 / 手动录入）</option>
+              <option v-for="c in companies" :key="c.id" :value="c.id">{{ c.unit_name }}</option>
+            </select>
           </div>
           <div class="form-group">
             <label>主管单位</label>
@@ -219,13 +228,19 @@ const importResult = ref(null)
 
 // 编辑
 const showEdit = ref(false)
-const editForm = ref({ id: null, name: '', id_card: '', unit: '', supervising_unit: '', position: '', phone: '', status: 1 })
+const editForm = ref({ id: null, name: '', id_card: '', unit: '', contractor_unit_id: null, supervising_unit: '', position: '', phone: '', status: 1 })
 const saving = ref(false)
 
 // 新增
 const showAdd = ref(false)
-const addForm = ref({ name: '', id_card: '', unit: '', supervising_unit: '', position: '', phone: '' })
+const addForm = ref({ name: '', id_card: '', unit: '', contractor_unit_id: null, supervising_unit: '', position: '', phone: '' })
 const adding = ref(false)
+
+// 选中承包单位主数据后，镜像写入 unit 文本（与后端 contractor_unit_id 联动保持一致）
+function syncUnitFromContractor(form) {
+  const o = allUnits.value.find(u => u.id === Number(form.contractor_unit_id))
+  form.unit = o ? o.unit_name : ''
+}
 
 // 选择 / 批量 / 导出
 const selectedIds = ref([])
@@ -326,9 +341,11 @@ async function handleAddUser() {
   if (!addForm.value.name || !addForm.value.id_card) return
   adding.value = true
   try {
-    await request.post('/api/admin/users', { ...addForm.value })
+    const payload = { ...addForm.value }
+    if (!payload.contractor_unit_id) delete payload.contractor_unit_id
+    await request.post('/api/admin/users', payload)
     showAdd.value = false
-    addForm.value = { name: '', id_card: '', unit: '', supervising_unit: '', position: '', phone: '' }
+    addForm.value = { name: '', id_card: '', unit: '', contractor_unit_id: null, supervising_unit: '', position: '', phone: '' }
     fetchUsers()
   } catch (e) {
     alert(e.response?.data?.error || '添加失败')
@@ -396,6 +413,7 @@ function editUser(u) {
     name: u.name || '',
     id_card: u.id_card || '',
     unit: u.unit || '',
+    contractor_unit_id: u.contractor_unit_id || null,
     supervising_unit: u.supervising_unit || '',
     position: u.position || '',
     phone: u.phone || '',
@@ -407,7 +425,7 @@ function editUser(u) {
 async function handleEdit() {
   saving.value = true
   try {
-    await request.put(`/api/admin/users/${editForm.value.id}`, {
+    const payload = {
       name: editForm.value.name,
       id_card: editForm.value.id_card,
       unit: editForm.value.unit,
@@ -415,7 +433,9 @@ async function handleEdit() {
       position: editForm.value.position,
       phone: editForm.value.phone,
       status: editForm.value.status,
-    })
+    }
+    if (editForm.value.contractor_unit_id) payload.contractor_unit_id = editForm.value.contractor_unit_id
+    await request.put(`/api/admin/users/${editForm.value.id}`, payload)
     showEdit.value = false
     fetchUsers()
   } catch (e) {
@@ -449,10 +469,12 @@ async function fetchUsers() {
 
 async function fetchFilterOptions() {
   try {
-    const res = await request.get('/api/admin/filter-options')
-    const data = res.data?.data
-    allUnits.value = data?.units || []
-    allSupervisingUnits.value = data?.supervisingUnits || []
+    const [optRes, suRes] = await Promise.all([
+      request.get('/api/contractor-units/options'),
+      request.get('/api/admin/filter-options'),
+    ])
+    allUnits.value = optRes.data?.data || []
+    allSupervisingUnits.value = suRes.data?.data?.supervisingUnits || []
   } catch {
     // 静默失败，下拉框只为空
   }
