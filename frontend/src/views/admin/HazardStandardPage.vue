@@ -6,6 +6,21 @@
         <span class="search-icon"><Icon name="search" :size="17" /></span>
         <input v-model="keyword" class="search-input" placeholder="搜索 区域 / 排查项目 / 管理类别 / 检查内容 / 标准 / 岗位 / 频次…" @input="onSearchChange" />
       </div>
+      <div class="filter-group">
+        <select v-model="filterArea" class="filter-select" @change="onFilterChange">
+          <option value="">全部区域</option>
+          <option v-for="a in areaOptions" :key="a" :value="a">{{ a }}</option>
+        </select>
+        <select v-model="filterCategory" class="filter-select" @change="onFilterChange">
+          <option value="">全部排查项目</option>
+          <option v-for="c in categoryOptions" :key="c" :value="c">{{ c }}</option>
+        </select>
+        <select v-model="filterManage" class="filter-select" @change="onFilterChange">
+          <option value="">全部管理类别</option>
+          <option v-for="m in manageOptions" :key="m" :value="m">{{ m }}</option>
+        </select>
+        <button v-if="hasFilter" class="btn-ghost" @click="resetFilters">重置</button>
+      </div>
       <div class="toolbar-right">
         <span class="total-count">共 {{ total }} 条</span>
         <button class="btn btn-outline" @click="downloadTemplate"><Icon name="download" :size="17" />模板</button>
@@ -56,9 +71,9 @@
       </div>
 
       <div class="pagination" v-if="totalPages > 1">
-        <button class="pg-btn" :disabled="page === 1" @click="page--"><Icon name="chevronLeft" :size="18" /></button>
+        <button class="pg-btn" :disabled="page === 1" @click="goPage(-1)"><Icon name="chevronLeft" :size="18" /></button>
         <span class="pg-info">{{ page }} / {{ totalPages }}</span>
-        <button class="pg-btn" :disabled="page === totalPages" @click="page++"><Icon name="chevronRight" :size="18" /></button>
+        <button class="pg-btn" :disabled="page === totalPages" @click="goPage(1)"><Icon name="chevronRight" :size="18" /></button>
       </div>
     </div>
 
@@ -151,6 +166,7 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import Icon from '@/components/Icon.vue'
 import {
   getHazardStandardList,
+  getHazardStandardOptions,
   createHazardStandard,
   updateHazardStandard,
   deleteHazardStandard,
@@ -167,16 +183,53 @@ const loading = ref(false)
 const keyword = ref('')
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
 
+// ─── 筛选（适用区域 / 排查项目 / 管理类别）─────────────────────────────────────
+const filterArea = ref('')
+const filterCategory = ref('')
+const filterManage = ref('')
+const areaOptions = ref([])
+const categoryOptions = ref([])
+const manageOptions = ref([])
+const hasFilter = computed(() => !!(filterArea.value || filterCategory.value || filterManage.value))
+
+async function loadOptions() {
+  try {
+    const res = await getHazardStandardOptions()
+    areaOptions.value = res.data?.data?.areas || []
+    categoryOptions.value = res.data?.data?.categories || []
+    manageOptions.value = res.data?.data?.manageCategories || []
+  } catch (e) { /* 筛选项加载失败不影响主列表 */ }
+}
+
 let searchTimer = null
 function onSearchChange() {
   if (searchTimer) clearTimeout(searchTimer)
   searchTimer = setTimeout(() => { page.value = 1; loadList() }, 300)
 }
 
+function onFilterChange() {
+  page.value = 1
+  loadList()
+}
+function resetFilters() {
+  filterArea.value = ''
+  filterCategory.value = ''
+  filterManage.value = ''
+  page.value = 1
+  loadList()
+}
+
 async function loadList() {
   loading.value = true
   try {
-    const res = await getHazardStandardList({ page: page.value, pageSize: pageSize.value, keyword: keyword.value })
+    const res = await getHazardStandardList({
+      page: page.value,
+      pageSize: pageSize.value,
+      keyword: keyword.value,
+      area: filterArea.value,
+      category: filterCategory.value,
+      manageCategory: filterManage.value,
+    })
     list.value = res.data?.data?.list || []
     total.value = res.data?.data?.total || 0
   } catch (e) {
@@ -184,6 +237,13 @@ async function loadList() {
   } finally {
     loading.value = false
   }
+}
+
+function goPage(delta) {
+  const next = page.value + delta
+  if (next < 1 || next > totalPages.value) return
+  page.value = next
+  loadList()
 }
 
 // ─── 新增 / 编辑 ────────────────────────────────────────────────────────────
@@ -314,12 +374,18 @@ function showToast(msg, type = 'success') {
   toastTimer = setTimeout(() => { toast.show = false }, 3200)
 }
 
-onMounted(loadList)
+onMounted(async () => {
+  await loadOptions()
+  loadList()
+})
 </script>
 
 <style scoped>
 .users-page { max-width: 1280px; }
 .toolbar { display: flex; align-items: center; gap: 12px; padding: 14px 18px; margin-bottom: 16px; flex-wrap: wrap; }
+.filter-group { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.filter-select { padding: 9px 10px; border: 1px solid var(--c-border); border-radius: 10px; background: var(--c-bg); color: var(--c-text); font-size: 14px; max-width: 200px; }
+.btn-ghost { background: transparent; border: none; color: var(--c-primary); cursor: pointer; font-size: 13px; padding: 6px 8px; white-space: nowrap; }
 .search-wrap { position: relative; flex: 1; min-width: 240px; }
 .search-icon { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--c-text-2); }
 .search-input { width: 100%; padding: 9px 12px 9px 38px; border: 1px solid var(--c-border); border-radius: 10px; background: var(--c-bg); color: var(--c-text); }

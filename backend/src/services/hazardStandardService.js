@@ -34,8 +34,17 @@ function genManualCode() {
   return 'M' + Date.now() + '_' + Math.floor(Math.random() * 1000)
 }
 
-// ─── 列表（支持 适用区域 / 排查项目 过滤）────────────────────────────────────
-async function listLibrary({ page = 1, pageSize = 50, keyword = '', area = '', category = '' } = {}) {
+// 去除「数字序号 + 分隔符」前缀（如 "1. 检查…" / "2、检查…" / "（1）检查…"）。
+// 关键：小数点后的数字不视为序号（如 "1.5米" 必须保留），故点号后须为非数字或仅空白。
+const SEQ_PREFIX_RE = /^(?:[\s　]*\d+[.．](?![0-9])[\s　]*|[\s　]*\d+[、)）。][\s　]*|[\s　]*[（(]\d+[)）][\s　]*)/
+
+function stripSeqPrefix(str) {
+  if (str === null || str === undefined) return str
+  return String(str).replace(SEQ_PREFIX_RE, '').trim()
+}
+
+// ─── 列表（支持 适用区域 / 排查项目 / 管理类别 过滤）────────────────────────────
+async function listLibrary({ page = 1, pageSize = 50, keyword = '', area = '', category = '', manageCategory = '' } = {}) {
   const p = Number(page) || 1
   const ps = Math.min(Math.max(Number(pageSize) || 50, 1), 200)
   const offset = (p - 1) * ps
@@ -48,6 +57,7 @@ async function listLibrary({ page = 1, pageSize = 50, keyword = '', area = '', c
   }
   if (area && area.trim()) { where.push('area = ?'); params.push(area.trim()) }
   if (category && category.trim()) { where.push('category = ?'); params.push(category.trim()) }
+  if (manageCategory && manageCategory.trim()) { where.push('manage_category = ?'); params.push(manageCategory.trim()) }
   const [rows] = await pool.execute(
     `SELECT ${SELECT_COLS} FROM t_hazard_check_standard ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY area, category, id LIMIT ${ps} OFFSET ${offset}`,
     params
@@ -67,8 +77,8 @@ async function getById(id) {
 async function create(patch = {}) {
   const area = String(patch.area == null ? '' : patch.area).trim()
   const category = String(patch.category == null ? '' : patch.category).trim()
-  const checkItem = String(patch.check_item == null ? (patch.checkItem == null ? '' : patch.checkItem) : patch.check_item).trim()
-  const checkStandard = String(patch.check_standard == null ? (patch.checkStandard == null ? '' : patch.checkStandard) : patch.check_standard).trim()
+  const checkItem = stripSeqPrefix(patch.check_item == null ? (patch.checkItem == null ? '' : patch.checkItem) : patch.check_item)
+  const checkStandard = stripSeqPrefix(patch.check_standard == null ? (patch.checkStandard == null ? '' : patch.checkStandard) : patch.check_standard)
   if (!checkItem) throw new Error('检查内容不能为空')
   if (!checkStandard) throw new Error('检查标准不能为空')
   const code = (patch.code && String(patch.code).trim()) ? String(patch.code).trim() : genManualCode()
@@ -101,7 +111,8 @@ async function update(id, patch = {}) {
   const params = []
   for (const [k, col] of Object.entries(map)) {
     if (patch[k] === undefined) continue
-    const v = String(patch[k]).trim()
+    let v = String(patch[k]).trim()
+    if (k === 'check_item' || k === 'check_standard') v = stripSeqPrefix(v)
     if (k === 'check_item' && !v) throw new Error('检查内容不能为空')
     if (k === 'check_standard' && !v) throw new Error('检查标准不能为空')
     fields.push(`${col} = ?`)
@@ -130,8 +141,8 @@ async function importLibrary(rows) {
     const r = rows[i] || {}
     const area = String(r.area == null ? '' : r.area).trim()
     const category = String(r.category == null ? '' : r.category).trim()
-    const checkItem = String(r.check_item == null ? (r.checkItem == null ? '' : r.checkItem) : r.check_item).trim()
-    const checkStandard = String(r.check_standard == null ? (r.checkStandard == null ? '' : r.checkStandard) : r.check_standard).trim()
+    const checkItem = stripSeqPrefix(r.check_item == null ? (r.checkItem == null ? '' : r.checkItem) : r.check_item)
+    const checkStandard = stripSeqPrefix(r.check_standard == null ? (r.checkStandard == null ? '' : r.checkStandard) : r.check_standard)
     const manageCategory = String(r.manage_category == null ? (r.manageCategory == null ? '' : r.manageCategory) : r.manage_category).trim()
     const responsiblePost = String(r.responsible_post == null ? (r.responsiblePost == null ? '' : r.responsiblePost) : r.responsible_post).trim()
     const frequency = String(r.frequency == null ? '' : r.frequency).trim()
@@ -185,6 +196,24 @@ async function matchStandardDb(p, arg = {}) {
   return { matched: false, data: null }
 }
 
+// ─── 筛选项（适用区域 / 排查项目 / 管理类别 去重列表，供前端下拉）──────────────────
+async function getFilterOptions() {
+  const [areas] = await pool.execute(
+    "SELECT DISTINCT area FROM t_hazard_check_standard WHERE area IS NOT NULL AND area <> '' ORDER BY area"
+  )
+  const [cats] = await pool.execute(
+    "SELECT DISTINCT category FROM t_hazard_check_standard WHERE category IS NOT NULL AND category <> '' ORDER BY category"
+  )
+  const [mans] = await pool.execute(
+    "SELECT DISTINCT manage_category FROM t_hazard_check_standard WHERE manage_category IS NOT NULL AND manage_category <> '' ORDER BY manage_category"
+  )
+  return {
+    areas: areas.map((r) => r.area),
+    categories: cats.map((r) => r.category),
+    manageCategories: mans.map((r) => r.manage_category),
+  }
+}
+
 // ─── 模板 ────────────────────────────────────────────────────────────────────
 function generateLibraryTemplate() {
   const headers = ['适用区域', '排查项目', '管理类别', '检查内容', '检查标准', '责任岗位', '排查频次', '来源文件']
@@ -198,6 +227,7 @@ function generateLibraryTemplate() {
 
 module.exports = {
   genContentCode,
+  stripSeqPrefix,
   listLibrary,
   getById,
   create,
@@ -205,6 +235,7 @@ module.exports = {
   remove,
   importLibrary,
   exportLibrary,
+  getFilterOptions,
   matchStandardDb,
   generateLibraryTemplate,
 }

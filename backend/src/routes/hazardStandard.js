@@ -49,9 +49,19 @@ const upload = multer({
 // ─── 列表 ────────────────────────────────────────────────────────────────────
 router.get('/', requireAdminOrSafety, async (req, res) => {
   try {
-    const { page, pageSize, keyword, area, category } = req.query
-    const result = await svc.listLibrary({ page, pageSize, keyword, area, category })
+    const { page, pageSize, keyword, area, category, manageCategory } = req.query
+    const result = await svc.listLibrary({ page, pageSize, keyword, area, category, manageCategory })
     res.json({ success: true, data: result })
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message })
+  }
+})
+
+// ─── 筛选项（适用区域 / 排查项目 / 管理类别 去重列表，供前端下拉）──────────────────
+router.get('/options', requireAdminOrSafety, async (req, res) => {
+  try {
+    const opts = await svc.getFilterOptions()
+    res.json({ success: true, data: opts })
   } catch (e) {
     res.status(500).json({ success: false, error: e.message })
   }

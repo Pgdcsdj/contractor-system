@@ -233,6 +233,11 @@ export function matchHazardStandard(category) {
   return request.post('/api/hazards/hazard-standard/match', { category })
 }
 
+/** 筛选项（适用区域/排查项目/管理类别 去重列表） */
+export function getHazardStandardOptions() {
+  return request.get('/api/hazards/hazard-standard/options')
+}
+
 /** 新增 */
 export function createHazardStandard(payload) {
   return request.post('/api/hazards/hazard-standard', payload)
