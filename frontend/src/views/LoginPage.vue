@@ -65,15 +65,15 @@
         <input v-model="regIdCard" class="form-input" placeholder="身份证号 *" type="text" maxlength="18" />
       </div>
       <div class="form-group">
-        <input v-model="regUnit" class="form-input" placeholder="所属承包商单位" type="text" />
+        <input v-model="regUnit" class="form-input" placeholder="所属承包商单位 *" type="text" />
       </div>
       <div class="form-group">
         <input v-model="regSupervisingUnit" class="form-input" placeholder="主管单位（甲方）" type="text" />
       </div>
       <div class="form-group">
-        <input v-model="regPhone" class="form-input" placeholder="手机号" type="text" />
+        <input v-model="regPhone" class="form-input" placeholder="手机号 *" type="text" maxlength="11" />
       </div>
-      <button class="btn btn-primary full-btn" @click="handleRegister" :disabled="loading || !regName || !regIdCard">
+      <button class="btn btn-primary full-btn" @click="handleRegister" :disabled="loading || !regName || !regIdCard || !regUnit || !regPhone || !/^1\d{10}$/.test(regPhone)">
         {{ loading ? '提交中…' : '注册并开始答题' }}
       </button>
       <p class="toggle-link" @click="showRegister = false">已有账号？点击登录</p>
@@ -219,6 +219,8 @@ async function handleComplete() {
 
 async function handleRegister() {
   if (!regName.value || !regIdCard.value) return
+  if (!regUnit.value) { errorMsg.value = '请填写所属承包商单位'; return }
+  if (!/^1\d{10}$/.test(regPhone.value || '')) { errorMsg.value = '请填写正确的 11 位手机号'; return }
   loading.value = true
   errorMsg.value = ''
   try {
