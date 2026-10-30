@@ -12,6 +12,11 @@
           <option value="">全部承包商</option>
           <option v-for="c in companies" :key="c.id" :value="c.unit_name">{{ c.unit_name }}</option>
         </select>
+        <select v-model="filterLinked" class="filter-select" @change="onFilterChange">
+          <option value="">全部关联状态</option>
+          <option value="unlinked">仅未关联</option>
+          <option value="linked">仅已关联</option>
+        </select>
       </div>
       <div class="toolbar-right">
         <span class="total-count">共 {{ totalCount }} 人</span>
@@ -30,6 +35,7 @@
         <button class="btn btn-outline" @click="handleBatch('enable')">✅ 批量启用</button>
         <button class="btn btn-outline" @click="handleBatch('disable')">⛔ 批量禁用</button>
         <button class="btn btn-danger" @click="handleBatch('delete')">🗑 批量删除</button>
+        <button class="btn btn-primary" @click="openClaim">🔗 批量认领</button>
         <button class="btn btn-ghost" @click="selectedIds = []">取消选择</button>
       </div>
     </div>
@@ -42,17 +48,17 @@
             <th class="col-check">
               <input type="checkbox" :checked="allSelectedOnPage" @change="toggleAll" aria-label="全选本页" />
             </th>
-            <th>姓名</th><th>身份证</th><th>主管单位</th><th>承包商</th><th>岗位</th><th>手机</th><th>录入时间</th><th>状态</th><th>操作</th>
+            <th>姓名</th><th>身份证</th><th>主管单位</th><th>承包商</th><th>关联</th><th>岗位</th><th>手机</th><th>录入时间</th><th>状态</th><th>操作</th>
           </tr>
         </thead>
         <tbody>
           <tr v-if="loading">
-            <td colspan="10" style="text-align:center;padding:30px;color:var(--text-secondary)">
+            <td colspan="11" style="text-align:center;padding:30px;color:var(--text-secondary)">
               <div class="spinner" style="margin:0 auto"></div>
             </td>
           </tr>
           <tr v-else-if="filteredUsers.length === 0">
-            <td colspan="10" class="empty-cell">暂无人员数据</td>
+            <td colspan="11" class="empty-cell">暂无人员数据</td>
           </tr>
           <tr v-for="u in paginatedUsers" :key="u.id">
             <td class="col-check">
@@ -62,6 +68,10 @@
             <td class="mono">{{ maskIdCard(u.id_card) }}</td>
             <td>{{ u.supervising_unit || '-' }}</td>
             <td>{{ u.unit || '-' }}</td>
+            <td>
+              <span v-if="u.contractor_unit_id" class="link-badge linked">已关联</span>
+              <span v-else class="link-badge unlinked">未关联</span>
+            </td>
             <td>{{ u.position || '-' }}</td>
             <td>{{ u.phone || '-' }}</td>
             <td class="mono" style="font-size:12px">{{ u.created_at ? formatDate(u.created_at) : '-' }}</td>
@@ -201,6 +211,29 @@
         </div>
       </div>
     </div>
+
+    <!-- 批量认领弹窗 -->
+    <div v-if="showClaim" class="modal-overlay" @click.self="showClaim = false">
+      <div class="modal">
+        <h3>🔗 批量认领承包单位</h3>
+        <p class="modal-hint">将选中的 <b>{{ selectedIds.length }}</b> 名人员统一关联到同一承包单位主数据（关联后其"承包商"列将同步为该单位名称）。</p>
+        <div class="edit-form">
+          <div class="form-group">
+            <label>承包单位 *</label>
+            <select v-model="claimUnitId" class="form-input">
+              <option :value="null">（请选择）</option>
+              <option v-for="c in companies" :key="c.id" :value="c.id">{{ c.unit_name }}{{ c.grid_l2 ? ' · ' + c.grid_l2 : '' }}</option>
+            </select>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-outline" @click="showClaim = false">取消</button>
+          <button class="btn btn-primary" @click="handleClaim" :disabled="!claimUnitId || claiming">
+            {{ claiming ? '认领中…' : '确认认领' }}
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -213,6 +246,7 @@ const loading = ref(true)
 const keyword = ref('')
 const filterCompany = ref('')
 const filterSupervising = ref('')
+const filterLinked = ref('')
 const page = ref(1)
 const pageSize = 20
 const totalCount = ref(0)
@@ -241,6 +275,11 @@ function syncUnitFromContractor(form) {
   const o = allUnits.value.find(u => u.id === Number(form.contractor_unit_id))
   form.unit = o ? o.unit_name : ''
 }
+
+// 批量认领状态
+const showClaim = ref(false)
+const claimUnitId = ref(null)
+const claiming = ref(false)
 
 // 选择 / 批量 / 导出
 const selectedIds = ref([])
@@ -276,6 +315,34 @@ async function handleBatch(action) {
     fetchUsers()
   } catch (e) {
     alert('批量操作失败：' + (e.response?.data?.error || e.message))
+  }
+}
+
+function openClaim() {
+  if (selectedIds.value.length === 0) {
+    alert('请先勾选要认领的人员')
+    return
+  }
+  claimUnitId.value = null
+  showClaim.value = true
+}
+
+async function handleClaim() {
+  if (!claimUnitId.value) return
+  claiming.value = true
+  try {
+    const res = await request.put('/api/admin/users/batch-contractor', {
+      ids: selectedIds.value,
+      contractor_unit_id: claimUnitId.value,
+    })
+    alert(res.data?.message || '认领成功')
+    showClaim.value = false
+    clearSelection()
+    fetchUsers()
+  } catch (e) {
+    alert('批量认领失败：' + (e.response?.data?.error || e.message))
+  } finally {
+    claiming.value = false
   }
 }
 
@@ -455,6 +522,8 @@ async function fetchUsers() {
     if (keyword.value) params.keyword = keyword.value
     if (filterCompany.value) params.unit = filterCompany.value
     if (filterSupervising.value) params.supervising_unit = filterSupervising.value
+    if (filterLinked.value === 'unlinked') params.unlinked = '1'
+    else if (filterLinked.value === 'linked') params.unlinked = '0'
 
     const res = await request.get('/api/admin/users', { params })
     const data = res.data?.data
@@ -594,6 +663,11 @@ watch(page, fetchUsers)
 .op-cell { white-space: nowrap; }
 .action-link.danger { color: var(--danger); }
 .action-link.danger:hover { background: #fce8e6; }
+
+/* 关联状态徽标 */
+.link-badge { display: inline-block; padding: 2px 9px; border-radius: 10px; font-size: 12px; font-weight: 500; white-space: nowrap; }
+.link-badge.linked { background: #e6f4ea; color: #1e8e3e; }
+.link-badge.unlinked { background: #fef0e6; color: #e8710a; }
 
 /* 按钮变体 */
 .btn-danger { background: var(--danger); color: #fff; border: 1px solid var(--danger); }
