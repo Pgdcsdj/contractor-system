@@ -15,6 +15,7 @@ const ADMIN_API_PREFIXES = [
   '/api/data',      // ← 数据备份/导出（admin/superadmin）
   '/api/contractor-docs', // ← 承包商开工资料（admin/superadmin）
   '/api/quality',   // ← 出题质量量化校验与追踪（admin/superadmin）
+  '/api/notify-config', // ← 钉钉通知设置（后台可配，需 admin token；漏登记会误跳 /login）
 ]
 
 const request = axios.create({
