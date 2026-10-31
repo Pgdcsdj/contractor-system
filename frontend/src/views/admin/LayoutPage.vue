@@ -42,11 +42,6 @@
           <Icon name="clipboard" :size="20" class="nav-icon" />
           <span v-if="!sidebarCollapsed" class="nav-label">答题记录</span>
         </router-link>
-        <router-link to="/admin/categories" class="nav-item">
-          <Icon name="tag" :size="20" class="nav-icon" />
-          <span v-if="!sidebarCollapsed" class="nav-label">培训分类管理</span>
-        </router-link>
-
         <!-- 分组二：隐患整改 -->
         <div v-if="!sidebarCollapsed" class="nav-group-title">隐患整改</div>
         <router-link to="/admin/hazard-monitor" class="nav-item">
@@ -76,21 +71,6 @@
           <span v-if="!sidebarCollapsed" class="nav-reserved-tag">预留</span>
         </router-link>
 
-        <!-- 分组三：数据管理 -->
-        <div v-if="!sidebarCollapsed" class="nav-group-title">数据管理</div>
-        <router-link to="/admin/data" class="nav-item">
-          <Icon name="inbox" :size="20" class="nav-icon" />
-          <span v-if="!sidebarCollapsed" class="nav-label">数据管理</span>
-        </router-link>
-        <router-link to="/admin/hazard-settings" class="nav-item">
-          <Icon name="settings" :size="20" class="nav-icon" />
-          <span v-if="!sidebarCollapsed" class="nav-label">隐患模块设置</span>
-        </router-link>
-        <router-link to="/admin/dingtalk-notify" class="nav-item">
-          <Icon name="bell" :size="20" class="nav-icon" />
-          <span v-if="!sidebarCollapsed" class="nav-label">钉钉通知设置</span>
-        </router-link>
-
         <!-- 分组四：作业与考核（菜单预留，功能开发中） -->
         <div v-if="!sidebarCollapsed" class="nav-group-title">作业与考核</div>
         <router-link to="/admin/work-appointment" class="nav-item nav-item--reserved">
@@ -114,6 +94,24 @@
           <span v-if="!sidebarCollapsed" class="nav-reserved-tag">预留</span>
         </router-link>
 
+        <!-- 分组末：设置管理（数据管理改名，并收编培训分类管理、账号管理） -->
+        <div v-if="!sidebarCollapsed" class="nav-group-title">设置管理</div>
+        <router-link to="/admin/data" class="nav-item">
+          <Icon name="inbox" :size="20" class="nav-icon" />
+          <span v-if="!sidebarCollapsed" class="nav-label">数据管理</span>
+        </router-link>
+        <router-link to="/admin/hazard-settings" class="nav-item">
+          <Icon name="settings" :size="20" class="nav-icon" />
+          <span v-if="!sidebarCollapsed" class="nav-label">隐患模块设置</span>
+        </router-link>
+        <router-link to="/admin/dingtalk-notify" class="nav-item">
+          <Icon name="bell" :size="20" class="nav-icon" />
+          <span v-if="!sidebarCollapsed" class="nav-label">钉钉通知设置</span>
+        </router-link>
+        <router-link to="/admin/categories" class="nav-item">
+          <Icon name="tag" :size="20" class="nav-icon" />
+          <span v-if="!sidebarCollapsed" class="nav-label">培训分类管理</span>
+        </router-link>
         <router-link to="/admin/accounts" class="nav-item">
           <Icon name="users" :size="20" class="nav-icon" />
           <span v-if="!sidebarCollapsed" class="nav-label">账号管理</span>
