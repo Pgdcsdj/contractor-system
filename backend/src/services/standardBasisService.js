@@ -91,8 +91,29 @@ async function matchStandardBasisDb(p, arg = {}) {
   return { matched: false, standard_basis: '', source: '' }
 }
 
+// ─── 筛选项（适用场所 / 违章分类 / 扣分风险等级 去重列表）────────────────────────
+async function getFilterOptions() {
+  const [placeRows] = await pool.execute(
+    `SELECT DISTINCT place FROM t_violation WHERE place IS NOT NULL AND place <> ? ORDER BY place`,
+    ['']
+  )
+  const [catRows] = await pool.execute(
+    `SELECT DISTINCT category FROM t_violation WHERE category IS NOT NULL AND category <> ? ORDER BY category`,
+    ['']
+  )
+  const [dedRows] = await pool.execute(
+    `SELECT DISTINCT deduct_level FROM t_violation WHERE deduct_level IS NOT NULL AND deduct_level <> ? ORDER BY deduct_level`,
+    ['']
+  )
+  return {
+    places: placeRows.map((r) => r.place),
+    categories: catRows.map((r) => r.category),
+    deductLevels: dedRows.map((r) => r.deduct_level),
+  }
+}
+
 // ─── CRUD ────────────────────────────────────────────────────────────────────
-async function listLibrary({ page = 1, pageSize = 50, keyword = '' } = {}) {
+async function listLibrary({ page = 1, pageSize = 50, keyword = '', place = '', category = '', deductLevel = '' } = {}) {
   const p = Number(page) || 1
   const ps = Math.min(Math.max(Number(pageSize) || 50, 1), 200)
   const offset = (p - 1) * ps
@@ -103,12 +124,16 @@ async function listLibrary({ page = 1, pageSize = 50, keyword = '' } = {}) {
     where.push('(code LIKE ? OR place LIKE ? OR category LIKE ? OR sub_segment LIKE ? OR inspect_object LIKE ? OR content LIKE ? OR basis LIKE ? OR deduct_level LIKE ?)')
     params.push(kw, kw, kw, kw, kw, kw, kw, kw)
   }
+  if (place && place.trim()) { where.push('place = ?'); params.push(place.trim()) }
+  if (category && category.trim()) { where.push('category = ?'); params.push(category.trim()) }
+  if (deductLevel && deductLevel.trim()) { where.push('deduct_level = ?'); params.push(deductLevel.trim()) }
+  const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : ''
   const [rows] = await pool.execute(
-    `SELECT ${SELECT_COLS} FROM t_violation ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY category, id LIMIT ${ps} OFFSET ${offset}`,
+    `SELECT ${SELECT_COLS} FROM t_violation ${whereSql} ORDER BY category, id LIMIT ${ps} OFFSET ${offset}`,
     params
   )
   const [cnt] = await pool.execute(
-    `SELECT COUNT(*) AS total FROM t_violation ${where.length ? 'WHERE ' + where.join(' AND ') : ''}`,
+    `SELECT COUNT(*) AS total FROM t_violation ${whereSql}`,
     params
   )
   return { list: rows, total: cnt[0].total, page: p, pageSize: ps }
@@ -232,8 +257,8 @@ function generateLibraryTemplate() {
   const sample = ['A1-001', '陆上油气场站', '直接作业安全', '动火作业', '作业人员', '动火作业前应办理动火许可证，落实监护与防火措施', 'GB 30871-2022', '扣2分/高风险']
   const ws = XLSX.utils.aoa_to_sheet([headers, sample])
   const wb = XLSX.utils.book_new()
-  wb.SheetNames.push('安全违章依据库模板')
-  wb.Sheets['安全违章依据库模板'] = ws
+  wb.SheetNames.push('安全检查依据模板')
+  wb.Sheets['安全检查依据模板'] = ws
   return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' })
 }
 
@@ -242,6 +267,7 @@ module.exports = {
   loadBasisLibrary,
   matchStandardBasis,
   matchStandardBasisDb,
+  getFilterOptions,
   listLibrary,
   getById,
   create,

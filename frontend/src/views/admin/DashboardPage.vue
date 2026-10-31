@@ -76,7 +76,7 @@
       <h3 class="card-title">快捷操作</h3>
       <div class="action-btns">
         <router-link to="/admin/contractor-units" class="action-btn">
-          <Icon name="building" :size="18" />承包商单位
+          <Icon name="building" :size="18" />网格化管理
         </router-link>
         <router-link to="/admin/hazard-report" class="action-btn">
           <Icon name="hazard" :size="18" />隐患录入

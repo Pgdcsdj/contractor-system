@@ -6,6 +6,21 @@
         <span class="search-icon"><Icon name="search" :size="17" /></span>
         <input v-model="keyword" class="search-input" placeholder="搜索编号 / 场所 / 分类 / 条款 / 依据 / 扣分等级…" @input="onSearchChange" />
       </div>
+      <div class="filter-group">
+        <select v-model="filterPlace" class="filter-select" @change="onFilterChange">
+          <option value="">全部适用场所</option>
+          <option v-for="p in placeOptions" :key="p" :value="p">{{ p }}</option>
+        </select>
+        <select v-model="filterCategory" class="filter-select" @change="onFilterChange">
+          <option value="">全部违章分类</option>
+          <option v-for="c in categoryOptions" :key="c" :value="c">{{ c }}</option>
+        </select>
+        <select v-model="filterDeduct" class="filter-select" @change="onFilterChange">
+          <option value="">全部扣分等级</option>
+          <option v-for="d in deductOptions" :key="d" :value="d">{{ d }}</option>
+        </select>
+        <button v-if="hasFilter" class="btn-ghost" @click="resetFilters">重置</button>
+      </div>
       <div class="toolbar-right">
         <span class="total-count">共 {{ total }} 条</span>
         <button class="btn btn-outline" @click="downloadTemplate"><Icon name="download" :size="17" />模板</button>
@@ -58,16 +73,16 @@
       </div>
 
       <div class="pagination" v-if="totalPages > 1">
-        <button class="pg-btn" :disabled="page === 1" @click="page--"><Icon name="chevronLeft" :size="18" /></button>
+        <button class="pg-btn" :disabled="page === 1" @click="goPage(-1)"><Icon name="chevronLeft" :size="18" /></button>
         <span class="pg-info">{{ page }} / {{ totalPages }}</span>
-        <button class="pg-btn" :disabled="page === totalPages" @click="page++"><Icon name="chevronRight" :size="18" /></button>
+        <button class="pg-btn" :disabled="page === totalPages" @click="goPage(1)"><Icon name="chevronRight" :size="18" /></button>
       </div>
     </div>
 
     <!-- 导入弹窗 -->
     <div v-if="showImport" class="modal-overlay" @click.self="showImport = false">
       <div class="modal">
-        <h3><Icon name="upload" :size="19" /> Excel 导入安全违章依据库</h3>
+        <h3><Icon name="upload" :size="19" /> Excel 导入安全检查依据</h3>
         <p class="modal-hint">
           请上传 .xlsx 文件，表头列名需包含：<strong>违章分类</strong>（必填）、
           <strong>违章条款具体内容</strong>（必填）、<strong>检查依据</strong>（选填）。<br />
@@ -153,6 +168,7 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import Icon from '@/components/Icon.vue'
 import {
   getStandardBasisList,
+  getStandardBasisOptions,
   createStandardBasis,
   updateStandardBasis,
   deleteStandardBasis,
@@ -169,16 +185,53 @@ const loading = ref(false)
 const keyword = ref('')
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
 
+// ─── 筛选（适用场所 / 违章分类 / 扣分风险等级）─────────────────────────────────
+const filterPlace = ref('')
+const filterCategory = ref('')
+const filterDeduct = ref('')
+const placeOptions = ref([])
+const categoryOptions = ref([])
+const deductOptions = ref([])
+const hasFilter = computed(() => !!(filterPlace.value || filterCategory.value || filterDeduct.value))
+
+async function loadOptions() {
+  try {
+    const res = await getStandardBasisOptions()
+    placeOptions.value = res.data?.data?.places || []
+    categoryOptions.value = res.data?.data?.categories || []
+    deductOptions.value = res.data?.data?.deductLevels || []
+  } catch (e) { /* 筛选项加载失败不影响主列表 */ }
+}
+
 let searchTimer = null
 function onSearchChange() {
   if (searchTimer) clearTimeout(searchTimer)
   searchTimer = setTimeout(() => { page.value = 1; loadList() }, 300)
 }
 
+function onFilterChange() {
+  page.value = 1
+  loadList()
+}
+function resetFilters() {
+  filterPlace.value = ''
+  filterCategory.value = ''
+  filterDeduct.value = ''
+  page.value = 1
+  loadList()
+}
+
 async function loadList() {
   loading.value = true
   try {
-    const res = await getStandardBasisList({ page: page.value, pageSize: pageSize.value, keyword: keyword.value })
+    const res = await getStandardBasisList({
+      page: page.value,
+      pageSize: pageSize.value,
+      keyword: keyword.value,
+      place: filterPlace.value,
+      category: filterCategory.value,
+      deductLevel: filterDeduct.value,
+    })
     list.value = res.data?.data?.list || []
     total.value = res.data?.data?.total || 0
   } catch (e) {
@@ -186,6 +239,13 @@ async function loadList() {
   } finally {
     loading.value = false
   }
+}
+
+function goPage(delta) {
+  const next = page.value + delta
+  if (next < 1 || next > totalPages.value) return
+  page.value = next
+  loadList()
 }
 
 // ─── 新增 / 编辑 ────────────────────────────────────────────────────────────
@@ -316,12 +376,18 @@ function showToast(msg, type = 'success') {
   toastTimer = setTimeout(() => { toast.show = false }, 3200)
 }
 
-onMounted(loadList)
+onMounted(async () => {
+  await loadOptions()
+  loadList()
+})
 </script>
 
 <style scoped>
 .users-page { max-width: 1280px; }
 .toolbar { display: flex; align-items: center; gap: 12px; padding: 14px 18px; margin-bottom: 16px; flex-wrap: wrap; }
+.filter-group { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.filter-select { padding: 9px 10px; border: 1px solid var(--c-border); border-radius: 10px; background: var(--c-bg); color: var(--c-text); font-size: 14px; max-width: 200px; }
+.btn-ghost { background: transparent; border: none; color: var(--c-primary); cursor: pointer; font-size: 13px; padding: 6px 8px; white-space: nowrap; }
 .search-wrap { position: relative; flex: 1; min-width: 240px; }
 .search-icon { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--c-text-2); }
 .search-input { width: 100%; padding: 9px 12px 9px 38px; border: 1px solid var(--c-border); border-radius: 10px; background: var(--c-bg); color: var(--c-text); }

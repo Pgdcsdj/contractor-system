@@ -34,7 +34,7 @@
             <td colspan="9" class="empty-cell"><div class="spinner" style="margin:0 auto"></div></td>
           </tr>
           <tr v-else-if="list.length === 0">
-            <td colspan="9" class="empty-cell">暂无承包商单位数据</td>
+            <td colspan="9" class="empty-cell">暂无网格管理单位数据</td>
           </tr>
           <tr v-for="item in paginatedList" :key="item.id">
             <td><strong>{{ item.unit_name }}</strong></td>
@@ -65,7 +65,7 @@
     <!-- 导入弹窗 -->
     <div v-if="showImport" class="modal-overlay" @click.self="showImport = false">
       <div class="modal">
-        <h3><Icon name="upload" :size="19" /> Excel 导入承包商单位</h3>
+        <h3><Icon name="upload" :size="19" /> Excel 导入网格管理单位</h3>
         <p class="modal-hint">
           请上传 .xlsx 文件，表头列名需包含：<strong>承包商单位名称</strong>（必填），
           <strong>甲方主管单位、专业板块、联系人、联系电话、安全员姓名、安全员手机号</strong>（选填）。<br />
@@ -101,7 +101,7 @@
     <!-- 新增弹窗 -->
     <div v-if="showAdd" class="modal-overlay" @click.self="showAdd = false">
       <div class="modal">
-        <h3><Icon name="plus" :size="19" /> 新增承包商单位</h3>
+        <h3><Icon name="plus" :size="19" /> 新增网格管理单位</h3>
         <div class="edit-form">
           <div class="form-group"><label>单位名称 *</label><input v-model="addForm.unit_name" class="form-input" /></div>
           <div class="form-group"><label>甲方主管单位</label><input v-model="addForm.supervising_unit" class="form-input" /></div>
@@ -130,7 +130,7 @@
     <!-- 编辑弹窗 -->
     <div v-if="showEdit" class="modal-overlay" @click.self="showEdit = false">
       <div class="modal">
-        <h3><Icon name="pencil" :size="19" /> 编辑承包商单位</h3>
+        <h3><Icon name="pencil" :size="19" /> 编辑网格管理单位</h3>
         <div class="edit-form">
           <div class="form-group"><label>单位名称</label><input v-model="editForm.unit_name" class="form-input" /></div>
           <div class="form-group"><label>甲方主管单位</label><input v-model="editForm.supervising_unit" class="form-input" /></div>

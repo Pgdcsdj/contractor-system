@@ -44,7 +44,7 @@
         </router-link>
         <router-link to="/admin/contractor-units" class="nav-item">
           <Icon name="building" :size="20" class="nav-icon" />
-          <span v-if="!sidebarCollapsed" class="nav-label">承包商单位</span>
+          <span v-if="!sidebarCollapsed" class="nav-label">网格化管理</span>
         </router-link>
 
         <!-- 分组二：隐患整改 -->
@@ -61,17 +61,9 @@
           <Icon name="loop" :size="20" class="nav-icon" />
           <span v-if="!sidebarCollapsed" class="nav-label">隐患闭环</span>
         </router-link>
-        <router-link to="/admin/hazard-settings" class="nav-item">
-          <Icon name="settings" :size="20" class="nav-icon" />
-          <span v-if="!sidebarCollapsed" class="nav-label">隐患模块设置</span>
-        </router-link>
-        <router-link to="/admin/dingtalk-notify" class="nav-item">
-          <Icon name="bell" :size="20" class="nav-icon" />
-          <span v-if="!sidebarCollapsed" class="nav-label">钉钉通知设置</span>
-        </router-link>
         <router-link to="/admin/standard-basis" class="nav-item">
           <Icon name="book" :size="20" class="nav-icon" />
-          <span v-if="!sidebarCollapsed" class="nav-label">安全违章依据库</span>
+          <span v-if="!sidebarCollapsed" class="nav-label">安全检查依据</span>
         </router-link>
         <router-link to="/admin/hazard-standard" class="nav-item">
           <Icon name="list" :size="20" class="nav-icon" />
@@ -82,6 +74,14 @@
           <Icon name="check" :size="20" class="nav-icon" />
           <span v-if="!sidebarCollapsed" class="nav-label">排查验证</span>
           <span v-if="!sidebarCollapsed" class="nav-reserved-tag">预留</span>
+        </router-link>
+        <router-link to="/admin/hazard-settings" class="nav-item">
+          <Icon name="settings" :size="20" class="nav-icon" />
+          <span v-if="!sidebarCollapsed" class="nav-label">隐患模块设置</span>
+        </router-link>
+        <router-link to="/admin/dingtalk-notify" class="nav-item">
+          <Icon name="bell" :size="20" class="nav-icon" />
+          <span v-if="!sidebarCollapsed" class="nav-label">钉钉通知设置</span>
         </router-link>
         <router-link to="/admin/data" class="nav-item">
           <Icon name="inbox" :size="20" class="nav-icon" />
@@ -181,13 +181,13 @@ const routeMap = {
   Records: '答题记录',
   Settings: '系统设置',
   Categories: '培训分类管理',
-  ContractorUnits: '承包商单位',
+  ContractorUnits: '网格化管理',
   HazardReport: '隐患录入',
   HazardLoop: '隐患闭环',
   HazardMonitor: '隐患监控看板',
   HazardSettings: '隐患模块设置',
   DingtalkNotifyConfig: '钉钉通知设置',
-  StandardBasisLibrary: '安全违章依据库',
+  StandardBasisLibrary: '安全检查依据',
   HazardStandard: '隐患排查标准',
   AccountManage: '账号管理',
   DataManage: '数据管理',

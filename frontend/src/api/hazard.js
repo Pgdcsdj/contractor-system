@@ -178,9 +178,14 @@ export function deleteRectifyUnitBiz(id) {
 }
 
 // ─── 问题依据库（标准依据）───────────────────────────────────────────────────
-/** 列表（?page&pageSize&keyword） */
+/** 列表（?page&pageSize&keyword&place&category&deductLevel） */
 export function getStandardBasisList(params = {}) {
   return request.get('/api/hazards/standard-basis', { params })
+}
+
+/** 筛选项（适用场所/违章分类/扣分风险等级 去重列表） */
+export function getStandardBasisOptions() {
+  return request.get('/api/hazards/standard-basis/options')
 }
 
 /** 单条匹配（录入页自动匹配用） */

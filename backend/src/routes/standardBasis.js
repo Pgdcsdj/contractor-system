@@ -46,12 +46,22 @@ const upload = multer({
   },
 })
 
-// ─── 列表 ────────────────────────────────────────────────────────────────────
+// ─── 列表（?page&pageSize&keyword&place&category&deductLevel）────────────────
 router.get('/', requireAdminOrSafety, async (req, res) => {
   try {
-    const { page, pageSize, keyword } = req.query
-    const result = await svc.listLibrary({ page, pageSize, keyword })
+    const { page, pageSize, keyword, place, category, deductLevel } = req.query
+    const result = await svc.listLibrary({ page, pageSize, keyword, place, category, deductLevel })
     res.json({ success: true, data: result })
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message })
+  }
+})
+
+// ─── 筛选项（适用场所/违章分类/扣分风险等级 去重列表）──────────────────────────
+router.get('/options', requireAdminOrSafety, async (req, res) => {
+  try {
+    const o = await svc.getFilterOptions()
+    res.json({ success: true, data: o })
   } catch (e) {
     res.status(500).json({ success: false, error: e.message })
   }
@@ -141,8 +151,8 @@ router.get('/export', requireAdminOrSafety, async (req, res) => {
     for (const r of rows) aoa.push([r.code, r.place, r.category, r.sub_segment, r.inspect_object, r.content, r.basis, r.deduct_level])
     const ws = XLSX.utils.aoa_to_sheet(aoa)
     const wb = XLSX.utils.book_new()
-    wb.SheetNames.push('安全违章依据库')
-    wb.Sheets['安全违章依据库'] = ws
+    wb.SheetNames.push('安全检查依据')
+    wb.Sheets['安全检查依据'] = ws
     const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' })
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     res.setHeader('Content-Disposition', 'attachment; filename="standard_basis_export.xlsx"')
