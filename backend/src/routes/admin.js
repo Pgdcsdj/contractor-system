@@ -19,6 +19,7 @@ const XLSX      = require('xlsx')
 const { pool }  = require('../db/db')
 const { importUsers, generateFailReport } = require('../services/importUser')
 const { adminLogin, verifyAdminToken }   = require('../services/adminAuth')
+const { decodeFilename } = require('../utils/filename')
 
 const router = express.Router()
 
@@ -80,7 +81,7 @@ router.post('/import-users', adminAuth, upload.single('file'), async (req, res) 
 
   try {
     const adminId  = req.admin.id
-    const filename = req.file.originalname
+    const filename = decodeFilename(req.file.originalname)
 
     const result = await importUsers(req.file.buffer, adminId, filename)
 

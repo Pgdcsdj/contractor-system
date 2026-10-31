@@ -14,6 +14,7 @@ const multer  = require('multer')
 const { pool } = require('../db/db')
 const { importContractorUnits } = require('../services/importContractorUnit')
 const { verifyAdminToken }      = require('../services/adminAuth')
+const { decodeFilename } = require('../utils/filename')
 
 const router = express.Router()
 
@@ -177,7 +178,7 @@ router.post('/import', adminAuth, upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: '请上传 .xlsx 文件' })
 
   try {
-    const result = await importContractorUnits(req.file.buffer, req.admin.id, req.file.originalname)
+    const result = await importContractorUnits(req.file.buffer, req.admin.id, decodeFilename(req.file.originalname))
     res.json({
       success: true,
       message: `导入完成：成功 ${result.success} 条 / 失败 ${result.fail} 条`,

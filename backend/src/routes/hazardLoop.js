@@ -28,6 +28,7 @@ const { STATUS, LEVELS } = require('../constants/hazardStates')
 const { applyRecorderScope, resolveRecorderContext } = require('../services/permission')
 const importService = require('../services/importService')
 const { matchStandardBasisDb } = require('../services/standardBasisService')
+const { decodeFilename } = require('../utils/filename')
 const path = require('path')
 const multer = require('multer')
 const xlsx = require('xlsx')
@@ -237,7 +238,7 @@ router.post('/import', requireAdminOrSafety, importUpload.single('file'), async 
     // D7：透传 originalname，使 parseWorkbook 能按扩展名判断是否走截图解析
     const data = await importService.previewImport(req.file.buffer, req.admin, {
       importType: req.body && req.body.import_type,
-      originalname: req.file.originalname,
+      originalname: decodeFilename(req.file.originalname),
     })
     res.json({ success: true, data })
   } catch (err) {
@@ -252,7 +253,7 @@ router.post('/import/confirm', requireAdminOrSafety, importUpload.single('file')
     return res.status(400).json({ success: false, error: '请上传 .xlsx / .xls / .csv 文件' })
   }
   try {
-    const data = await importService.commitImport(req.file.buffer, req.admin, req.file.originalname, {
+    const data = await importService.commitImport(req.file.buffer, req.admin, decodeFilename(req.file.originalname), {
       importType: req.body && req.body.import_type,
     })
     res.json({ success: true, data })
@@ -310,7 +311,7 @@ router.get('/import/logs', requireAdminOrSafety, async (req, res) => {
       }
       return {
         id: r.id,
-        filename: r.filename,
+        filename: decodeFilename(r.filename),
         totalRows: r.total_rows,
         successRows: r.success_rows,
         failRows: r.fail_rows,

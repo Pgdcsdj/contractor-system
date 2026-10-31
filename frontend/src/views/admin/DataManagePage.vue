@@ -146,7 +146,7 @@
           {{ loadingImportLogs ? '加载中…' : '刷新' }}
         </button>
       </div>
-      <table class="data-table" v-if="importLogs.length">
+      <table class="data-table" v-if="displayLogs.length">
         <thead>
           <tr>
             <th>文件名</th>
@@ -158,27 +158,44 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="log in importLogs" :key="log.id">
+          <tr v-for="log in displayLogs" :key="log.id">
             <td class="mono">{{ log.filename }}</td>
             <td class="mono" style="font-size:12px">{{ fmtDate(log.createdAt) }}</td>
             <td>{{ log.totalRows }}</td>
             <td class="ok">{{ log.successRows }}</td>
             <td>{{ log.failRows }}</td>
             <td>
-              <button class="action-link" v-if="log.failDetail && log.failDetail.length" @click="toggleLogDetail(log.id)">
-                {{ expandedLogId === log.id ? '收起' : '查看(' + log.failDetail.length + ')' }}
+              <button class="action-link" @click="toggleLogDetail(log.id)">
+                {{ expandedLogId === log.id ? '收起' : '查看' }}
               </button>
-              <span v-else class="muted">—</span>
             </td>
           </tr>
         </tbody>
       </table>
       <p v-else class="empty-hint">暂无导入记录</p>
 
-      <div v-for="log in importLogs" :key="'d' + log.id">
-        <div v-if="expandedLogId === log.id && log.failDetail && log.failDetail.length" class="log-detail">
-          <div v-for="(f, i) in log.failDetail" :key="i" class="log-detail-item">
-            [{{ f.sheetName }}] 第 {{ f.rowNo }} 行：{{ f.reason }}
+      <div class="log-fold" v-if="importLogs.length > 3">
+        <button class="btn btn-ghost btn-sm" @click="showAllLogs = !showAllLogs">
+          {{ showAllLogs ? '收起历史记录' : '展开全部 ' + (importLogs.length - 3) + ' 条' }}
+        </button>
+      </div>
+
+      <div v-for="log in displayLogs" :key="'d' + log.id">
+        <div v-if="expandedLogId === log.id" class="log-detail">
+          <div class="log-detail-head">
+            <strong>{{ log.filename }}</strong>
+            <span class="muted"> · {{ fmtDate(log.createdAt) }}</span>
+          </div>
+          <div class="log-detail-stats">
+            共 {{ log.totalRows }} 条 / 成功 {{ log.successRows }} / 失败·跳过 {{ log.failRows }}
+          </div>
+          <template v-if="log.failDetail && log.failDetail.length">
+            <div v-for="(f, i) in log.failDetail" :key="i" class="log-detail-item">
+              <template v-if="f.sheetName">[{{ f.sheetName }}] </template>第 {{ f.rowNo || f.row }} 行：{{ f.reason || f.error }}
+            </div>
+          </template>
+          <div v-else class="log-detail-empty">
+            ✅ 本次导入全部成功，无失败 / 跳过明细。
           </div>
         </div>
       </div>
@@ -230,6 +247,12 @@ const backups = ref([])
 const importLogs = ref([])
 const loadingImportLogs = ref(false)
 const expandedLogId = ref(null)
+// 默认仅展示最新 3 条，其余折叠（展开全部 / 收起）
+const showAllLogs = ref(false)
+const displayLogs = computed(() => {
+  const arr = importLogs.value || []
+  return showAllLogs.value ? arr : arr.slice(0, 3)
+})
 
 // 导出状态
 const exportRange = ref('this_week')
@@ -623,6 +646,11 @@ async function loadDictOptions() {
 .ok { color: var(--c-success); font-weight: 600; }
 .log-detail { margin: 8px 0 18px; padding: 10px 12px; background: #f8f9fa; border: 1px solid var(--c-border); border-radius: 8px; }
 .log-detail-item { font-size: 12px; line-height: 1.9; color: var(--c-text-2); }
+.log-detail-head { font-size: 13px; color: var(--c-text); margin-bottom: 4px; }
+.log-detail-stats { font-size: 12px; color: var(--c-text-2); margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px dashed var(--c-border); }
+.log-detail-empty { font-size: 12.5px; color: var(--c-success); padding: 4px 0; }
+.log-fold { margin: 10px 0 4px; }
+.btn-sm { width: auto; font-size: 12px; padding: 6px 14px; }
 
 /* 多选下拉 */
 .multi-select { position: relative; }

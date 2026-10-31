@@ -75,6 +75,13 @@
           <span v-if="!sidebarCollapsed" class="nav-label">排查验证</span>
           <span v-if="!sidebarCollapsed" class="nav-reserved-tag">预留</span>
         </router-link>
+
+        <!-- 分组三：数据管理 -->
+        <div v-if="!sidebarCollapsed" class="nav-group-title">数据管理</div>
+        <router-link to="/admin/data" class="nav-item">
+          <Icon name="inbox" :size="20" class="nav-icon" />
+          <span v-if="!sidebarCollapsed" class="nav-label">数据管理</span>
+        </router-link>
         <router-link to="/admin/hazard-settings" class="nav-item">
           <Icon name="settings" :size="20" class="nav-icon" />
           <span v-if="!sidebarCollapsed" class="nav-label">隐患模块设置</span>
@@ -82,10 +89,6 @@
         <router-link to="/admin/dingtalk-notify" class="nav-item">
           <Icon name="bell" :size="20" class="nav-icon" />
           <span v-if="!sidebarCollapsed" class="nav-label">钉钉通知设置</span>
-        </router-link>
-        <router-link to="/admin/data" class="nav-item">
-          <Icon name="inbox" :size="20" class="nav-icon" />
-          <span v-if="!sidebarCollapsed" class="nav-label">数据管理</span>
         </router-link>
 
         <!-- 分组四：作业与考核（菜单预留，功能开发中） -->
