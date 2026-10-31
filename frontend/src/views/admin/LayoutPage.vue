@@ -19,6 +19,10 @@
           <Icon name="building" :size="20" class="nav-icon" />
           <span v-if="!sidebarCollapsed" class="nav-label">承包商开工资料</span>
         </router-link>
+        <router-link to="/admin/contractor-units" class="nav-item">
+          <Icon name="building" :size="20" class="nav-icon" />
+          <span v-if="!sidebarCollapsed" class="nav-label">网格化管理</span>
+        </router-link>
 
         <!-- 分组一：承包商人员培训 -->
         <div v-if="!sidebarCollapsed" class="nav-group-title">承包商人员培训</div>
@@ -41,10 +45,6 @@
         <router-link to="/admin/categories" class="nav-item">
           <Icon name="tag" :size="20" class="nav-icon" />
           <span v-if="!sidebarCollapsed" class="nav-label">培训分类管理</span>
-        </router-link>
-        <router-link to="/admin/contractor-units" class="nav-item">
-          <Icon name="building" :size="20" class="nav-icon" />
-          <span v-if="!sidebarCollapsed" class="nav-label">网格化管理</span>
         </router-link>
 
         <!-- 分组二：隐患整改 -->

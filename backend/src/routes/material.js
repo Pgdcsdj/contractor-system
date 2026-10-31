@@ -993,6 +993,9 @@ router.put('/:id/exam-config', adminAuth, async (req, res) => {
     exam_single_score = 0,
     exam_multiple_score = 0,
     exam_judgment_score = 0,
+    // 考试时长(分钟) / 及格分：可选传入，未传或非法时保留原值
+    time_limit,
+    pass_score,
   } = req.body || {}
 
   const toSafeNum = (v) => Math.min(9999, Math.max(0, parseInt(v, 10) || 0))
@@ -1003,32 +1006,41 @@ router.put('/:id/exam-config', adminAuth, async (req, res) => {
 
   try {
     const [[material]] = await pool.execute(
-      'SELECT id, title, mode FROM t_material WHERE id = ?', [id]
+      'SELECT id, title, mode, time_limit, pass_score FROM t_material WHERE id = ?', [id]
     )
     if (!material) return res.status(404).json({ error: '题库不存在' })
 
     // 未传 mode（旧客户端）时保留素材原有默认模式
     const newMode = safeMode || material.mode || 'exam'
+    // 考试时长：1~600 分钟；及格分：0~100。未传/非法 → 保留原值
+    const newTimeLimit = (time_limit !== undefined && time_limit !== null && time_limit !== '')
+      ? Math.min(600, Math.max(1, parseInt(time_limit, 10) || 30))
+      : (Number(material.time_limit) || 30)
+    const newPassScore = (pass_score !== undefined && pass_score !== null && pass_score !== '')
+      ? Math.min(100, Math.max(0, Number(pass_score) || 0))
+      : (Number(material.pass_score) || 60)
 
     await pool.execute(
       `UPDATE t_material
           SET exam_single_num = ?, exam_multiple_num = ?, exam_judgment_num = ?,
               exam_single_score = ?, exam_multiple_score = ?, exam_judgment_score = ?,
-              mode = ?
+              mode = ?, time_limit = ?, pass_score = ?
         WHERE id = ?`,
       [toSafeNum(exam_single_num), toSafeNum(exam_multiple_num), toSafeNum(exam_judgment_num),
        toSafeScore(exam_single_score), toSafeScore(exam_multiple_score), toSafeScore(exam_judgment_score),
-       newMode, id]
+       newMode, newTimeLimit, newPassScore, id]
     )
 
     res.json({
       success: true,
       message: newMode === 'exam'
-        ? '考试抽题配置已保存'
-        : `抽题配置已保存（当前题库默认模式为「${newMode}」，仅考试模式生效）`,
+        ? '考试配置已保存'
+        : `考试配置已保存（当前题库默认模式为「${newMode}」，抽题配置仅考试模式生效）`,
       data: {
         materialId: Number(id),
         mode: newMode,
+        time_limit: newTimeLimit,
+        pass_score: newPassScore,
         exam_single_num:   toSafeNum(exam_single_num),
         exam_multiple_num: toSafeNum(exam_multiple_num),
         exam_judgment_num: toSafeNum(exam_judgment_num),
