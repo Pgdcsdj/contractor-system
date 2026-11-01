@@ -7,12 +7,13 @@
       <!-- 状态流程条 -->
       <div class="status-flow">
         <template v-for="(s, i) in statusFlow" :key="s.key">
-          <div class="flow-step done">
+          <div class="flow-step done" :class="{ clickable: activeTab !== s.key }" @click="onTabChange(s.key)">
             <span class="step-icon"><Icon :name="s.icon" :size="22" /></span>
             <div class="step-text">
               <div class="step-label">{{ s.label }}</div>
               <div class="step-en">{{ s.en }}</div>
             </div>
+            <span class="step-count" :class="{ zero: flowCount(s.key) === 0 }">{{ flowCount(s.key) }}</span>
           </div>
           <span v-if="i < statusFlow.length - 1" class="step-connector"><Icon name="chevronRight" :size="18" /></span>
         </template>
@@ -261,6 +262,10 @@ function tabCount(key) {
   return (s.byStatus && s.byStatus[key]) || 0
 }
 
+function flowCount(key) {
+  return (summary.value?.byStatus || {})[key] || 0
+}
+
 function fmtDate(v) {
   if (!v) return '-'
   return String(v).slice(0, 16).replace('T', ' ')
@@ -460,6 +465,13 @@ onUnmounted(() => {
   border: 1px solid var(--c-border); border-radius: var(--r-lg); margin-bottom: 20px; flex-wrap: wrap;
 }
 .flow-step { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 140px; }
+.flow-step.clickable { cursor: pointer; }
+.flow-step.clickable:hover .step-label { color: var(--c-primary); }
+.step-count {
+  margin-left: auto; font-size: 22px; font-weight: 700; color: var(--c-primary);
+  font-variant-numeric: tabular-nums; line-height: 1;
+}
+.step-count.zero { color: var(--c-text-3); opacity: .45; }
 .step-icon {
   width: 44px; height: 44px; border-radius: 12px; flex-shrink: 0;
   display: flex; align-items: center; justify-content: center; color: #fff;
