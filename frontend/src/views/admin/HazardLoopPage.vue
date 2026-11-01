@@ -8,12 +8,10 @@
       <div class="status-flow">
         <template v-for="(s, i) in statusFlow" :key="s.key">
           <div class="flow-step done" :class="{ clickable: activeTab !== s.key }" @click="onTabChange(s.key)">
-            <span class="step-icon"><Icon :name="s.icon" :size="22" /></span>
             <div class="step-text">
               <div class="step-label">{{ s.label }}</div>
               <div class="step-en">{{ s.en }}</div>
             </div>
-            <span class="step-count" :class="{ zero: flowCount(s.key) === 0 }">{{ flowCount(s.key) }}</span>
           </div>
           <span v-if="i < statusFlow.length - 1" class="step-connector"><Icon name="chevronRight" :size="18" /></span>
         </template>
@@ -203,11 +201,11 @@ import {
 import { getInvestigationItems } from '@/api/safety'
 
 const statusFlow = [
-  { key: 'reported', label: '已上报', en: 'Reported', icon: 'hazard' },
-  { key: 'assigned', label: '已分派', en: 'Assigned', icon: 'users' },
-  { key: 'rectifying', label: '整改中', en: 'Rectifying', icon: 'settings' },
-  { key: 'verifying', label: '待验收', en: 'Verifying', icon: 'check' },
-  { key: 'closed', label: '已闭环', en: 'Closed', icon: 'shield' },
+  { key: 'reported', label: '已上报', en: 'Reported' },
+  { key: 'assigned', label: '已分派', en: 'Assigned' },
+  { key: 'rectifying', label: '整改中', en: 'Rectifying' },
+  { key: 'verifying', label: '待验收', en: 'Verifying' },
+  { key: 'closed', label: '已闭环', en: 'Closed' },
 ]
 
 const tabs = [
@@ -260,10 +258,6 @@ function tabCount(key) {
   if (key === 'all') return Object.values(s.byStatus || {}).reduce((a, b) => a + (b || 0), 0)
   if (key === 'overdue') return s.overdue || 0
   return (s.byStatus && s.byStatus[key]) || 0
-}
-
-function flowCount(key) {
-  return (summary.value?.byStatus || {})[key] || 0
 }
 
 function fmtDate(v) {
@@ -467,16 +461,6 @@ onUnmounted(() => {
 .flow-step { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 140px; }
 .flow-step.clickable { cursor: pointer; }
 .flow-step.clickable:hover .step-label { color: var(--c-primary); }
-.step-count {
-  margin-left: auto; font-size: 22px; font-weight: 700; color: var(--c-primary);
-  font-variant-numeric: tabular-nums; line-height: 1;
-}
-.step-count.zero { color: var(--c-text-3); opacity: .45; }
-.step-icon {
-  width: 44px; height: 44px; border-radius: 12px; flex-shrink: 0;
-  display: flex; align-items: center; justify-content: center; color: #fff;
-  background: linear-gradient(135deg, var(--c-blue-500), var(--c-blue-700));
-}
 .step-text { display: flex; flex-direction: column; line-height: 1.3; }
 .step-label { font-size: 14px; font-weight: 600; color: var(--c-text); }
 .step-en { font-size: 11px; color: var(--c-text-3); letter-spacing: .5px; }
