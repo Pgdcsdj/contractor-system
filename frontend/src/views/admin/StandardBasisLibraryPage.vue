@@ -61,7 +61,7 @@
               <td>{{ item.sub_segment || '-' }}</td>
               <td>{{ item.inspect_object || '-' }}</td>
               <td class="basis-cell">{{ item.standard_basis }}</td>
-              <td>{{ item.source || '-' }}</td>
+              <td class="source-cell">{{ item.source || '-' }}</td>
               <td>{{ item.deduct_level || '-' }}</td>
               <td class="op-cell">
                 <button class="action-link" @click="openEdit(item)"><Icon name="pencil" :size="14" /> 编辑</button>
@@ -398,7 +398,8 @@ onMounted(async () => {
 .data-table { width: 100%; border-collapse: collapse; min-width: 1100px; }
 .data-table th, .data-table td { padding: 12px 14px; text-align: left; border-bottom: 1px solid var(--c-border); font-size: 14px; vertical-align: top; }
 .data-table th { font-size: 12px; color: var(--c-text-2); font-weight: 600; background: var(--c-bg-soft); white-space: nowrap; }
-.basis-cell { max-width: 380px; white-space: pre-wrap; word-break: break-word; line-height: 1.5; }
+.basis-cell { max-width: 640px; min-width: 360px; width: 42%; white-space: pre-wrap; word-break: break-word; line-height: 1.5; }
+.source-cell { max-width: 280px; min-width: 160px; word-break: break-all; line-height: 1.5; }
 .op-cell { white-space: nowrap; }
 .mono { font-family: ui-monospace, monospace; }
 .empty-cell { text-align: center; color: var(--c-text-2); padding: 28px; }
