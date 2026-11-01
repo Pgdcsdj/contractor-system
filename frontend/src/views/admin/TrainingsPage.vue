@@ -308,7 +308,8 @@ const gridL2Options = [
   '试气作业工程',
   '地面工程',
   '生产运行',
-  '技术监测中心工程监督站',
+  '工程监督',
+  '后勤保障',
 ]
 const filteredUnits = computed(() =>
   filterGridL2.value ? allUnits.value.filter(u => u.grid_l2 === filterGridL2.value) : allUnits.value

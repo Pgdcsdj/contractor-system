@@ -1,12 +1,13 @@
 /**
- * 承包商单位管理路由（Sprint 1 / S1-3）
+ * 承包商单位（网格化管理）路由
  *
- * GET    /api/contractor-units          单位列表（搜索/分页，默认仅显示在册）
- * GET    /api/contractor-units/:id      单位详情
- * POST   /api/contractor-units          新增单位
- * PUT    /api/contractor-units/:id      编辑单位
- * DELETE /api/contractor-units/:id      软退场（is_active=0，保留历史关联）
- * POST   /api/contractor-units/import   Excel 批量导入（需 .xlsx）
+ * GET    /api/contractor-units           单位列表（搜索/分页/板块/层级筛选，默认仅显示在册）
+ * GET    /api/contractor-units/options   下拉选项（id/unit_name/grid_l2/grid_level/parent_id）
+ * GET    /api/contractor-units/:id       单位详情
+ * POST   /api/contractor-units           新增单位
+ * PUT    /api/contractor-units/:id       编辑单位
+ * DELETE /api/contractor-units/:id       软退场（is_active=0，保留历史关联）
+ * POST   /api/contractor-units/import    Excel 批量导入（需 .xlsx）
  */
 
 const express = require('express')
@@ -18,7 +19,7 @@ const { decodeFilename } = require('../utils/filename')
 
 const router = express.Router()
 
-// ─── JWT 鉴权中间件（与 admin.js / material.js 一致）─────────────────────────
+// ─── JWT 鉴权中间件 ─────────────────────────────────────────────────────────
 function adminAuth(req, res, next) {
   const authHeader = req.headers['authorization']
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -53,26 +54,31 @@ const upload = multer({
 router.get('/', adminAuth, async (req, res) => {
   const {
     keyword = '',
-    supervising = '',
+    gridL2 = '',
+    gridLevel = '',
     page = 1,
-    pageSize = 20,
+    pageSize = 50,
     includeInactive = '0',
   } = req.query
 
   const safePage     = Math.max(1, Number(page)     || 1)
-  const safePageSize = Math.min(100, Math.max(1, Number(pageSize) || 20))
+  const safePageSize = Math.min(200, Math.max(1, Number(pageSize) || 50))
   const safeOffset   = (safePage - 1) * safePageSize
 
   const params = []
   let where = 'WHERE 1=1'
   if (includeInactive !== '1') where += ' AND is_active = 1'
   if (keyword) {
-    where += ' AND (unit_name LIKE ? OR supervising_unit LIKE ? OR contact_name LIKE ? OR safety_officer_name LIKE ?)'
-    params.push(`%${keyword}%`, `%${keyword}%`, `%${keyword}%`, `%${keyword}%`)
+    where += ' AND (unit_name LIKE ? OR grid_l2 LIKE ? OR parent_unit_name LIKE ? OR grid_leader LIKE ? OR remark LIKE ?)'
+    params.push(`%${keyword}%`, `%${keyword}%`, `%${keyword}%`, `%${keyword}%`, `%${keyword}%`)
   }
-  if (supervising) {
-    where += ' AND supervising_unit = ?'
-    params.push(supervising)
+  if (gridL2) {
+    where += ' AND grid_l2 = ?'
+    params.push(gridL2)
+  }
+  if (gridLevel) {
+    where += ' AND grid_level = ?'
+    params.push(gridLevel)
   }
 
   const [[{ total }]] = await pool.execute(
@@ -80,15 +86,24 @@ router.get('/', adminAuth, async (req, res) => {
     params
   )
   const [rows] = await pool.query(
-    `SELECT id, unit_name, supervising_unit, contact_name, contact_phone,
-            safety_officer_name, safety_officer_phone, is_active, created_at, updated_at
+    `SELECT id, unit_name, grid_l2, grid_level, parent_unit_name, parent_id,
+            grid_leader, grid_member, remark, seq_no, is_active, created_at, updated_at
      FROM t_contractor_unit ${where}
-     ORDER BY created_at DESC
+     ORDER BY FIELD(grid_level, '一级','二级','三级','四级'), CAST(seq_no AS UNSIGNED), id
      LIMIT ${safePageSize} OFFSET ${safeOffset}`,
     params
   )
 
   res.json({ success: true, data: { total, list: rows, page: safePage, pageSize: safePageSize } })
+})
+
+// ─── GET /api/contractor-units/options ───────────────────────────────────────
+router.get('/options', adminAuth, async (req, res) => {
+  const [rows] = await pool.execute(
+    `SELECT id, unit_name, grid_l2, grid_level, parent_id, is_active
+     FROM t_contractor_unit ORDER BY FIELD(grid_level, '一级','二级','三级','四级'), CAST(seq_no AS UNSIGNED), id`
+  )
+  res.json({ success: true, data: rows })
 })
 
 // ─── GET /api/contractor-units/:id ──────────────────────────────────────────
@@ -102,15 +117,19 @@ router.get('/:id', adminAuth, async (req, res) => {
 router.post('/', adminAuth, async (req, res) => {
   const {
     unit_name,
-    supervising_unit = '',
-    contact_name = '',
-    contact_phone = '',
-    safety_officer_name = '',
-    safety_officer_phone = '',
+    grid_l2 = '',
+    grid_level = '',
+    parent_unit_name = '',
+    parent_id = null,
+    grid_leader = '',
+    grid_member = '',
+    remark = '',
+    seq_no = '',
+    is_active = 1,
   } = req.body
 
   if (!unit_name || !unit_name.trim()) {
-    return res.status(400).json({ error: '请输入承包商单位名称' })
+    return res.status(400).json({ error: '请输入单位名称' })
   }
 
   const [existing] = await pool.execute(
@@ -123,10 +142,11 @@ router.post('/', adminAuth, async (req, res) => {
 
   const [result] = await pool.execute(
     `INSERT INTO t_contractor_unit
-       (unit_name, supervising_unit, contact_name, contact_phone, safety_officer_name, safety_officer_phone, is_active)
-     VALUES (?, ?, ?, ?, ?, ?, 1)`,
-    [unit_name.trim(), supervising_unit.trim(), contact_name.trim(),
-     contact_phone.trim(), safety_officer_name.trim(), safety_officer_phone.trim()]
+       (unit_name, grid_l2, grid_level, parent_unit_name, parent_id, grid_leader, grid_member, remark, seq_no, is_active)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [unit_name.trim(), grid_l2.trim(), grid_level.trim(), parent_unit_name.trim(),
+     parent_id ? Number(parent_id) : null, grid_leader.trim(), grid_member.trim(),
+     remark.trim(), String(seq_no || '').trim(), Number(is_active)]
   )
 
   res.json({ success: true, message: '单位已添加', data: { id: result.insertId } })
@@ -139,18 +159,21 @@ router.put('/:id', adminAuth, async (req, res) => {
   if (!existing.length) return res.status(404).json({ error: '单位不存在' })
 
   const {
-    unit_name, supervising_unit, contact_name, contact_phone,
-    safety_officer_name, safety_officer_phone, is_active,
+    unit_name, grid_l2, grid_level, parent_unit_name, parent_id,
+    grid_leader, grid_member, remark, seq_no, is_active,
   } = req.body
 
   const updates = []
   const params = []
   if (unit_name !== undefined)            { updates.push('unit_name = ?');            params.push(unit_name.trim()) }
-  if (supervising_unit !== undefined)     { updates.push('supervising_unit = ?');     params.push(supervising_unit.trim()) }
-  if (contact_name !== undefined)         { updates.push('contact_name = ?');         params.push(contact_name.trim()) }
-  if (contact_phone !== undefined)        { updates.push('contact_phone = ?');        params.push(contact_phone.trim()) }
-  if (safety_officer_name !== undefined)  { updates.push('safety_officer_name = ?');  params.push(safety_officer_name.trim()) }
-  if (safety_officer_phone !== undefined) { updates.push('safety_officer_phone = ?'); params.push(safety_officer_phone.trim()) }
+  if (grid_l2 !== undefined)              { updates.push('grid_l2 = ?');              params.push(grid_l2.trim()) }
+  if (grid_level !== undefined)           { updates.push('grid_level = ?');           params.push(grid_level.trim()) }
+  if (parent_unit_name !== undefined)     { updates.push('parent_unit_name = ?');      params.push(parent_unit_name.trim()) }
+  if (parent_id !== undefined)            { updates.push('parent_id = ?');            params.push(parent_id ? Number(parent_id) : null) }
+  if (grid_leader !== undefined)          { updates.push('grid_leader = ?');          params.push(grid_leader.trim()) }
+  if (grid_member !== undefined)           { updates.push('grid_member = ?');          params.push(grid_member.trim()) }
+  if (remark !== undefined)               { updates.push('remark = ?');               params.push(remark.trim()) }
+  if (seq_no !== undefined)               { updates.push('seq_no = ?');               params.push(String(seq_no || '').trim()) }
   if (is_active !== undefined)            { updates.push('is_active = ?');            params.push(Number(is_active)) }
 
   if (!updates.length) return res.status(400).json({ error: '请提供要修改的字段' })
@@ -181,11 +204,14 @@ router.post('/import', adminAuth, upload.single('file'), async (req, res) => {
     const result = await importContractorUnits(req.file.buffer, req.admin.id, decodeFilename(req.file.originalname))
     res.json({
       success: true,
-      message: `导入完成：成功 ${result.success} 条 / 失败 ${result.fail} 条`,
+      message: `导入完成：成功 ${result.success} 条 / 失败 ${result.fail} 条（上级关联已解析 ${result.parentResolved} 条）`,
       data: {
         total:   result.total,
         success: result.success,
         fail:    result.fail,
+        parentResolved: result.parentResolved,
+        parentUnresolved: result.parentUnresolved,
+        warnings: result.warnings || [],
         failPreview: result.failList.slice(0, 10),
       },
     })

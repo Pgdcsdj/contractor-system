@@ -151,6 +151,36 @@ async function autoMigrate() {
       }
     }
 
+    // 3.7 网格化管理字段（四级网格：序号/板块/层级/上级/网格长网格员/备注/系统ID）
+    //     对照模板「承包商单位导入模板终」重做，幂等，重启自动生效。
+    for (const col of [
+      { name: 'grid_l2',          def: "VARCHAR(100) NOT NULL DEFAULT '' COMMENT '二级板块（钻前/钻井/试气/地面/生产运行/工程监督/后勤保障）'" },
+      { name: 'seq_no',           def: "VARCHAR(20)  NOT NULL DEFAULT '' COMMENT '序号'" },
+      { name: 'grid_level',       def: "VARCHAR(10)  NOT NULL DEFAULT '' COMMENT '网格层级 一级/二级/三级/四级'" },
+      { name: 'parent_unit_name', def: "VARCHAR(200) NOT NULL DEFAULT '' COMMENT '上级单位名称（模板列，用于回写 parent_id）'" },
+      { name: 'parent_id',        def: "INT UNSIGNED DEFAULT NULL COMMENT '上级单位 id（网格层级自引用）'" },
+      { name: 'grid_leader',      def: "VARCHAR(200) NOT NULL DEFAULT '' COMMENT '网格长（多人 / 分隔）'" },
+      { name: 'grid_member',      def: "VARCHAR(200) NOT NULL DEFAULT '' COMMENT '网格员（多人 / 分隔）'" },
+      { name: 'remark',           def: "VARCHAR(500) NOT NULL DEFAULT '' COMMENT '备注'" },
+      { name: 'sys_existing_id',  def: "VARCHAR(20)  NOT NULL DEFAULT '' COMMENT '系统现有ID（模板对照，追溯用）'" },
+    ]) {
+      if (!(await ensureColumn('t_contractor_unit', col.name))) {
+        console.log(`[migrate] 正在添加 t_contractor_unit.${col.name} 字段...`)
+        await pool.execute(`ALTER TABLE t_contractor_unit ADD COLUMN ${col.name} ${col.def}`)
+        console.log(`[migrate] ✅ t_contractor_unit.${col.name} 字段添加完成`)
+      }
+    }
+    // 上级单位索引（幂等）
+    const [parentIdx] = await pool.execute(
+      `SELECT INDEX_NAME FROM information_schema.statistics
+        WHERE table_schema = DATABASE() AND table_name = 't_contractor_unit' AND index_name = 'idx_parent'`
+    )
+    if (!parentIdx.length) {
+      console.log('[migrate] 正在添加 t_contractor_unit.idx_parent 索引...')
+      await pool.execute('ALTER TABLE t_contractor_unit ADD INDEX idx_parent (parent_id)')
+      console.log('[migrate] ✅ t_contractor_unit.idx_parent 索引添加完成')
+    }
+
     // 4. 隐患主表（闭环状态机载体）
     await ensureTable(`
       CREATE TABLE IF NOT EXISTS t_hazard (
