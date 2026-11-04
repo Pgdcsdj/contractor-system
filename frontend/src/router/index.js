@@ -80,6 +80,13 @@ const routes = [
     component: () => import('@/views/contractor/ContractorDocSubmit.vue'),
     meta: { requiresAuth: false },
   },
+  // ── 承包商安全活动填报（公开免登录，与准入网格数据打通）─────────────────
+  {
+    path: '/activity',
+    name: 'ActivitySubmit',
+    component: () => import('@/views/contractor/ActivitySubmitPage.vue'),
+    meta: { requiresAuth: false },
+  },
   // ── 管理后台路由 ──
   {
     path: '/admin/login',
@@ -190,6 +197,24 @@ const routes = [
         path: 'contractor-docs',
         name: 'ContractorDocs',
         component: () => import('@/views/admin/ContractorDocManage.vue'),
+      },
+      // ── 承包商安全活动（三个栏目）─────────────────────────────────────
+      {
+        path: 'activity-monday',
+        name: 'ActivityMonday',
+        component: () => import('@/views/admin/ActivityFormPage.vue'),
+        meta: { title: '周一安全活动', periodType: 'monday' },
+      },
+      {
+        path: 'activity-wednesday',
+        name: 'ActivityWednesday',
+        component: () => import('@/views/admin/ActivityFormPage.vue'),
+        meta: { title: '周三学习活动', periodType: 'wednesday' },
+      },
+      {
+        path: 'activity-inspection',
+        name: 'ActivityInspection',
+        component: () => import('@/views/admin/ActivityInspectionPage.vue'),
       },
       {
         path: 'quality/:id',

@@ -14,6 +14,7 @@ const ADMIN_API_PREFIXES = [
   '/api/account',   // ← 账号管理（admin/superadmin）
   '/api/data',      // ← 数据备份/导出（admin/superadmin）
   '/api/contractor-docs', // ← 承包商开工资料（admin/superadmin）
+  '/api/activity',  // ← 承包商安全活动管理端（公开填报端走 /api/open/activity，不匹配此前缀）
   '/api/quality',   // ← 出题质量量化校验与追踪（admin/superadmin）
   '/api/notify-config', // ← 钉钉通知设置（后台可配，需 admin token；漏登记会误跳 /login）
 ]

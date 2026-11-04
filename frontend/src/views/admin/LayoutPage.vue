@@ -42,6 +42,23 @@
           <Icon name="clipboard" :size="20" class="nav-icon" />
           <span v-if="!sidebarCollapsed" class="nav-label">答题记录</span>
         </router-link>
+
+        <!-- 分组：承包商安全活动 -->
+        <div v-if="!sidebarCollapsed" class="nav-group-title">承包商安全活动</div>
+        <router-link to="/admin/activity-monday" class="nav-item">
+          <Icon name="clipboard" :size="20" class="nav-icon" />
+          <span v-if="!sidebarCollapsed" class="nav-label">周一安全活动</span>
+        </router-link>
+        <router-link to="/admin/activity-wednesday" class="nav-item">
+          <Icon name="book" :size="20" class="nav-icon" />
+          <span v-if="!sidebarCollapsed" class="nav-label">周三学习活动</span>
+        </router-link>
+        <router-link to="/admin/activity-inspection" class="nav-item">
+          <Icon name="list" :size="20" class="nav-icon" />
+          <span v-if="!sidebarCollapsed" class="nav-label">上级检查类比排查</span>
+          <span v-if="!sidebarCollapsed && remindUnread > 0" class="nav-remind-dot">{{ remindUnread }}</span>
+        </router-link>
+
         <!-- 分组二：隐患整改 -->
         <div v-if="!sidebarCollapsed" class="nav-group-title">隐患整改</div>
         <router-link to="/admin/hazard-monitor" class="nav-item">
@@ -140,6 +157,31 @@
           <span class="page-title">{{ currentTitle }}</span>
         </div>
         <div class="topbar-right">
+          <div class="remind-wrap">
+            <button class="remind-btn" title="到期提醒" @click="toggleRemind">
+              <Icon name="bell" :size="19" />
+              <span v-if="remindUnread > 0" class="remind-badge">{{ remindUnread }}</span>
+            </button>
+            <div v-if="remindOpen" class="remind-panel">
+              <div class="remind-head">
+                <strong>到期提醒</strong>
+                <button class="remind-close" @click="remindOpen = false">×</button>
+              </div>
+              <div v-if="remindLoading" class="remind-empty">加载中…</div>
+              <div v-else-if="!remindList.length" class="remind-empty">暂无到期提醒</div>
+              <div v-else class="remind-list">
+                <div v-for="r in remindList" :key="r.id" class="remind-item" :class="{ read: r.is_read }">
+                  <div class="remind-title">{{ r.title }}</div>
+                  <div class="remind-content">{{ r.content }}</div>
+                  <div class="remind-foot">
+                    <span>{{ r.created_at ? fmtDT(r.created_at) : '' }}</span>
+                    <router-link to="/admin/activity-inspection" @click="remindOpen = false">查看</router-link>
+                    <button v-if="!r.is_read" @click="markRead(r)">标记已读</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
           <div class="admin-chip">
             <span class="admin-avatar">{{ adminInitial }}</span>
             <div class="admin-meta">
@@ -162,11 +204,13 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAdminStore } from '@/stores/admin'
 import Icon from '@/components/Icon.vue'
+import { fmtDT } from '@/utils/datetime'
 import logoUrl from '@/assets/logo.jpg'
+import { getActivityReminders, readActivityReminder } from '@/api/activity'
 
 const admin = useAdminStore()
 const route = useRoute()
@@ -200,7 +244,41 @@ const routeMap = {
   WorkPermit: '直接作业许可管理',
   WorkControl: '作业过程管控',
   ContractorAssess: '承包商考核',
+  ActivityMonday: '周一安全活动',
+  ActivityWednesday: '周三学习活动',
+  ActivityInspection: '上级检查类比排查',
+  ActivitySubmit: '承包商安全活动填报',
 }
+
+// ── 系统内到期提醒 ──────────────────────────────────────────────────────────
+const remindOpen = ref(false)
+const remindLoading = ref(false)
+const remindList = ref([])
+const remindUnread = ref(0)
+async function loadReminders() {
+  try {
+    const res = await getActivityReminders()
+    const d = res.data?.data || {}
+    remindList.value = d.list || []
+    remindUnread.value = d.unread || 0
+  } catch (e) { /* 静默：不影响主流程 */ }
+}
+async function toggleRemind() {
+  remindOpen.value = !remindOpen.value
+  if (remindOpen.value) {
+    remindLoading.value = true
+    await loadReminders()
+    remindLoading.value = false
+  }
+}
+async function markRead(r) {
+  try {
+    await readActivityReminder(r.id)
+    r.is_read = 1
+    remindUnread.value = Math.max(0, remindUnread.value - 1)
+  } catch (e) { /* 忽略 */ }
+}
+onMounted(() => { loadReminders() })
 
 const currentTitle = computed(() => routeMap[route.name] || '')
 const adminInitial = computed(() => (admin.user?.username || '管').slice(0, 1).toUpperCase())
@@ -330,6 +408,44 @@ function handleLogout() {
 .admin-meta { display: flex; flex-direction: column; line-height: 1.25; }
 .admin-name { font-size: 13.5px; color: var(--c-text); font-weight: 600; }
 .today { font-size: 11.5px; color: var(--c-text-3); }
+
+/* ── 侧栏提醒角标 ── */
+.nav-remind-dot {
+  margin-left: auto; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
+  background: var(--c-danger, #e24b4a); color: #fff; font-size: 11px; font-weight: 700;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+
+/* ── 顶栏到期提醒 ── */
+.remind-wrap { position: relative; }
+.remind-btn {
+  position: relative; width: 36px; height: 36px; border-radius: 10px; cursor: pointer;
+  border: 1px solid var(--c-border); background: var(--c-surface-2, #fff);
+  color: var(--c-text-2); display: flex; align-items: center; justify-content: center;
+}
+.remind-btn:hover { color: var(--c-primary); border-color: var(--c-primary); }
+.remind-badge {
+  position: absolute; top: -5px; right: -5px; min-width: 17px; height: 17px; padding: 0 4px;
+  border-radius: 9px; background: var(--c-danger, #e24b4a); color: #fff;
+  font-size: 10px; font-weight: 700; display: flex; align-items: center; justify-content: center;
+}
+.remind-panel {
+  position: absolute; right: 0; top: 44px; width: 360px; max-height: 420px; overflow-y: auto;
+  background: var(--c-surface, #fff); border: 1px solid var(--c-border);
+  border-radius: 12px; box-shadow: 0 12px 32px rgba(10, 19, 34, .16); z-index: 300;
+}
+.remind-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 14px; border-bottom: 1px solid var(--c-border); font-size: 14px;
+}
+.remind-close { border: none; background: none; font-size: 20px; cursor: pointer; color: var(--c-text-3); line-height: 1; }
+.remind-empty { padding: 26px 14px; text-align: center; color: var(--c-text-3); font-size: 13px; }
+.remind-item { padding: 11px 14px; border-bottom: 1px solid var(--c-border); }
+.remind-item.read { opacity: .62; }
+.remind-title { font-size: 13px; font-weight: 600; color: var(--c-text); }
+.remind-content { font-size: 12px; color: var(--c-text-2); margin-top: 4px; line-height: 1.5; }
+.remind-foot { display: flex; align-items: center; gap: 12px; margin-top: 7px; font-size: 11.5px; color: var(--c-text-3); }
+.remind-foot a, .remind-foot button { color: var(--c-primary); border: none; background: none; cursor: pointer; font-size: 11.5px; padding: 0; text-decoration: none; }
 
 /* ── 内容区 ── */
 .content { flex: 1; overflow-y: auto; padding: 24px; background: var(--c-bg); }

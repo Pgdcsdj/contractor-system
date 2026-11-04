@@ -39,6 +39,8 @@ const contractorDocRoutes   = require('./routes/contractorDoc')   // 承包商�
 const qualityRoutes         = require('./routes/quality')         // 出题质量量化校验与追踪
 const standardBasisRoutes   = require('./routes/standardBasis')    // 问题依据库（底层=安全违章库 t_violation）
 const hazardStandardRoutes   = require('./routes/hazardStandard')  // 隐患排查标准库（底层=t_hazard_check_standard）
+const activityRoutes         = require('./routes/activity')         // 承包商安全活动（管理端：周一周三/类比排查）
+const activityOpenRoutes     = require('./routes/activityOpen')     // 承包商安全活动（公开免登录填报端）
 
 // ─── 系统版本常量（与前端 src/version.js 保持一致）─────────────────────
 const { APP_VERSION, BUILD_DATE } = require('./version')
@@ -827,6 +829,93 @@ async function autoMigrate() {
       }
     }
 
+    // 12. 承包商安全活动模块（周一安全活动 / 周三学习活动 / 上级检查问题类比排查）
+    //     统一「期次」骨架：一个期次 × 一个单位 = 一条上报记录；排查明细按动态列 row_json 存。
+    //     全部幂等（CREATE TABLE IF NOT EXISTS + ensureColumn），容器重启自动生效。
+    await ensureTable(`
+      CREATE TABLE IF NOT EXISTS t_activity_period (
+        id                INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        period_type       VARCHAR(20)  NOT NULL DEFAULT 'monday' COMMENT 'monday/wednesday/inspection',
+        title             VARCHAR(200) NOT NULL DEFAULT '' COMMENT '期次/批次名称',
+        activity_date     DATE         DEFAULT NULL COMMENT '活动日期（周一/周三）',
+        due_at            DATETIME     DEFAULT NULL COMMENT '上报截止时间（排查批次必填）',
+        remind_days       INT          NOT NULL DEFAULT 3 COMMENT '到期前 N 天开始系统内提醒',
+        description       VARCHAR(1000) NOT NULL DEFAULT '' COMMENT '排查要求/活动说明',
+        columns_json      LONGTEXT     COMMENT '标准表列头定义 JSON（管理员上传标准表时解析）',
+        template_name     VARCHAR(200) NOT NULL DEFAULT '' COMMENT '标准表原始文件名',
+        template_key      VARCHAR(300) NOT NULL DEFAULT '' COMMENT '标准表 COS key',
+        template_url      VARCHAR(500) NOT NULL DEFAULT '' COMMENT '标准表 COS 直链',
+        expected_unit_ids TEXT         COMMENT '应报单位 id 列表 JSON（空=全部在册单位）',
+        status            VARCHAR(16)  NOT NULL DEFAULT 'open' COMMENT 'open/closed',
+        created_by        INT UNSIGNED DEFAULT NULL,
+        created_at        DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at        DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        KEY idx_type (period_type), KEY idx_due (due_at), KEY idx_status (status)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='承包商安全活动期次（含排查批次）'
+    `)
+    await ensureTable(`
+      CREATE TABLE IF NOT EXISTS t_activity_record (
+        id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        period_id       INT UNSIGNED NOT NULL,
+        unit_id         INT UNSIGNED NOT NULL,
+        unit_name       VARCHAR(200) NOT NULL DEFAULT '' COMMENT '冗余快照，关联 t_contractor_unit.id',
+        grid_l2         VARCHAR(100) NOT NULL DEFAULT '' COMMENT '二级板块（准入网格快照）',
+        grid_level      VARCHAR(10)  NOT NULL DEFAULT '' COMMENT '网格层级（准入网格快照）',
+        form_json       LONGTEXT     COMMENT '结构化表单字段 JSON（周一/周三）',
+        uploader_name   VARCHAR(50)  NOT NULL DEFAULT '' COMMENT '录入人姓名（公开端留痕）',
+        uploader_phone  VARCHAR(30)  NOT NULL DEFAULT '' COMMENT '录入人电话（公开端留痕）',
+        source          VARCHAR(16)  NOT NULL DEFAULT 'form' COMMENT 'form/import/online',
+        status          VARCHAR(16)  NOT NULL DEFAULT 'submitted',
+        submitted_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uk_period_unit (period_id, unit_id),
+        KEY idx_period (period_id), KEY idx_unit (unit_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='承包商安全活动上报表单记录'
+    `)
+    await ensureTable(`
+      CREATE TABLE IF NOT EXISTS t_activity_row (
+        id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        period_id   INT UNSIGNED NOT NULL,
+        unit_id     INT UNSIGNED NOT NULL,
+        record_id   INT UNSIGNED NOT NULL,
+        row_json    LONGTEXT     COMMENT '按标准表列头的动态列键值对 JSON',
+        sort_no     INT          NOT NULL DEFAULT 0,
+        created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        KEY idx_period (period_id), KEY idx_unit (period_id, unit_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='类比排查填报明细（动态列）'
+    `)
+    await ensureTable(`
+      CREATE TABLE IF NOT EXISTS t_activity_file (
+        id             INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        period_id      INT UNSIGNED NOT NULL,
+        unit_id        INT UNSIGNED NOT NULL,
+        record_id      INT UNSIGNED DEFAULT NULL,
+        category       VARCHAR(30)  NOT NULL DEFAULT 'other' COMMENT '附件类别',
+        original_name  VARCHAR(200) NOT NULL DEFAULT '',
+        cos_key        VARCHAR(300) NOT NULL DEFAULT '',
+        cos_url        VARCHAR(500) NOT NULL DEFAULT '',
+        file_ext       VARCHAR(10)  NOT NULL DEFAULT '',
+        file_size      INT UNSIGNED NOT NULL DEFAULT 0,
+        uploader_name  VARCHAR(50)  NOT NULL DEFAULT '',
+        uploader_phone VARCHAR(30)  NOT NULL DEFAULT '',
+        created_at     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        KEY idx_period_unit (period_id, unit_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='安全活动附件（COS）'
+    `)
+    await ensureTable(`
+      CREATE TABLE IF NOT EXISTS t_activity_remind (
+        id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        period_id   INT UNSIGNED NOT NULL,
+        remind_type VARCHAR(20)  NOT NULL DEFAULT 'before_due' COMMENT 'before_due/overdue',
+        title       VARCHAR(200) NOT NULL DEFAULT '',
+        content     VARCHAR(1000) NOT NULL DEFAULT '',
+        is_read     TINYINT      NOT NULL DEFAULT 0,
+        created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uk_period_type (period_id, remind_type), KEY idx_read (is_read)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='安全活动到期系统内提醒'
+    `)
+    console.log('[migrate] ✅ 承包商安全活动相关表结构已就绪')
+
     console.log('[migrate] ✅ 隐患闭环相关表结构已就绪')
   } catch (err) {
     console.error('[migrate] 自动迁移失败:', err.message)
@@ -869,6 +958,8 @@ app.use('/api/account', accountRoutes)                    // 账号管理（admi
 app.use('/api/data',    dataManageRoutes)                 // 数据备份/导出（admin/superadmin）
 app.use('/api/dingtalk', dingtalkRoutes)                   // 钉钉 OAuth 桥接 → Memos 个人工作日志（T01/T02）
 app.use('/api/contractor-docs', contractorDocRoutes)        // 承包商开工资料电子化上报（需求 C）
+app.use('/api/activity', activityRoutes)                    // 承包商安全活动（管理端，需 admin token）
+app.use('/api/open/activity', activityOpenRoutes)           // 承包商安全活动（公开免登录填报端）
 app.use('/api/quality', qualityRoutes)                      // 出题质量量化校验与追踪
 app.use('/api/notify-config', notifyConfigRoutes)            // 钉钉通知开关配置（后台可设）
 
