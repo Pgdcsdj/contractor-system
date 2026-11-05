@@ -16,6 +16,11 @@
   --c-blue-500: #2E8BD6;
   --c-blue-50:  #EAF3FB;
 
+  /* 语义别名（历史页面按 --c-primary 引用；未定义会导致「白字 + 透明底」看不见） */
+  --c-primary:      #1D6FB8;
+  --c-primary-dark: #155A96;
+  --c-primary-bg:   #EAF3FB;
+
   --c-teal-600: #0E8C7F;   /* 安全语义强调 */
   --c-teal-50:  #E6F5F3;
 

@@ -389,7 +389,7 @@ function handleLogout() {
 /* ── 顶部栏 ── */
 .topbar {
   height: 60px; background: var(--c-surface);
-  border-bottom: 1px solid var(--c-border);
+  border-bottom: 1px solid var(--c-border, #E6EAF0);
   display: flex; align-items: center; justify-content: space-between;
   padding: 0 24px; flex-shrink: 0;
 }
@@ -420,10 +420,10 @@ function handleLogout() {
 .remind-wrap { position: relative; }
 .remind-btn {
   position: relative; width: 36px; height: 36px; border-radius: 10px; cursor: pointer;
-  border: 1px solid var(--c-border); background: var(--c-surface-2, #fff);
+  border: 1px solid var(--c-border, #E6EAF0); background: var(--c-surface-2, #fff);
   color: var(--c-text-2); display: flex; align-items: center; justify-content: center;
 }
-.remind-btn:hover { color: var(--c-primary); border-color: var(--c-primary); }
+.remind-btn:hover { color: var(--c-primary, #1D6FB8); border-color: var(--c-primary, #1D6FB8); }
 .remind-badge {
   position: absolute; top: -5px; right: -5px; min-width: 17px; height: 17px; padding: 0 4px;
   border-radius: 9px; background: var(--c-danger, #e24b4a); color: #fff;
@@ -431,21 +431,21 @@ function handleLogout() {
 }
 .remind-panel {
   position: absolute; right: 0; top: 44px; width: 360px; max-height: 420px; overflow-y: auto;
-  background: var(--c-surface, #fff); border: 1px solid var(--c-border);
+  background: var(--c-surface, #fff); border: 1px solid var(--c-border, #E6EAF0);
   border-radius: 12px; box-shadow: 0 12px 32px rgba(10, 19, 34, .16); z-index: 300;
 }
 .remind-head {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 12px 14px; border-bottom: 1px solid var(--c-border); font-size: 14px;
+  padding: 12px 14px; border-bottom: 1px solid var(--c-border, #E6EAF0); font-size: 14px;
 }
 .remind-close { border: none; background: none; font-size: 20px; cursor: pointer; color: var(--c-text-3); line-height: 1; }
 .remind-empty { padding: 26px 14px; text-align: center; color: var(--c-text-3); font-size: 13px; }
-.remind-item { padding: 11px 14px; border-bottom: 1px solid var(--c-border); }
+.remind-item { padding: 11px 14px; border-bottom: 1px solid var(--c-border, #E6EAF0); }
 .remind-item.read { opacity: .62; }
 .remind-title { font-size: 13px; font-weight: 600; color: var(--c-text); }
 .remind-content { font-size: 12px; color: var(--c-text-2); margin-top: 4px; line-height: 1.5; }
 .remind-foot { display: flex; align-items: center; gap: 12px; margin-top: 7px; font-size: 11.5px; color: var(--c-text-3); }
-.remind-foot a, .remind-foot button { color: var(--c-primary); border: none; background: none; cursor: pointer; font-size: 11.5px; padding: 0; text-decoration: none; }
+.remind-foot a, .remind-foot button { color: var(--c-primary, #1D6FB8); border: none; background: none; cursor: pointer; font-size: 11.5px; padding: 0; text-decoration: none; }
 
 /* ── 内容区 ── */
 .content { flex: 1; overflow-y: auto; padding: 24px; background: var(--c-bg); }
