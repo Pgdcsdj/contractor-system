@@ -38,7 +38,9 @@
             <label>活动期次 / 排查项目 <i>*</i></label>
             <select v-model="periodId" class="form-input" @change="onPeriodChange">
               <option value="">请选择</option>
-              <option v-for="p in periods" :key="p.id" :value="p.id">{{ p.title }}{{ p.is_overdue ? '（已过截止）' : '' }}</option>
+              <option v-for="p in sortedPeriods" :key="p.id" :value="p.id">
+                {{ p.title }}{{ periodTag(p) }}{{ p.is_overdue ? '（已过截止）' : '' }}
+              </option>
             </select>
             <p v-if="period && period.due_at" class="hint" :class="{ overdue: period.is_overdue }">
               截止时间：{{ fmtDT(period.due_at) }}{{ period.is_overdue ? ' · 已过期，仍可补报' : '' }}
@@ -51,14 +53,21 @@
           </div>
           <div class="form-group full">
             <label>承包商单位 <i>*</i></label>
-            <input v-model="unitKeyword" class="form-input" placeholder="输入单位名称关键字可快速筛选" @input="loadUnits" />
-            <select v-model="unitId" class="form-input unit-select" size="5" @change="loadMine">
-              <option value="">— 请从四级网格单位中选择 —</option>
-              <option v-for="u in filteredUnits" :key="u.id" :value="u.id">
-                {{ u.unit_name }}　[{{ u.grid_l2 || '未分板块' }}{{ u.grid_level ? ' / ' + u.grid_level : '' }}]
-              </option>
-            </select>
-            <p class="hint">单位清单来自「承包商准入 → 网格化管理」，如未找到请联系项目部管理员。</p>
+            <div class="unit-row">
+              <input v-model="unitKeyword" class="form-input unit-kw" placeholder="筛选：输入单位名关键字（可留空）" />
+              <select v-model="unitId" class="form-input unit-select" @change="onUnitChange">
+                <option value="">— 请选择承包商单位 —</option>
+                <option v-for="u in filteredUnits" :key="u.id" :value="u.id">
+                  {{ u.unit_name }}　[{{ u.grid_l2 || '未分板块' }}{{ u.grid_level ? ' / ' + u.grid_level : '' }}]
+                </option>
+              </select>
+            </div>
+            <p v-if="selectedUnit" class="hint sel-unit">
+              已选单位：<b>{{ selectedUnit.unit_name }}</b>
+              <span v-if="selectedUnit.grid_l2"> · {{ selectedUnit.grid_l2 }}</span>
+              <span v-if="selectedUnit.grid_level"> · {{ selectedUnit.grid_level }}</span>
+            </p>
+            <p v-else class="hint">共 {{ filteredUnits.length }} 家可选；单位清单来自「承包商准入 → 网格化管理」，如未找到请联系项目部管理员。</p>
           </div>
           <div class="form-group">
             <label>录入人姓名 <i>*</i></label>
@@ -198,7 +207,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
 import Icon from '@/components/Icon.vue'
-import { fmtDT } from '@/utils/datetime'
+import { fmtDT, fmtDate } from '@/utils/datetime'
 import {
   getOpenUnits, getOpenPeriods, getOpenPeriod, submitActivityForm,
   importActivityFilled, submitActivityRows, uploadActivityFile, getMySubmission,
@@ -206,9 +215,9 @@ import {
 } from '@/api/activity'
 
 const MONDAY_FIELDS = [
-  { key: 'activity_time', label: '活动时间', type: 'date' },
+  { key: 'activity_time', label: '活动时间（随批次自动带出）', type: 'date' },
   { key: 'location', label: '活动地点', placeholder: '如：马401-4井会议室' },
-  { key: 'activity_name', label: '会议（活动）名称', placeholder: '“周一”HSE活动' },
+  { key: 'activity_name', label: '会议（活动）名称', placeholder: '留空默认「周一安全活动」' },
   { key: 'host', label: '主持人' },
   { key: 'main_content', label: '会议（活动）主要内容', wide: true },
   { key: 'attendees', label: '参加人员', wide: true, placeholder: '附签到表、参会人照片' },
@@ -220,7 +229,7 @@ const MONDAY_FIELDS = [
   { key: 'remark', label: '备注', wide: true },
 ]
 const WEDNESDAY_FIELDS = [
-  { key: 'study_time', label: '学习时间', type: 'date' },
+  { key: 'study_time', label: '学习时间（随批次自动带出）', type: 'date' },
   { key: 'location', label: '学习地点' },
   { key: 'host', label: '主持人' },
   { key: 'study_content', label: '学习内容', wide: true, placeholder: '如：《2026年消防月宣传视频》' },
@@ -260,6 +269,33 @@ const filteredUnits = computed(() => {
   if (!k) return units.value
   return units.value.filter((u) => String(u.unit_name || '').toLowerCase().includes(k) || String(u.grid_l2 || '').toLowerCase().includes(k))
 })
+const selectedUnit = computed(() => units.value.find((u) => String(u.id) === String(unitId.value)) || null)
+
+// 期次排序：周一/周三（长期固定开展）按「离今天由近到远」，排查按发布时间倒序
+const todayStr = fmtDate(new Date())
+function dayValue(v) {
+  const s = fmtDate(v)
+  return s ? new Date(`${s}T00:00:00`).getTime() : NaN
+}
+const sortedPeriods = computed(() => {
+  const arr = [...periods.value]
+  if (type.value === 'inspection') return arr
+  const t0 = dayValue(todayStr)
+  return arr.sort((a, b) => {
+    const da = Math.abs(dayValue(a.activity_date) - t0)
+    const db = Math.abs(dayValue(b.activity_date) - t0)
+    if (Number.isNaN(da)) return 1
+    if (Number.isNaN(db)) return -1
+    return da - db
+  })
+})
+function periodTag(p) {
+  const d = fmtDate(p.activity_date)
+  if (!d) return ''
+  const diff = Math.round((dayValue(d) - dayValue(todayStr)) / 86400000)
+  if (diff === 0) return '（今天）'
+  return diff > 0 ? `（${diff} 天后）` : `（${-diff} 天前）`
+}
 
 const submitting = ref(false)
 const importing = ref(false)
@@ -291,7 +327,8 @@ async function loadPeriods() {
     const res = await getOpenPeriods(type.value)
     periods.value = res.data?.data || []
     if (!periods.value.some((p) => String(p.id) === String(periodId.value))) {
-      periodId.value = periods.value.length ? periods.value[0].id : ''
+      // 周一/周三默认选中离今天最近的一期；排查默认选最新发布的一期
+      periodId.value = sortedPeriods.value.length ? sortedPeriods.value[0].id : ''
     }
     await onPeriodChange()
   } catch (e) { showToast(errMsg(e), 'error') }
@@ -300,7 +337,44 @@ async function loadUnits() {
   try {
     const res = await getOpenUnits('')
     units.value = res.data?.data || []
+    restoreIdentity()
   } catch (e) { showToast(errMsg(e), 'error') }
+}
+
+// ── 上次填报身份记忆（同一台电脑/手机下次进入自动带出，减少重复输入）──────────
+const IDENTITY_KEY = 'tnb_activity_identity'
+function restoreIdentity() {
+  try {
+    const d = JSON.parse(localStorage.getItem(IDENTITY_KEY) || '{}')
+    if (!uploaderName.value && d.name) uploaderName.value = d.name
+    if (!uploaderPhone.value && d.phone) uploaderPhone.value = d.phone
+    if (!unitId.value && d.unit_id && units.value.some((u) => Number(u.id) === Number(d.unit_id))) {
+      unitId.value = Number(d.unit_id)
+    }
+  } catch (e) { /* 忽略损坏的本地缓存 */ }
+}
+function saveIdentity() {
+  try {
+    if (!unitId.value || !uploaderName.value.trim()) return
+    localStorage.setItem(IDENTITY_KEY, JSON.stringify({
+      unit_id: Number(unitId.value),
+      name: uploaderName.value.trim(),
+      phone: uploaderPhone.value.trim(),
+    }))
+  } catch (e) { /* 隐私模式下忽略 */ }
+}
+async function onUnitChange() {
+  saveIdentity()
+  await loadMine()
+}
+
+/** 批次 → 表单默认值：活动时间取批次日期，名称留空时默认「周一安全活动」 */
+function applyPeriodDefaults() {
+  if (!period.value || type.value === 'inspection') return
+  const d = fmtDate(period.value.activity_date)
+  const dateKey = type.value === 'monday' ? 'activity_time' : 'study_time'
+  if (d) form[dateKey] = d
+  if (type.value === 'monday' && !String(form.activity_name || '').trim()) form.activity_name = '周一安全活动'
 }
 async function onPeriodChange() {
   period.value = null
@@ -312,6 +386,7 @@ async function onPeriodChange() {
     const res = await getOpenPeriod(periodId.value)
     period.value = res.data?.data || null
   } catch (e) { showToast(errMsg(e), 'error') }
+  applyPeriodDefaults()
   await loadMine()
 }
 function switchType(t) {
@@ -332,10 +407,15 @@ function identity(extra = {}) {
   }
 }
 async function submitForm() {
+  // 未填写名称/时间时按批次默认值补齐（周一默认「周一安全活动」）
+  if (type.value === 'monday' && !String(form.activity_name || '').trim()) form.activity_name = '周一安全活动'
+  if (type.value === 'monday' && !form.activity_time && period.value?.activity_date) form.activity_time = fmtDate(period.value.activity_date)
+  if (type.value === 'wednesday' && !form.study_time && period.value?.activity_date) form.study_time = fmtDate(period.value.activity_date)
   submitting.value = true
   try {
     const payload = identity({ form: { ...form } })
     await submitActivityForm(payload)
+    saveIdentity()
     showToast('活动记录已提交', 'success')
     await loadMine()
   } catch (e) { showToast(errMsg(e), 'error') }
@@ -355,6 +435,7 @@ async function doImport() {
     const res = await importActivityFilled(fd)
     const d = res.data?.data || {}
     importResult.value = { ok: true, imported: d.imported || 0, skipped: d.skipped || 0 }
+    saveIdentity()
     showToast('回填成功', 'success')
     importFile.value = null
     if (importInput.value) importInput.value.value = ''
@@ -371,6 +452,7 @@ async function submitRows() {
   try {
     const payload = identity({ rows: onlineRows.value })
     await submitActivityRows(payload)
+    saveIdentity()
     showToast('补录内容已提交', 'success')
     onlineRows.value = []
     await loadMine()
@@ -389,6 +471,7 @@ async function doUpload() {
     fd.append('category', fileCategory.value || '其他附件')
     fd.append('file', attachFile.value)
     await uploadActivityFile(fd)
+    saveIdentity()
     showToast('附件已上传', 'success')
     attachFile.value = null
     if (attachInput.value) attachInput.value.value = ''
@@ -469,8 +552,13 @@ onMounted(async () => { await loadUnits(); await loadPeriods() })
 .form-group label i, .form-group label i { color: #e24b4a; font-style: normal; }
 .form-input { padding: 9px 10px; border: 1px solid var(--c-border, #E6EAF0); border-radius: 8px; font-size: 13px; background: var(--c-surface, #fff); color: var(--c-text); font-family: inherit; width: 100%; box-sizing: border-box; }
 textarea.form-input { resize: vertical; }
-.unit-select { height: 128px; padding: 4px; }
-.unit-select option { padding: 5px 6px; font-size: 12.5px; }
+.unit-row { display: grid; grid-template-columns: 200px 1fr; gap: 8px; }
+.unit-kw { font-size: 12.5px; }
+.unit-select { height: 38px; padding: 6px 10px; }
+.unit-select option { padding: 4px 6px; font-size: 13px; }
+.sel-unit { color: #155A96; background: #EAF3FB; border-radius: 8px; padding: 7px 10px; }
+.sel-unit b { color: #0c447c; }
+@media (max-width: 640px) { .unit-row { grid-template-columns: 1fr; } }
 .hint { font-size: 12px; color: var(--c-text-3); line-height: 1.6; margin: 4px 0 0; }
 .hint.overdue { color: #ba7517; }
 .hint.empty-hint { color: #ba7517; background: #fff7e6; border-radius: 8px; padding: 10px 12px; line-height: 1.7; }

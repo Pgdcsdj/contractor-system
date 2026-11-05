@@ -141,4 +141,71 @@ async function listReminders() {
   return { list: rows, unread }
 }
 
-module.exports = { listUnits, expectedUnits, periodStats, parseDef, ensureReminders, listReminders }
+// ─── 固定活动期次自动生成（周一 / 周三长期固定开展，无需管理员手工建批次）──────
+const WEEKLY_TYPES = [
+  { type: 'monday',    label: '周一安全活动', offset: 0, desc: '长期固定开展，每周一进行；请按本队实际活动情况填写。' },
+  { type: 'wednesday', label: '周三学习活动', offset: 2, desc: '长期固定开展，每周三进行；请按本队实际培训情况填写。' },
+]
+
+function ymd(d) {
+  const p = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+}
+function addDays(base, n) {
+  const d = new Date(base.getFullYear(), base.getMonth(), base.getDate())
+  d.setDate(d.getDate() + n)
+  return d
+}
+
+let lastWeeklyCheck = 0
+/**
+ * 惰性补齐「周一 / 周三」固定期次：以数据库 CURDATE() 为准，前后各 N 周。
+ * 幂等：按 (period_type, activity_date) 判重，已存在则跳过；5 分钟内不重复扫描。
+ * @returns {Promise<number>} 本次新建条数
+ */
+async function ensureWeeklyPeriods(weeksBack = 3, weeksAhead = 3) {
+  if (Date.now() - lastWeeklyCheck < 5 * 60 * 1000) return 0
+  lastWeeklyCheck = Date.now()
+
+  const [[{ today }]] = await pool.query("SELECT DATE_FORMAT(CURDATE(), '%Y-%m-%d') AS today")
+  const [y, m, d] = String(today).split('-').map(Number)
+  const now = new Date(y, m - 1, d)
+  const dow = now.getDay()                                // 0=周日
+  const monday = addDays(now, dow === 0 ? -6 : 1 - dow)   // 本周一
+
+  const first = addDays(monday, -7 * weeksBack)
+  const last = addDays(monday, 7 * weeksAhead + 2)
+  const [exist] = await pool.query(
+    `SELECT period_type, DATE_FORMAT(activity_date, '%Y-%m-%d') AS d
+     FROM t_activity_period
+     WHERE period_type IN ('monday','wednesday') AND activity_date BETWEEN ? AND ?`,
+    [ymd(first), ymd(last)]
+  )
+  const known = new Set(exist.map((r) => `${r.period_type}|${r.d}`))
+
+  let created = 0
+  for (let k = -weeksBack; k <= weeksAhead; k++) {
+    for (const t of WEEKLY_TYPES) {
+      const dateStr = ymd(addDays(monday, k * 7 + t.offset))
+      const key = `${t.type}|${dateStr}`
+      if (known.has(key)) continue
+      // 当周周日 23:59:59 为上截止（周一 6 天、周三 4 天）
+      const dueStr = `${ymd(addDays(monday, k * 7 + 6))} 23:59:59`
+      await pool.execute(
+        `INSERT INTO t_activity_period
+           (period_type, title, activity_date, due_at, remind_days, description, status)
+         VALUES (?, ?, ?, ?, 3, ?, 'open')`,
+        [t.type, `${t.label}（${dateStr}）`, dateStr, dueStr, t.desc]
+      )
+      known.add(key)
+      created++
+    }
+  }
+  if (created) console.log(`[activity] 自动生成固定活动期次 ${created} 条（周一/周三）`)
+  return created
+}
+
+module.exports = {
+  listUnits, expectedUnits, periodStats, parseDef,
+  ensureReminders, listReminders, ensureWeeklyPeriods,
+}

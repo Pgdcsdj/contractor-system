@@ -68,6 +68,8 @@ router.get('/units', async (req, res) => {
 // ─── 期次列表 ──────────────────────────────────────────────────────────────
 router.get('/periods', async (req, res) => {
   try {
+    // 周一/周三为长期固定活动：按周自动补齐最近期次（幂等，失败不影响查询）
+    try { await store.ensureWeeklyPeriods() } catch (e) { console.error('[activity] 自动建期次失败:', e.message) }
     const { type = '', status = '' } = req.query
     const params = []
     let where = 'WHERE 1=1'

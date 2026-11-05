@@ -25,6 +25,10 @@
       <button v-if="current" class="btn-ghost danger" @click="removePeriod">删除期次</button>
       <span class="spacer"></span>
       <span class="total-count">共 {{ periods.length }} 个期次</span>
+      <p class="auto-hint">
+        <Icon name="alert" :size="14" />
+        周一/周三为长期固定活动，系统已按周自动生成批次（今天前、后各 3 期），录入人员直接选对应批次即可，无需手工新建。
+      </p>
     </div>
 
     <div v-if="current" class="stat-row">
@@ -229,8 +233,28 @@ async function loadPeriods() {
   const res = await getActivityPeriods({ type: periodType.value })
   periods.value = res.data?.data || []
   if (!periods.value.some((p) => String(p.id) === String(currentId.value))) {
-    currentId.value = periods.value.length ? periods.value[0].id : ''
+    // 默认落在离今天最近的一期（周一/周三批次由系统按周自动生成，列表不再是"最新在前"就够了）
+    currentId.value = nearestPeriodId(periods.value)
   }
+}
+/** 取离今天最近的一期；同距离优先未到期的（日期靠后） */
+function nearestPeriodId(list) {
+  if (!list.length) return ''
+  const today = new Date()
+  const t0 = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime()
+  const val = (p) => {
+    const d = fmtDate(p.activity_date)
+    return d ? new Date(`${d}T00:00:00`).getTime() : NaN
+  }
+  const sorted = [...list].sort((a, b) => {
+    const da = Math.abs(val(a) - t0)
+    const db = Math.abs(val(b) - t0)
+    if (Number.isNaN(da)) return 1
+    if (Number.isNaN(db)) return -1
+    if (da !== db) return da - db
+    return val(b) - val(a)
+  })
+  return sorted[0].id
 }
 async function loadAll() {
   if (!currentId.value) { current.value = null; records.value = []; detail.stats = {}; return }
@@ -355,6 +379,11 @@ onMounted(async () => { await loadPeriods(); await loadAll() })
 .lbl { font-size: 13px; color: var(--c-text-2); }
 .filter-input { padding: 8px 10px; border: 1px solid var(--c-border, #E6EAF0); border-radius: 8px; font-size: 13px; background: var(--c-surface); color: var(--c-text); min-width: 180px; }
 .period-meta { font-size: 12.5px; color: var(--c-text-2); }
+.auto-hint {
+  flex-basis: 100%; display: flex; align-items: center; gap: 6px; margin: 0;
+  font-size: 12px; line-height: 1.6; color: #8a6d3b;
+  background: #fff8e6; border: 1px solid #f3e3b8; border-radius: 8px; padding: 7px 10px;
+}
 .st-open { color: var(--c-success, #1d9e75); }
 .st-closed { color: var(--c-text-3); }
 .spacer { flex: 1; }
