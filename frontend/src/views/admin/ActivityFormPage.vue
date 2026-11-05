@@ -6,7 +6,7 @@
         <p class="sub">{{ cfg.desc }}</p>
       </div>
       <div class="head-actions">
-        <button class="btn btn-outline" @click="copySubmitLink"><Icon name="file" :size="16" /> 承包商填报入口</button>
+        <button class="btn btn-outline" @click="openSubmitEntry"><Icon name="file" :size="16" /> 打开填报入口</button>
         <button class="btn btn-outline" :disabled="!currentId" @click="exportSummary"><Icon name="download" :size="16" /> 导出汇总</button>
         <button class="btn btn-primary" @click="openCreate"><Icon name="plus" :size="16" /> 新建期次</button>
       </div>
@@ -141,6 +141,7 @@ import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import Icon from '@/components/Icon.vue'
 import { fmtDT, fmtDate } from '@/utils/datetime'
+import { openActivitySubmit } from '@/utils/activityLink'
 import {
   getActivityPeriods, getActivityPeriod, createActivityPeriod, updateActivityPeriod,
   deleteActivityPeriod, getActivityUnits, getActivityRecord, deleteActivityRecord,
@@ -322,12 +323,10 @@ async function exportSummary() {
     showToast('汇总表已导出', 'success')
   } catch (e) { showToast(errMsg(e), 'error') }
 }
-function copySubmitLink() {
-  const base = import.meta.env.BASE_URL || '/'
-  const url = `${window.location.origin}${base.replace(/\/$/, '')}/activity`
-  navigator.clipboard?.writeText(url)
-    .then(() => showToast(`填报入口已复制：${url}`, 'success'))
-    .catch(() => showToast(`填报入口：${url}`, 'success'))
+function openSubmitEntry() {
+  const { url, opened } = openActivitySubmit()
+  if (opened) showToast(`已打开填报入口（新窗口）：${url}`, 'success')
+  else showToast(`填报入口：${url}（浏览器拦截了新窗口，请手动复制打开）`, 'error')
 }
 
 watch(periodType, async () => {

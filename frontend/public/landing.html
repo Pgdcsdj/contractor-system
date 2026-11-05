@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>通南巴承包商安全管理系统</title>
+  <title>个人工作日志</title>
   <style>
     *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -22,6 +22,7 @@
       overflow-x: hidden;
     }
 
+    /* 背景装饰网格 */
     body::before {
       content: '';
       position: fixed;
@@ -46,6 +47,7 @@
       min-height: 100vh;
     }
 
+    /* ── 顶部装饰红条 ── */
     .top-accent {
       width: 100%;
       height: 4px;
@@ -53,6 +55,7 @@
       opacity: .6;
     }
 
+    /* ── 品牌区 ── */
     .header {
       display: flex;
       flex-direction: column;
@@ -73,13 +76,9 @@
       margin-bottom: 20px;
     }
 
-    .logo-text {
-      font-size: 36px;
-      font-weight: 800;
-      color: #fff;
-      line-height: 1;
-      text-shadow: 0 2px 8px rgba(0,0,0,.15);
-      user-select: none;
+    .logo-wrap svg {
+      width: 42px;
+      height: 42px;
     }
 
     .header h1 {
@@ -107,6 +106,7 @@
       letter-spacing: 1px;
     }
 
+    /* ── 标语 ── */
     .tagline {
       text-align: center;
       margin-bottom: 44px;
@@ -118,6 +118,7 @@
       max-width: 500px;
     }
 
+    /* ── 入口卡片区域 ── */
     .entries {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
@@ -158,7 +159,9 @@
       box-shadow: 0 16px 48px rgba(0,0,0,.3);
     }
 
-    .entry-card:active { transform: translateY(-1px); }
+    .entry-card:active {
+      transform: translateY(-1px);
+    }
 
     .entry-card .icon-wrap {
       width: 56px;
@@ -171,9 +174,14 @@
       transition: transform .3s ease;
     }
 
-    .entry-card:hover .icon-wrap { transform: scale(1.08); }
+    .entry-card:hover .icon-wrap {
+      transform: scale(1.08);
+    }
 
-    .entry-card .icon-wrap svg { width: 26px; height: 26px; }
+    .entry-card .icon-wrap svg {
+      width: 26px;
+      height: 26px;
+    }
 
     .entry-card h3 {
       font-size: 16px;
@@ -198,30 +206,51 @@
       letter-spacing: .5px;
     }
 
+    /* ── 卡片配色 ── */
+
+    /* 主入口 Hero - 紫蓝渐变，突出 */
+    .card-hero::before { background: linear-gradient(90deg, #6d5dfc, #2d8ad0); }
+    .card-hero .icon-wrap { background: linear-gradient(135deg, rgba(109,93,252,.25), rgba(45,138,208,.1)); }
+    .card-hero .icon-wrap svg { color: #8b7cf6; }
+    .card-hero .badge { background: rgba(109,93,252,.2); color: #8b7cf6; }
+    .card-hero:hover { box-shadow: 0 16px 48px rgba(109,93,252,.15); }
+
+    /* 管理后台 - 蓝 */
     .card-admin::before { background: linear-gradient(90deg, #1d6fb8, #4a90d9); }
     .card-admin .icon-wrap { background: linear-gradient(135deg, rgba(29,111,184,.25), rgba(29,111,184,.1)); }
     .card-admin .icon-wrap svg { color: #5ba0e0; }
     .card-admin .badge { background: rgba(29,111,184,.2); color: #5ba0e0; }
     .card-admin:hover { box-shadow: 0 16px 48px rgba(29,111,184,.12); }
 
+    /* 安全员入口 - 红 */
     .card-safety::before { background: linear-gradient(90deg, #1d6fb8, #4a90d9); }
     .card-safety .icon-wrap { background: linear-gradient(135deg, rgba(29,111,184,.2), rgba(29,111,184,.08)); }
     .card-safety .icon-wrap svg { color: #5ba0e0; }
     .card-safety .badge { background: rgba(29,111,184,.18); color: #5ba0e0; }
     .card-safety:hover { box-shadow: 0 16px 48px rgba(29,111,184,.1); }
 
+    /* 培训考核 - 绿 */
     .card-training::before { background: linear-gradient(90deg, #2d9d6e, #4cbf88); }
     .card-training .icon-wrap { background: linear-gradient(135deg, rgba(45,157,110,.2), rgba(45,157,110,.08)); }
     .card-training .icon-wrap svg { color: #4cbf88; }
     .card-training .badge { background: rgba(45,157,110,.18); color: #4cbf88; }
     .card-training:hover { box-shadow: 0 16px 48px rgba(45,157,110,.1); }
 
+    /* 开工资料上报 - 橙 */
     .card-doc::before { background: linear-gradient(90deg, #e0851d, #f0a93c); }
     .card-doc .icon-wrap { background: linear-gradient(135deg, rgba(224,133,29,.2), rgba(224,133,29,.08)); }
     .card-doc .icon-wrap svg { color: #f0a93c; }
     .card-doc .badge { background: rgba(224,133,29,.18); color: #f0a93c; }
     .card-doc:hover { box-shadow: 0 16px 48px rgba(224,133,29,.1); }
 
+    /* 安全活动填报 - 青（免登录） */
+    .card-activity::before { background: linear-gradient(90deg, #0f8b8d, #2fc4b2); }
+    .card-activity .icon-wrap { background: linear-gradient(135deg, rgba(15,139,141,.22), rgba(47,196,178,.08)); }
+    .card-activity .icon-wrap svg { color: #2fc4b2; }
+    .card-activity .badge { background: rgba(15,139,141,.2); color: #2fc4b2; }
+    .card-activity:hover { box-shadow: 0 16px 48px rgba(15,139,141,.14); }
+
+    /* ── 底部 ── */
     .footer {
       margin-top: auto;
       padding: 32px 0;
@@ -230,7 +259,34 @@
       border-top: 1px solid rgba(255,255,255,.04);
     }
 
-    .footer p { font-size: 12px; color: rgba(255,255,255,.25); letter-spacing: .5px; }
+    .footer p {
+      font-size: 12px;
+      color: rgba(255,255,255,.25);
+      letter-spacing: .5px;
+    }
+
+    .footer .icp {
+      margin-top: 6px;
+      font-size: 11px;
+    }
+
+    .footer .icp a {
+      color: rgba(255,255,255,.3);
+      text-decoration: none;
+      transition: color .2s ease;
+    }
+
+    .footer .icp a:hover { color: rgba(255,255,255,.55); }
+
+    .footer .icp .site-note {
+      margin-top: 8px;
+      font-size: 11px;
+      color: rgba(255,255,255,.3);
+      line-height: 1.7;
+      max-width: 660px;
+      margin-left: auto;
+      margin-right: auto;
+    }
 
     .footer .links {
       display: flex;
@@ -248,6 +304,7 @@
 
     .footer .links a:hover { color: rgba(255,255,255,.6); }
 
+    /* ── 响应式 ── */
     @media (max-width: 768px) {
       .entries { grid-template-columns: 1fr; gap: 16px; }
       .header { padding-top: 40px; padding-bottom: 28px; }
@@ -259,12 +316,16 @@
       .entries { grid-template-columns: repeat(2, 1fr); }
     }
 
+    /* ── 加载后的微交互动画 ── */
     .container { opacity: 0; transform: translateY(20px); animation: fadeIn .7s ease forwards; }
     @keyframes fadeIn { to { opacity: 1; transform: translateY(0); } }
 
     .entry-card:nth-child(1) { animation: cardIn .5s ease .15s both; }
     .entry-card:nth-child(2) { animation: cardIn .5s ease .25s both; }
     .entry-card:nth-child(3) { animation: cardIn .5s ease .35s both; }
+    .entry-card:nth-child(4) { animation: cardIn .5s ease .45s both; }
+    .entry-card:nth-child(5) { animation: cardIn .5s ease .55s both; }
+    .entry-card:nth-child(6) { animation: cardIn .5s ease .65s both; }
     @keyframes cardIn { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
   </style>
 </head>
@@ -272,45 +333,68 @@
   <div class="top-accent"></div>
   <div class="container">
 
+    <!-- ═══ 品牌区 ═══ -->
     <header class="header">
       <div class="logo-wrap">
-        <span class="logo-text">通</span>
+        <svg viewBox="0 0 24 24" width="38" height="38" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+          <path d="M9 12l2 2 4-4"/>
+        </svg>
       </div>
-      <h1>通南巴承包商安全管理系统</h1>
-      <p class="subtitle">安全隐患整改 · 培训考核 · 一体化平台</p>
-      <span class="org">通南巴项目部</span>
+      <h1>个人工作日志</h1>
+      <p class="subtitle">安全学习 · 培训考核 · 工作日志</p>
+      <span class="org">个人学习演示环境</span>
     </header>
 
+    <!-- ═══ 标语 ═══ -->
     <div class="tagline">
-      <p>选择入口，进入对应工作区</p>
+      <p>个人学习演示环境 · 仅供技术研究与练习使用，非任何单位生产系统</p>
     </div>
 
-    <div class="entries">
-      <a href="/admin/login" class="entry-card card-admin">
+    <!-- ═══ 入口卡片 ═══ -->    <div class="entries">
+      <!-- 主入口 Hero：个人工作日志（Memos 子域） -->
+      <a href="https://log.choiceeffect.store" class="entry-card card-hero" target="_blank" rel="noopener">
         <div class="icon-wrap">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/>
-            <rect x="14" y="14" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/>
+            <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+            <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
           </svg>
         </div>
-        <h3>管理后台</h3>
-        <p class="desc">隐患录入及闭环管理、隐患设置、数据管理、培训管理、承包商管理</p>
-        <span class="badge">管理员</span>
+        <h3>个人工作日志</h3>
+        <p class="desc">Markdown 时间线 / #标签 / 隐患联动，安全员工作记录中枢</p>
+        <span class="badge">主入口</span>
       </a>
 
-      <a href="/safety/login" class="entry-card card-safety">
+      <!-- 安全员·账号登录（姓名+电话，进入安全隐患录入） -->
+      <a href="/tnb/safety/login" class="entry-card card-safety" target="_blank" rel="noopener">
         <div class="icon-wrap">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
             <path d="M9 12l2 2 4-4"/>
           </svg>
         </div>
-        <h3>安全员入口</h3>
-        <p class="desc">承包商安全员登录，自助录入与填报隐患、上传整改资料</p>
+        <h3>安全员·账号登录</h3>
+        <p class="desc">姓名作账号、电话作密码，进入安全隐患录入与闭环</p>
         <span class="badge">安全员</span>
       </a>
 
-      <a href="/login" class="entry-card card-training">
+      <!-- 管理后台 -->
+      <a href="/tnb/admin/login" class="entry-card card-admin">
+        <div class="icon-wrap">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="7" height="7" rx="1.5"/>
+            <rect x="14" y="3" width="7" height="7" rx="1.5"/>
+            <rect x="14" y="14" width="7" height="7" rx="1.5"/>
+            <rect x="3" y="14" width="7" height="7" rx="1.5"/>
+          </svg>
+        </div>
+        <h3>管理后台</h3>
+        <p class="desc">隐患录入及闭环管理、隐患设置、数据管理、培训管理</p>
+        <span class="badge">管理员</span>
+      </a>
+
+      <!-- 培训考核 -->
+      <a href="/tnb/login" class="entry-card card-training">
         <div class="icon-wrap">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/>
@@ -318,10 +402,27 @@
           </svg>
         </div>
         <h3>培训考核</h3>
-        <p class="desc">承包商人员参加安全培训考试、查看成绩与考核记录</p>
-        <span class="badge">承包商人员</span>
+        <p class="desc">学员参加安全培训考试、查看成绩与考核记录</p>
+        <span class="badge">学员</span>
       </a>
 
+      <!-- 安全活动填报（周一/周三/上级检查类比排查，免登录） -->
+      <a href="/tnb/activity" class="entry-card card-activity" target="_blank" rel="noopener">
+        <div class="icon-wrap">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="4" width="18" height="18" rx="2"/>
+            <line x1="16" y1="2" x2="16" y2="6"/>
+            <line x1="8" y1="2" x2="8" y2="6"/>
+            <line x1="3" y1="10" x2="21" y2="10"/>
+            <path d="M8 15l2.5 2.5L16 13"/>
+          </svg>
+        </div>
+        <h3>承包商安全活动</h3>
+        <p class="desc">周一安全活动、周三学习活动、上级检查问题类比排查，选单位即可填报</p>
+        <span class="badge">免登录填报</span>
+      </a>
+
+      <!-- 开工资料上报 -->
       <a href="/tnb/contractor-docs" class="entry-card card-doc">
         <div class="icon-wrap">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -336,14 +437,19 @@
       </a>
     </div>
 
+    <!-- ═══ 底部 ═══ -->
     <footer class="footer">
-      <p>© 2026 通南巴项目部 · 安全环保室</p>
+      <p>© 2026 个人工作日志 · 个人学习演示环境</p>
+      <div class="icp">
+        <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">粤ICP备2026040320号-1</a>
+        <p class="site-note">个人学习演示用安全管理工作日志与隐患记录平台，含登录认证与数据填报功能，无非公开UGC/社交/论坛/支付。</p>
+      </div>
       <div class="links">
-        <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">备案信息</a>
-        <a href="/admin/login">管理后台</a>
-        <a href="/safety/login">安全员</a>
+        <a href="/tnb/admin/login" target="_blank" rel="noopener">管理后台</a>
+        <a href="https://log.choiceeffect.store" target="_blank" rel="noopener">工作日志</a>
+        <a href="/tnb/login" target="_blank" rel="noopener">培训考核</a>
+        <a href="/tnb/activity" target="_blank" rel="noopener">承包商安全活动</a>
         <a href="/tnb/contractor-docs">开工资料上报</a>
-        <a href="/login">培训考核</a>
       </div>
     </footer>
 

@@ -32,6 +32,10 @@
               截止时间：{{ fmtDT(period.due_at) }}{{ period.is_overdue ? ' · 已过期，仍可补报' : '' }}
             </p>
             <p v-if="period?.description" class="hint">{{ period.description }}</p>
+            <p v-if="!periods.length" class="hint empty-hint">
+              当前「{{ typeLabel }}」暂无可填报期次。<br />
+              请等项目部安全环保室发布后再来，或联系安全员确认是否已开启本期。
+            </p>
           </div>
           <div class="form-group full">
             <label>承包商单位 <i>*</i></label>
@@ -217,6 +221,11 @@ const WEDNESDAY_CATS = ['学习材料', '学习照片', '其他附件']
 const INSPECTION_CATS = ['排查佐证材料', '整改照片', '回填表', '其他附件']
 
 const type = ref('monday')
+const typeLabel = computed(() => ({
+  monday: '周一安全活动',
+  wednesday: '周三学习活动',
+  inspection: '上级检查类比排查',
+}[type.value] || ''))
 const periods = ref([])
 const periodId = ref('')
 const period = ref(null)
@@ -428,6 +437,7 @@ textarea.form-input { resize: vertical; }
 .unit-select option { padding: 5px 6px; font-size: 12.5px; }
 .hint { font-size: 12px; color: var(--c-text-3); line-height: 1.6; margin: 4px 0 0; }
 .hint.overdue { color: #ba7517; }
+.hint.empty-hint { color: #ba7517; background: #fff7e6; border-radius: 8px; padding: 10px 12px; line-height: 1.7; }
 .tip-line { display: flex; align-items: center; gap: 7px; margin-top: 14px; padding: 10px 12px; border-radius: 8px; background: var(--c-surface-2, #f7f8fa); font-size: 12px; color: var(--c-text-2); }
 .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 9px 15px; border-radius: 8px; font-size: 13px; cursor: pointer; border: 1px solid var(--c-border); background: var(--c-surface, #fff); color: var(--c-text); white-space: nowrap; }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
