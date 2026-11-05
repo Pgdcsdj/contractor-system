@@ -890,19 +890,54 @@ router.patch('/:id/assign', adminAuth, async (req, res) => {
   }
 })
 
-// ─── PATCH /api/hazards/:id/rectify —— 整改代录（reported / assigned / rectifying）────────
+// ─── 整改闭环资料完整性校验（现场检查问题必须录入整改情况 + 整改后照片）────────
+// 口径：推进到「待验收」(rectify_status='已完成') 或「验收通过/闭环」时，该隐患
+//       必须同时具备整改情况文本与至少 1 张整改后照片；资料 = 本次提交的 ∪ 库中已录的，
+//       避免重复录入。历史已闭环台账不回溯修改，仅约束新的闭环动作。
+async function loadRectifyEvidence(h, incoming = {}) {
+  // 显式提交整改情况时以提交值为准（含清空场景，不允许被库里旧值兜底绕过）
+  const measures = incoming.measures !== undefined
+    ? String(incoming.measures ?? '').trim()
+    : String(h.rectify_measures || '').trim()
+  const urls = Array.isArray(incoming.photoUrls) ? incoming.photoUrls.filter(Boolean) : []
+  let photoCount = urls.length
+  if (photoCount === 0) {
+    const [[row]] = await pool.execute(
+      "SELECT COUNT(*) AS c FROM t_hazard_photo WHERE hazard_id = ? AND photo_type = 'rectify'",
+      [h.id]
+    )
+    photoCount = Number(row.c) || 0
+  }
+  if (photoCount === 0 && String(h.rectify_photo_url || '').trim()) photoCount = 1
+  return { measures, photoCount }
+}
+
+function rectifyEvidenceError(ev) {
+  const missing = []
+  if (!ev.measures) missing.push('整改情况')
+  if (!ev.photoCount) missing.push('整改后照片')
+  if (!missing.length) return null
+  return `现场检查问题闭环前必须录入${missing.join('和')}，请先在「整改资料录入」中补齐`
+}
+
+// ─── PATCH /api/hazards/:id/rectify —— 整改代录（reported / assigned / rectifying / verifying 补录）────────
 router.patch('/:id/rectify', adminAuth, async (req, res) => {
   const id = Number(req.params.id)
   // 兼容两套字段名：管理端 rectify_measures / rectify_photo_urls；安全员端 rectify_description / rectify_photos
+  // 关键：只有「显式传了整改情况字段」才更新该列，避免只传状态的一键操作把已录入的整改情况清空。
   const rectify_status = req.body.rectify_status
-  const rectify_measures = req.body.rectify_measures ?? req.body.rectify_description ?? ''
+  const rawMeasures = req.body.rectify_measures ?? req.body.rectify_description
+  const hasMeasuresField = rawMeasures !== undefined
+  const rectify_measures = hasMeasuresField ? String(rawMeasures).trim() : ''
   const rectify_photo_urls = req.body.rectify_photo_urls ?? req.body.rectify_photos ?? []
+  const photoList = Array.isArray(rectify_photo_urls) ? rectify_photo_urls.filter(Boolean) : []
   try {
     const [rows] = await pool.execute('SELECT * FROM t_hazard WHERE id = ? AND deleted_at IS NULL', [id])
     if (!rows.length) return res.status(404).json({ success: false, error: '隐患不存在' })
     const h = rows[0]
-    // 选项 B（试用简化流程）：已上报 / 已分派 / 整改中 均可录入整改资料
-    if (![STATUS.reported, STATUS.assigned, STATUS.rectifying].includes(h.status)) {
+    // 允许状态：已上报/已分派/整改中正常流转；待验收仅允许「补录整改资料」（不推进状态，用于补齐后验收）
+    const isSupplement = h.status === STATUS.verifying
+    if (![STATUS.reported, STATUS.assigned, STATUS.rectifying, STATUS.verifying].includes(h.status)) {
       return res.status(400).json({ success: false, error: '当前状态不可整改' })
     }
     // 整改进度缺省为「整改中」（安全员录入页未提供进度选择器时，默认进入整改中）
@@ -911,26 +946,49 @@ router.patch('/:id/rectify', adminAuth, async (req, res) => {
       : '整改中'
     const targetStatus = finalStatus === '已完成' ? STATUS.verifying : STATUS.rectifying
 
-    const sets = ['status = ?', 'rectify_status = ?']
-    const params = [targetStatus, finalStatus]
-    if (rectify_measures !== undefined) {
-      sets.push('rectify_measures = ?'); params.push(rectify_measures)
+    // ── 闭环资料强制校验：现场检查问题推进「整改完成/待验收」必须已有整改情况 + 整改后照片 ──
+    if (finalStatus === '已完成' && !isSupplement) {
+      const ev = await loadRectifyEvidence(h, { measures: hasMeasuresField ? rectify_measures : undefined, photoUrls: photoList })
+      const errMsg = rectifyEvidenceError(ev)
+      if (errMsg) return res.status(400).json({ success: false, error: errMsg })
     }
 
-    const photoList = Array.isArray(rectify_photo_urls) ? rectify_photo_urls.filter(Boolean) : []
-    if (photoList.length) {
-      sets.push('rectify_photo_url = ?')
-      params.push(photoList[0])
-      await pool.query(
-        'INSERT INTO t_hazard_photo (hazard_id, photo_url, photo_type) VALUES ?',
-        [photoList.map((url) => [id, url, 'rectify'])]
-      )
+    const sets = []
+    const params = []
+    if (!isSupplement) {
+      sets.push('status = ?', 'rectify_status = ?')
+      params.push(targetStatus, finalStatus)
     }
+    if (hasMeasuresField) {
+      sets.push('rectify_measures = ?'); params.push(rectify_measures)
+    }
+    if (photoList.length) {
+      // 首图仅在原值为空时回填，保留历史首图
+      sets.push("rectify_photo_url = CASE WHEN rectify_photo_url IS NULL OR rectify_photo_url = '' THEN ? ELSE rectify_photo_url END")
+      params.push(photoList[0])
+      // 去重插入，避免同一照片重复补录造成明细重复
+      const [existingRows] = await pool.execute(
+        "SELECT photo_url FROM t_hazard_photo WHERE hazard_id = ? AND photo_type = 'rectify'",
+        [id]
+      )
+      const known = new Set(existingRows.map((r) => r.photo_url))
+      const fresh = photoList.filter((u) => !known.has(u))
+      if (fresh.length) {
+        await pool.query(
+          'INSERT INTO t_hazard_photo (hazard_id, photo_url, photo_type) VALUES ?',
+          [fresh.map((url) => [id, url, 'rectify'])]
+        )
+      }
+    }
+    if (!sets.length) {
+      return res.status(400).json({ success: false, error: '请录入整改情况或上传整改后照片' })
+    }
+    sets.push('updated_at = NOW()')
 
     params.push(id)
     await pool.execute(`UPDATE t_hazard SET ${sets.join(', ')} WHERE id = ?`, params)
 
-    res.json({ success: true, data: { status: targetStatus, rectify_status: finalStatus } })
+    res.json({ success: true, data: { status: isSupplement ? h.status : targetStatus, rectify_status: finalStatus } })
   } catch (err) {
     console.error('[hazard rectify]', err.message)
     res.status(500).json({ success: false, error: '整改代录失败：' + err.message })
@@ -966,6 +1024,11 @@ router.patch('/:id/verify', adminAuth, async (req, res) => {
 
     const pass = verify_result === '通过'
     if (pass) {
+      // 兜底卡口：验收通过（真正闭环）时，库中必须已有整改情况 + 整改后照片。
+      // 即便绕过「整改完成」步骤直接验收，也不允许无资料闭环。
+      const ev = await loadRectifyEvidence(h)
+      const errMsg = rectifyEvidenceError(ev)
+      if (errMsg) return res.status(400).json({ success: false, error: errMsg })
       const sets = [
         "status = 'closed'", "verify_result = '通过'",
         'verified_by = ?', 'verified_at = NOW()', 'closed_at = NOW()',

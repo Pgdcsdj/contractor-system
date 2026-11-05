@@ -48,13 +48,18 @@
           <button class="btn btn-outline import-btn" type="button" @click="openNormalImport">批量导入</button>
           <button class="btn btn-primary import-btn" type="button" @click="openVideoImport">视频督查导入</button>
           <div class="filter-bar">
-            <select v-model="statusFilter" class="filter-select" @change="fetchList">
+            <select v-model="unitFilter" class="filter-select" @change="onFilterChange">
+              <option value="">全部单位</option>
+              <option v-for="u in unitOptions" :key="u.value" :value="u.value">{{ u.label }}</option>
+            </select>
+            <select v-model="statusFilter" class="filter-select" @change="onFilterChange">
               <option value="">全部状态</option>
               <option value="reported">已上报</option>
               <option value="rectifying">整改中</option>
               <option value="verifying">待验收</option>
               <option value="closed">已闭环</option>
             </select>
+            <button v-if="unitFilter || statusFilter" class="btn-ghost" type="button" @click="resetFilters">重置</button>
           </div>
         </div>
       </div>
@@ -91,7 +96,7 @@
               <td class="cell-invest">{{ h.hazard_investigation_item || '-' }}</td>
               <td>{{ h.unit_name || '-' }}</td>
               <td>{{ h.location || '-' }}</td>
-              <td class="cell-desc">{{ h.description || '-' }}</td>
+              <td class="cell-desc" :title="h.description || ''">{{ h.description || '-' }}</td>
               <td><span :class="['badge', levelBadge(h.hazard_level)]">{{ h.hazard_level || '-' }}</span></td>
               <td>
                 <span :class="['badge', statusBadge(h.status)]">{{ statusLabel(h.status) }}</span>
@@ -103,7 +108,7 @@
                 <button class="action-link" @click="openEdit(h)">编辑</button>
                 <button
                   v-if="h.status !== 'closed' && h.status !== 'verifying'"
-                  class="action-link primary" @click="pushToVerify(h)">整改完成</button>
+                  class="action-link primary" @click="openFinish(h)">整改完成</button>
                 <button
                   v-if="h.status === 'verifying'"
                   class="action-link primary" @click="openVerify(h)">验收</button>
@@ -151,25 +156,37 @@
             <dl class="detail-list">
               <div class="detail-row" v-for="item in detailPlain" :key="item.label">
                 <dt class="detail-label">{{ item.label }}</dt>
-                <dd class="detail-value">{{ item.value }}</dd>
+                <dd class="detail-value" :class="{ 'value-warn': item.warn }">{{ item.value }}<span v-if="item.warn" class="inline-warn">（未录入，闭环前必须补齐）</span></dd>
               </div>
             </dl>
 
             <div v-if="detailLoading" class="detail-photos-loading">加载照片中…</div>
-            <div v-else-if="detailPhotos.report.length" class="detail-photos">
-              <h4 class="photos-title">上报照片</h4>
-              <div class="photo-grid">
-                <a v-for="p in detailPhotos.report" :key="p.id" :href="p.photo_url" target="_blank" class="photo-item">
-                  <img :src="p.photo_url" alt="上报照片" loading="lazy" />
-                </a>
+            <template v-else>
+              <div class="detail-photos">
+                <h4 class="photos-title">上报照片（整改前）</h4>
+                <div v-if="detailPhotos.report.length" class="photo-grid">
+                  <a v-for="p in detailPhotos.report" :key="p.id" :href="p.photo_url" target="_blank" class="photo-item">
+                    <img :src="p.photo_url" alt="上报照片" loading="lazy" />
+                  </a>
+                </div>
+                <p v-else class="no-photo">暂无上报照片</p>
               </div>
-            </div>
+              <div class="detail-photos">
+                <h4 class="photos-title">整改后照片</h4>
+                <div v-if="detailPhotos.rectify.length" class="photo-grid">
+                  <a v-for="p in detailPhotos.rectify" :key="p.id" :href="p.photo_url" target="_blank" class="photo-item">
+                    <img :src="p.photo_url" alt="整改后照片" loading="lazy" />
+                  </a>
+                </div>
+                <p v-else class="no-photo warn">未上传整改后照片，闭环前必须补齐</p>
+              </div>
+            </template>
           </div>
           <footer class="drawer-foot">
             <button class="btn btn-outline" type="button" @click="closeDetail">关闭</button>
             <button
               v-if="detail && detail.status !== 'closed' && detail.status !== 'verifying'"
-              class="btn btn-primary" type="button" @click="pushToVerify(detail)">整改完成</button>
+              class="btn btn-primary" type="button" @click="openFinish(detail)">整改完成</button>
             <button
               v-if="detail && detail.status === 'verifying'"
               class="btn btn-primary" type="button" @click="openVerify(detail)">验收</button>
@@ -310,6 +327,7 @@
       <div class="modal verify-modal">
         <h3>隐患验收 / 闭环</h3>
         <p class="modal-hint">编号：{{ verifyTarget?.hazard_code || '-' }}　状态：{{ statusLabel(verifyTarget?.status) }}</p>
+        <p class="verify-tip"><Icon name="alert" :size="14" /> 通过验收前，该隐患必须已录入整改情况并上传整改后照片；资料不齐请先在「整改资料录入」补齐。</p>
         <div class="form-group">
           <label>验收结论 <span class="req">*</span></label>
           <div class="radio-row">
@@ -325,6 +343,44 @@
           <button class="btn btn-outline" type="button" @click="showVerify = false">取消</button>
           <button class="btn btn-primary" type="button" @click="submitVerify" :disabled="verifying">
             {{ verifying ? '提交中…' : (verifyResult === '通过' ? '确认闭环' : '确认退回') }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 整改完成弹窗：整改情况 + 整改后照片均必填（现场检查问题闭环红线） -->
+    <div v-if="showFinish" class="modal-overlay" @click.self="showFinish = false">
+      <div class="modal finish-modal">
+        <h3>整改完成 · 提交验收</h3>
+        <p class="modal-hint">编号：{{ finishTarget?.hazard_code || '-' }}　{{ finishTarget?.unit_name || '' }}</p>
+        <div class="finish-desc">{{ finishTarget?.description || '-' }}</div>
+        <p class="finish-tip"><Icon name="alert" :size="14" /> 现场检查问题闭环前，必须录入整改情况并上传整改后照片，二者缺一不可。</p>
+        <div class="form-group">
+          <label>整改情况 <span class="req">*</span></label>
+          <textarea v-model="finishForm.measures" class="form-input" rows="4" placeholder="填写整改措施、完成情况、整改结果等"></textarea>
+        </div>
+        <div class="form-group">
+          <label>整改后照片 <span class="req">*</span>（至少 1 张）</label>
+          <div class="photo-upload-area">
+            <div class="photo-list" v-if="finishPhotos.length">
+              <div v-for="(p, i) in finishPhotos" :key="i" class="photo-item">
+                <img :src="p" class="photo-preview" />
+                <button class="photo-remove" type="button" @click="finishPhotos.splice(i, 1)">&times;</button>
+              </div>
+            </div>
+            <div class="upload-trigger" @click="triggerFinishPhoto" v-if="finishPhotos.length < 9">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/>
+              </svg>
+              <span>添加照片</span>
+            </div>
+            <input ref="finishPhotoInput" type="file" accept="image/*" style="display:none" @change="handleFinishPhoto" />
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-outline" type="button" @click="showFinish = false">取消</button>
+          <button class="btn btn-primary" type="button" @click="submitFinish" :disabled="finishing">
+            {{ finishing ? '提交中…' : '提交验收' }}
           </button>
         </div>
       </div>
@@ -349,6 +405,8 @@ import {
   getHazardDetail,
   createHazardDict,
   getRectifyUnitBiz,
+  getHazardsUnitNames,
+  uploadHazardPhoto,
   verifyHazard,
   rectifyHazard,
 } from '@/api/hazard'
@@ -363,6 +421,8 @@ const loading = ref(false)
 const page = ref(1)
 const pageSize = 15
 const statusFilter = ref('')
+const unitFilter = ref('')
+const unitOptions = ref([])
 const showImport = ref(false)
 // 传给导入弹窗的预选导入类型：'' = 弹窗内自由选（兜底）；'ledger' = 普通台账导入（锁定）；'video_supervision' = 视频督查导入（锁定）
 const importTypeForModal = ref('')
@@ -478,7 +538,27 @@ function toSqlDateTime(v) {
 function buildParams() {
   const p = { page: page.value, pageSize }
   if (statusFilter.value) p.status = statusFilter.value
+  if (unitFilter.value) p.unit_name = unitFilter.value
   return p
+}
+
+/** 筛选变化：回到第 1 页再查（page 未变时 watch 不触发，需手动 fetch） */
+function onFilterChange() {
+  if (page.value !== 1) { page.value = 1; return }
+  fetchList()
+}
+function resetFilters() {
+  unitFilter.value = ''
+  statusFilter.value = ''
+  onFilterChange()
+}
+
+/** 单位下拉：隐患表中实际出现过的责任单位（与管理员闭环页同口径） */
+async function loadUnitOptions() {
+  try {
+    const res = await getHazardsUnitNames()
+    unitOptions.value = (res.data?.data?.list || []).map((x) => ({ value: x.unit_name, label: x.unit_name }))
+  } catch (e) { /* 下拉加载失败不阻塞主流程 */ }
 }
 
 async function fetchList() {
@@ -512,14 +592,24 @@ const detailPlain = computed(() => {
     ['业务部门', h.business_dept],
     ['业务部门负责人', h.business_dept_head],
     ['场所', h.location],
+    ['隐患等级', h.hazard_level],
     ['问题描述', h.description],
+    ['标准依据', h.standard_basis],
     ['整改情况', h.rectify_measures],
+    ['整改进度', h.rectify_status],
     ['整改责任人', h.responsible_person],
     ['计划完成时间', h.plan_finish_time],
+    ['验收结论', h.verify_result],
+    ['验收意见', h.verify_comment],
+    ['闭环时间', h.closed_at],
     ['上报时间', h.created_at],
     ['录入人', h.recorder_name],
   ]
-  return rows.map(([label, value]) => ({ label, value: value || '-' }))
+  return rows.map(([label, value]) => ({
+    label,
+    value: value || '-',
+    warn: label === '整改情况' && !String(value || '').trim(),
+  }))
 })
 
 async function openDetail(h) {
@@ -657,14 +747,53 @@ async function submitVerify() {
   }
 }
 
-/** 整改完成：将非验收态隐患推进到「待验收」（verifying），供后续验收闭环 */
-async function pushToVerify(h) {
+// ─── 整改完成：必须录入整改情况 + 整改后照片才能推进到「待验收」─────────────
+const showFinish = ref(false)
+const finishTarget = ref(null)
+const finishForm = reactive({ measures: '' })
+const finishPhotos = ref([])
+const finishPhotoInput = ref(null)
+const finishing = ref(false)
+
+function openFinish(h) {
+  finishTarget.value = h
+  finishForm.measures = h.rectify_measures || ''
+  finishPhotos.value = []
+  showFinish.value = true
+  detail.value = null
+}
+function triggerFinishPhoto() { finishPhotoInput.value?.click() }
+async function handleFinishPhoto(e) {
+  const file = e.target.files?.[0]
+  if (!file) return
   try {
-    await rectifyHazard(h.id, { rectify_status: '已完成' })
-    showToast('已提交整改完成，进入待验收', 'success')
+    const res = await uploadHazardPhoto(file, 'rectify')
+    const url = res.data?.data?.url || res.data?.url
+    if (url) finishPhotos.value.push(url)
+    else showToast('照片上传未返回地址', 'error')
+  } catch (err) {
+    showToast(err.response?.data?.error || '照片上传失败', 'error')
+  }
+  if (finishPhotoInput.value) finishPhotoInput.value.value = ''
+}
+async function submitFinish() {
+  if (!finishTarget.value) return
+  if (!finishForm.measures.trim()) return showToast('请填写整改情况', 'error')
+  if (!finishPhotos.value.length) return showToast('请至少上传 1 张整改后照片', 'error')
+  finishing.value = true
+  try {
+    await rectifyHazard(finishTarget.value.id, {
+      rectify_status: '已完成',
+      rectify_measures: finishForm.measures.trim(),
+      rectify_photo_urls: [...finishPhotos.value],
+    })
+    showToast('整改资料已提交，进入待验收', 'success')
+    showFinish.value = false
     fetchList()
   } catch (e) {
-    showToast(e.response?.data?.error || '操作失败', 'error')
+    showToast(e.response?.data?.error || '提交失败', 'error')
+  } finally {
+    finishing.value = false
   }
 }
 
@@ -751,6 +880,7 @@ watch(page, fetchList)
 onMounted(() => {
   fetchList()
   loadEditOptions()
+  loadUnitOptions()
 })
 </script>
 
@@ -797,11 +927,13 @@ onMounted(() => {
   margin-bottom: 16px; flex-wrap: wrap; gap: 10px;
 }
 .section-header h3 { font-size: 17px; font-weight: 700; color: var(--c-text); }
-.filter-bar { display: flex; gap: 8px; }
+.filter-bar { display: flex; gap: 8px; align-items: center; }
 .filter-select {
   padding: 8px 12px; border: 1px solid var(--c-border-strong); border-radius: var(--r);
-  font-size: 14px; background: var(--c-surface); min-width: 130px;
+  font-size: 14px; background: var(--c-surface); min-width: 130px; max-width: 190px;
 }
+.btn-ghost { border: none; background: none; color: var(--c-text-2); font-size: 13px; cursor: pointer; padding: 6px 4px; }
+.btn-ghost:hover { color: var(--c-primary); }
 .filter-select:focus { outline: none; border-color: var(--c-blue-600); }
 .header-actions { display: flex; align-items: center; gap: 12px; }
 .import-btn { white-space: nowrap; font-size: 13px; padding: 8px 16px; }
@@ -818,7 +950,8 @@ onMounted(() => {
 .action-link.primary:hover { background: rgba(29,111,184,.08); }
 .radio-row { display: flex; gap: 18px; padding: 4px 0; flex-wrap: wrap; }
 .radio-item { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--c-text); cursor: pointer; }
-.verify-modal { max-width: 460px; }
+.verify-modal { max-width: 480px; }
+.verify-tip { display: flex; align-items: flex-start; gap: 6px; font-size: 12.5px; color: var(--c-warning, #ba7517); background: var(--c-warning-bg, #fff7e6); border-radius: 8px; padding: 9px 11px; margin: 0 0 14px; line-height: 1.55; }
 
 /* ── 详情抽屉 ── */
 .drawer-overlay {
@@ -847,13 +980,30 @@ onMounted(() => {
 .detail-list { display: flex; flex-direction: column; gap: 14px; margin: 0; }
 .detail-row { display: flex; flex-direction: column; gap: 4px; }
 .detail-label { font-size: 12px; color: var(--c-text-3); }
-.detail-photos { margin-top: 22px; }
+.detail-photos { margin-top: 18px; }
 .photos-title { font-size: 13px; font-weight: 700; color: var(--c-text); margin-bottom: 10px; }
 .photo-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
 .photo-item { display: block; border-radius: 8px; overflow: hidden; border: 1px solid var(--c-border); background: var(--c-bg); }
 .photo-item img { width: 100%; height: 120px; object-fit: cover; display: block; }
 .detail-photos-loading { margin-top: 18px; font-size: 13px; color: var(--c-text-3); }
 .detail-value { font-size: 14px; color: var(--c-text); white-space: pre-wrap; word-break: break-word; margin: 0; }
+.no-photo { font-size: 12.5px; color: var(--c-text-3); margin: 0; }
+.no-photo.warn { color: var(--c-warning, #ba7517); }
+.value-warn { color: var(--c-warning, #ba7517); }
+.inline-warn { font-size: 11.5px; margin-left: 6px; }
+
+/* 整改完成弹窗 */
+.finish-modal { max-width: 560px; }
+.finish-desc { font-size: 13px; color: var(--c-text); background: var(--c-surface-2, #f7f8fa); border-radius: 8px; padding: 10px 12px; white-space: pre-wrap; word-break: break-word; max-height: 90px; overflow-y: auto; }
+.finish-tip { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--c-warning, #ba7517); background: var(--c-warning-bg, #fff7e6); border-radius: 8px; padding: 9px 11px; margin: 12px 0 4px; line-height: 1.5; }
+.req { color: var(--c-danger); }
+.photo-upload-area { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 6px; }
+.photo-upload-area .photo-list { display: flex; flex-wrap: wrap; gap: 10px; width: 100%; }
+.photo-upload-area .photo-item { position: relative; width: 80px; height: 80px; border-radius: 8px; overflow: hidden; flex-shrink: 0; }
+.photo-preview { width: 100%; height: 100%; object-fit: cover; }
+.photo-remove { position: absolute; top: 2px; right: 2px; width: 20px; height: 20px; border-radius: 50%; border: none; background: rgba(0,0,0,.55); color: #fff; font-size: 14px; cursor: pointer; display: flex; align-items: center; justify-content: center; line-height: 1; }
+.upload-trigger { width: 80px; height: 80px; border: 2px dashed var(--c-border-strong); border-radius: 8px; display: flex; flex-direction: column; align-items: center; justify-content: center; cursor: pointer; color: var(--c-text-3); font-size: 11px; gap: 4px; }
+.upload-trigger:hover { border-color: var(--c-blue-600); color: var(--c-blue-600); }
 .drawer-foot {
   padding: 16px 24px; border-top: 1px solid var(--c-border);
   display: flex; gap: 10px; justify-content: flex-end;

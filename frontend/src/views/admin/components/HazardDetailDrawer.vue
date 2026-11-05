@@ -79,6 +79,7 @@
                 <button class="btn btn-primary" @click="openRectify('已完成')">标记完成 → 待验收</button>
               </template>
               <template v-if="current.status === 'verifying'">
+                <button v-if="!hasRectifyEvidence" class="btn btn-outline" @click="openRectify('已完成')">补录整改资料</button>
                 <div class="form-group"><label>是否否决项</label>
                   <select v-model="verifyForm.is_reject_item" class="form-input">
                     <option :value="0">否</option>
@@ -147,7 +148,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, watch } from 'vue'
+import { ref, reactive, watch, computed } from 'vue'
 import Icon from '@/components/Icon.vue'
 import HazardPhotoUpload from '@/views/admin/components/HazardPhotoUpload.vue'
 import { statusLabel, statusBadge, levelBadge } from '@/utils/hazardStatus'
@@ -232,6 +233,15 @@ function setFeedback(msg, type = 'error') {
   setTimeout(() => { feedback.value = '' }, 3000)
 }
 
+/** 是否已有整改情况 + 整改后照片（闭环红线，与安全员工作台后端校验同口径） */
+const hasRectifyEvidence = computed(() => {
+  const c = current.value
+  if (!c) return false
+  const hasMeasures = String(c.rectify_measures || '').trim().length > 0
+  const hasPhotos = (c.photos?.rectify?.length || 0) > 0 || Boolean(String(c.rectify_photo_url || '').trim())
+  return hasMeasures && hasPhotos
+})
+
 function afterAction(newStatus, extra = {}) {
   if (current.value) {
     current.value.status = newStatus
@@ -284,6 +294,15 @@ async function quickRectify(status) {
 }
 async function submitRectify() {
   if (!current.value) return
+  // 「已完成」推进待验收时，整改情况 + 整改后照片必须齐备（含历史已录，避免重复上传）
+  if (rectifyForm.rectify_status === '已完成') {
+    const measures = String(rectifyForm.rectify_measures || '').trim()
+    const photoCount = rectifyPhotoUrls.value.length + (current.value.photos?.rectify?.length || 0)
+    const missing = []
+    if (!measures) missing.push('整改情况')
+    if (!photoCount) missing.push('整改后照片')
+    if (missing.length) return setFeedback(`闭环前必须录入${missing.join('和')}`)
+  }
   submitting.value = true
   try {
     await rectifyHazard(current.value.id, {
@@ -291,6 +310,17 @@ async function submitRectify() {
       rectify_measures: rectifyForm.rectify_measures,
       rectify_photo_urls: [...rectifyPhotoUrls.value],
     })
+    // 本地同步证据状态：补录后「验收通过」按钮可立即解禁，无需重开抽屉
+    if (String(rectifyForm.rectify_measures || '').trim()) {
+      current.value.rectify_measures = rectifyForm.rectify_measures
+    }
+    if (rectifyPhotoUrls.value.length) {
+      const exist = current.value.photos?.rectify || []
+      current.value.photos = {
+        ...(current.value.photos || { report: [] }),
+        rectify: [...exist, ...rectifyPhotoUrls.value.map((url) => ({ id: `new-${url}`, photo_url: url }))],
+      }
+    }
     afterAction(rectifyForm.rectify_status === '已完成' ? 'verifying' : 'rectifying')
   } catch (e) {
     setFeedback(e.response?.data?.error || '整改失败')
@@ -302,6 +332,9 @@ async function submitRectify() {
 // ─── 验收 ───────────────────────────────────────────────
 async function passVerify() {
   if (!current.value) return
+  if (!hasRectifyEvidence.value) {
+    return setFeedback('现场检查问题闭环前必须录入整改情况和整改后照片，请先「补录整改资料」')
+  }
   submitting.value = true
   try {
     await verifyHazard(current.value.id, {
