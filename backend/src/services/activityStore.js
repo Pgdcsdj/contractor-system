@@ -4,10 +4,16 @@
  */
 const { pool } = require('../db/db')
 
-/** 在册四级网格单位（下拉 + 应报范围） */
-async function listUnits(keyword = '') {
+/** 在册四级网格单位（下拉 + 应报范围）
+ *  默认只取「三、四级」网格（真正承担作业的承包商单位）；一、二级为项目部内部机构，不计入应报与下拉。 */
+const CONTRACTOR_LEVELS = ['三级', '四级']
+async function listUnits(keyword = '', levels = CONTRACTOR_LEVELS) {
   const params = []
   let where = 'WHERE is_active = 1'
+  if (Array.isArray(levels) && levels.length) {
+    where += ` AND grid_level IN (${levels.map(() => '?').join(',')})`
+    params.push(...levels)
+  }
   if (keyword) {
     where += ' AND (unit_name LIKE ? OR grid_l2 LIKE ? OR parent_unit_name LIKE ?)'
     params.push(`%${keyword}%`, `%${keyword}%`, `%${keyword}%`)

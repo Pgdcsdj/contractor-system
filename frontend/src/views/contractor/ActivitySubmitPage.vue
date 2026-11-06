@@ -219,8 +219,6 @@ const MONDAY_FIELDS = [
   { key: 'location', label: '活动地点', placeholder: '如：马401-4井会议室' },
   { key: 'activity_name', label: '会议（活动）名称', placeholder: '留空默认「周一安全活动」' },
   { key: 'host', label: '主持人' },
-  { key: 'main_content', label: '会议（活动）主要内容', wide: true },
-  { key: 'attendees', label: '参加人员', wide: true, placeholder: '附签到表、参会人照片' },
   { key: 'hse_meeting', label: '（一）周一 HSE 例会', wide: true },
   { key: 'training', label: '培训学习情况', wide: true },
   { key: 'hazard_check', label: '隐患排查情况', wide: true },
@@ -237,7 +235,7 @@ const WEDNESDAY_FIELDS = [
   { key: 'attendees', label: '参加人员', wide: true },
   { key: 'remark', label: '备注', wide: true },
 ]
-const MONDAY_CATS = ['签到表', '参会人照片', 'HSE隐患整改通知单', '检查问题汇总', '其他附件']
+const MONDAY_CATS = ['签到表', '参会人照片', '检查问题汇总', '其他附件']
 const WEDNESDAY_CATS = ['学习材料', '学习照片', '其他附件']
 const INSPECTION_CATS = ['排查佐证材料', '整改照片', '回填表', '其他附件']
 

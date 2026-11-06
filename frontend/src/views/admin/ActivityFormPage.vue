@@ -16,7 +16,7 @@
       <label class="lbl">当前期次</label>
       <select v-model="currentId" class="filter-input" @change="loadAll">
         <option value="">请选择期次</option>
-        <option v-for="p in periods" :key="p.id" :value="p.id">{{ p.title }}{{ p.activity_date ? '（' + fmtDate(p.activity_date) + '）' : '' }}</option>
+        <option v-for="p in periods" :key="p.id" :value="p.id">{{ periodLabel(p) }}</option>
       </select>
       <span v-if="current" class="period-meta">
         状态：<b :class="current.status === 'open' ? 'st-open' : 'st-closed'">{{ current.status === 'open' ? '进行中' : '已关闭' }}</b>
@@ -35,27 +35,65 @@
       <div class="stat-card"><div class="stat-num">{{ detail.stats?.expected || 0 }}</div><div class="stat-lbl">应报单位</div></div>
       <div class="stat-card ok"><div class="stat-num">{{ detail.stats?.reportedCount || 0 }}</div><div class="stat-lbl">已报单位</div></div>
       <div class="stat-card warn"><div class="stat-num">{{ detail.stats?.unreportedCount || 0 }}</div><div class="stat-lbl">未报单位</div></div>
+      <div class="stat-card"><div class="stat-num">{{ currentRate }}</div><div class="stat-lbl">上报率</div></div>
       <div class="stat-card"><div class="stat-num">{{ detail.stats?.fileTotal || 0 }}</div><div class="stat-lbl">附件总数</div></div>
+    </div>
+
+    <!-- 各期上报统计总览 -->
+    <div v-if="recentPeriods.length" class="card overview-card">
+      <div class="ov-head">
+        <span class="table-title">各期上报统计</span>
+        <span class="ov-tip">共 {{ periods.length }} 期，此处显示最近 10 期；点行可切换查看该期明细</span>
+      </div>
+      <div class="table-scroll">
+        <table class="data-table compact">
+          <thead><tr><th>期次</th><th>活动日期</th><th>应报</th><th>已报</th><th>未报</th><th>上报率</th></tr></thead>
+          <tbody>
+            <tr
+              v-for="p in recentPeriods" :key="p.id"
+              class="ov-row" :class="{ on: String(p.id) === String(currentId) }"
+              @click="switchPeriod(p.id)"
+            >
+              <td>{{ p.title }}</td>
+              <td>{{ fmtDate(p.activity_date) || '-' }}</td>
+              <td>{{ p.expected || 0 }}</td>
+              <td class="ok-text">{{ p.reportedCount || 0 }}</td>
+              <td :class="{ 'warn-text': Number(p.unreportedCount) > 0 }">{{ p.unreportedCount || 0 }}</td>
+              <td>{{ rateOf(p) }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </div>
 
     <div class="card table-card">
       <div class="table-toolbar">
         <input v-model="keyword" class="filter-input" placeholder="搜索单位 / 上报人…" @input="filterRecords" />
-        <span class="table-title">已上报台账</span>
+        <span class="table-title">已上报台账（{{ filteredRecords.length }} 条）</span>
       </div>
       <div class="table-scroll">
         <table class="data-table">
           <thead>
             <tr>
-              <th>承包商单位</th><th>二级板块</th><th>网格层级</th>
+              <th>承包商单位</th><th>三级网格</th><th>二级板块</th><th>层级</th>
               <th>上报人</th><th>联系电话</th><th>上报时间</th><th>附件</th><th>操作</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-if="loading"><td colspan="8" class="empty-cell"><div class="spinner" style="margin:0 auto"></div></td></tr>
-            <tr v-else-if="!filteredRecords.length"><td colspan="8" class="empty-cell">本期暂无单位上报，可复制「承包商填报入口」发给各承包商</td></tr>
+            <tr v-if="loading"><td colspan="9" class="empty-cell"><div class="spinner" style="margin:0 auto"></div></td></tr>
+            <tr v-else-if="!filteredRecords.length">
+              <td colspan="9" class="empty-cell">
+                本期暂无单位上报。
+                <template v-if="latestReportedPeriod">
+                  <br />最近一次上报在「{{ latestReportedPeriod.title }}」（已报 {{ latestReportedPeriod.reportedCount }} 家），
+                  <button class="action-link" @click="switchPeriod(latestReportedPeriod.id)">点此查看</button>
+                </template>
+                <br /><span class="empty-tip">把「打开填报入口」的链接发给各承包商即可开始填报。</span>
+              </td>
+            </tr>
             <tr v-for="r in filteredRecords" :key="r.id">
               <td><strong>{{ r.unit_name }}</strong></td>
+              <td>{{ r.grid_l3 || '-' }}</td>
               <td>{{ r.grid_l2 || '-' }}</td>
               <td>{{ r.grid_level || '-' }}</td>
               <td>{{ r.uploader_name || '-' }}</td>
@@ -72,14 +110,25 @@
       </div>
     </div>
 
-    <div v-if="current && detail.stats?.unreported?.length" class="card unreported-card">
+    <div v-if="current" class="card unreported-card">
       <div class="unreported-head" @click="showUnreported = !showUnreported">
         <Icon name="alert" :size="16" />
-        <strong>未上报单位（{{ detail.stats.unreported.length }}）</strong>
+        <strong>未上报单位（{{ detail.stats?.unreported?.length || 0 }}）</strong>
         <span>{{ showUnreported ? '收起' : '展开查看' }}</span>
       </div>
-      <div v-if="showUnreported" class="unreported-list">
-        <span v-for="u in detail.stats.unreported" :key="u.id" class="unit-chip">{{ u.unit_name }}<em>{{ u.grid_l2 || '' }}</em></span>
+      <div v-if="showUnreported" class="table-scroll">
+        <table v-if="detail.stats?.unreported?.length" class="data-table compact">
+          <thead><tr><th>序号</th><th>二级板块</th><th>三级网格</th><th>四级单位</th></tr></thead>
+          <tbody>
+            <tr v-for="(u, i) in detail.stats.unreported" :key="u.id">
+              <td>{{ i + 1 }}</td>
+              <td>{{ u.grid_l2 || '-' }}</td>
+              <td>{{ u.parent_unit_name || '-' }}</td>
+              <td><strong>{{ u.unit_name }}</strong></td>
+            </tr>
+          </tbody>
+        </table>
+        <p v-else class="empty-cell">本期应报单位已全部上报。</p>
       </div>
     </div>
 
@@ -158,15 +207,13 @@ const periodType = computed(() => route.meta.periodType || 'monday')
 const CONFIG = {
   monday: {
     title: '周一安全活动',
-    desc: '按「HSE 活动（会议）记录」模板结构化填报，含签到表、照片、隐患整改通知单等附件',
+    desc: '按「HSE 活动（会议）记录」模板结构化填报，含签到表、参会人照片等附件',
     titlePlaceholder: '如：2026.11.2 周一 HSE 活动',
     fields: [
       { key: 'activity_time', label: '活动时间' },
       { key: 'location', label: '活动地点' },
       { key: 'activity_name', label: '会议（活动）名称' },
       { key: 'host', label: '主持人' },
-      { key: 'main_content', label: '会议（活动）主要内容', wide: true },
-      { key: 'attendees', label: '参加人员', wide: true },
       { key: 'hse_meeting', label: '（一）周一 HSE 例会', wide: true },
       { key: 'training', label: '培训学习情况', wide: true },
       { key: 'hazard_check', label: '隐患排查情况', wide: true },
@@ -174,7 +221,7 @@ const CONFIG = {
       { key: 'next_plan', label: '二、下步重点工作安排', wide: true },
       { key: 'remark', label: '备注', wide: true },
     ],
-    categories: ['签到表', '参会人照片', 'HSE隐患整改通知单', '检查问题汇总', '其他附件'],
+    categories: ['签到表', '参会人照片', '检查问题汇总', '其他附件'],
   },
   wednesday: {
     title: '周三学习活动',
@@ -228,6 +275,39 @@ const filteredRecords = computed(() => {
     [r.unit_name, r.uploader_name, r.uploader_phone, r.grid_l2].some((v) => String(v || '').toLowerCase().includes(k)))
 })
 function filterRecords() { /* computed 自动 */ }
+
+// ── 期次统计与展示辅助 ────────────────────────────────────────────────
+function rateOf(p) {
+  const e = Number(p.expected || 0)
+  if (!e) return '-'
+  return Math.round((Number(p.reportedCount || 0) / e) * 100) + '%'
+}
+const currentRate = computed(() => {
+  const s = detail.stats || {}
+  const e = Number(s.expected || 0)
+  if (!e) return '-'
+  return Math.round((Number(s.reportedCount || 0) / e) * 100) + '%'
+})
+function sortByDateDesc(list) {
+  return [...list].sort((a, b) => String(fmtDate(b.activity_date) || '').localeCompare(String(fmtDate(a.activity_date) || '')))
+}
+const recentPeriods = computed(() => sortByDateDesc(periods.value).slice(0, 10))
+const latestReportedPeriod = computed(() => {
+  const hit = periods.value.filter((p) => Number(p.reportedCount || 0) > 0)
+  return hit.length ? sortByDateDesc(hit)[0] : null
+})
+function periodLabel(p) {
+  const d = fmtDate(p.activity_date)
+  const base = p.title || ''
+  const withDate = d && !base.includes(d) ? `${base}（${d}）` : base
+  const c = Number(p.reportedCount || 0)
+  return `${withDate} · ${c ? `已报 ${c} 家` : '暂无上报'}`
+}
+async function switchPeriod(id) {
+  if (String(currentId.value) === String(id)) return
+  currentId.value = id
+  await loadAll()
+}
 
 async function loadPeriods() {
   const res = await getActivityPeriods({ type: periodType.value })
@@ -389,7 +469,7 @@ onMounted(async () => { await loadPeriods(); await loadAll() })
 .spacer { flex: 1; }
 .total-count { font-size: 12.5px; color: var(--c-text-3); }
 
-.stat-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+.stat-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; }
 .stat-card { background: var(--c-surface); border: 1px solid var(--c-border, #E6EAF0); border-radius: 12px; padding: 16px; text-align: center; }
 .stat-card.ok { border-color: var(--c-success, #1d9e75); }
 .stat-card.warn { border-color: var(--c-warning, #ba7517); }
@@ -414,9 +494,22 @@ onMounted(async () => { await loadPeriods(); await loadAll() })
 .unreported-card { padding: 14px 16px; }
 .unreported-head { display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; color: var(--c-warning, #ba7517); }
 .unreported-head span { margin-left: auto; color: var(--c-text-3); font-size: 12px; }
+.unreported-card .table-scroll { margin-top: 12px; }
 .unreported-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .unit-chip { font-size: 12px; padding: 5px 10px; border-radius: 6px; background: var(--c-surface-2, #f7f8fa); border: 1px solid var(--c-border, #E6EAF0); color: var(--c-text); }
 .unit-chip em { font-style: normal; color: var(--c-text-3); margin-left: 6px; font-size: 11px; }
+
+/* 各期上报统计 */
+.overview-card { padding: 0; overflow: hidden; }
+.ov-head { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--c-border, #E6EAF0); }
+.ov-tip { margin-left: auto; font-size: 12px; color: var(--c-text-3); }
+.overview-card .table-scroll { padding: 0 16px 10px; }
+.ov-row { cursor: pointer; }
+.ov-row:hover td { background: var(--c-surface-2, #f7f8fa); }
+.ov-row.on td { background: #EAF3FB; }
+.ok-text { color: var(--c-success, #1d9e75); font-weight: 600; }
+.warn-text { color: var(--c-warning, #ba7517); font-weight: 600; }
+.empty-tip { font-size: 12px; color: var(--c-text-3); }
 
 .modal-overlay { position: fixed; inset: 0; background: rgba(10, 19, 34, .55); display: flex; align-items: center; justify-content: center; z-index: 400; padding: 20px; }
 .modal { width: 560px; max-width: 100%; max-height: 90vh; overflow-y: auto; background: var(--c-surface); border-radius: 14px; padding: 22px; }

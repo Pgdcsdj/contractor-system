@@ -245,9 +245,12 @@ router.get('/records', async (req, res) => {
     }
     const [list] = await pool.query(
       `SELECT r.*, p.title AS period_title, p.period_type, p.due_at,
+        u.parent_unit_name AS grid_l3,
         (SELECT COUNT(*) FROM t_activity_row w WHERE w.record_id = r.id) AS row_count,
         (SELECT COUNT(*) FROM t_activity_file f WHERE f.record_id = r.id) AS file_count
-       FROM t_activity_record r LEFT JOIN t_activity_period p ON p.id = r.period_id
+       FROM t_activity_record r
+       LEFT JOIN t_activity_period p ON p.id = r.period_id
+       LEFT JOIN t_contractor_unit u ON u.id = r.unit_id
        ${where} ORDER BY r.submitted_at DESC LIMIT 500`, params
     )
     ok(res, list)
