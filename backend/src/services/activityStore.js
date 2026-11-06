@@ -27,21 +27,65 @@ async function listUnits(keyword = '', levels = CONTRACTOR_LEVELS) {
   return rows
 }
 
-/** 按期次配置解析应报单位；未配置 = 全部在册单位 */
+/** 应报单位权威来源：安全活动看板的「受控单位名单」t_activity_stat_unit
+ *  - LEFT JOIN t_contractor_unit 补齐二级板块/三级网格（手工填写的行没有网格信息）
+ *  - 同一单位可能因多个队/井出现多行，统计口径按单位去重
+ *  - unit_id 为空的手工行用负数合成 id，保证前端 :key 唯一 */
+async function statExpectedUnits() {
+  await statUnits() // 空表时自动从三四级网格初始化
+  const [rows] = await pool.query(
+    `SELECT s.id AS stat_row_id, s.unit_id, s.unit_name, s.team_name, s.well_no, s.seq_no,
+            u.grid_l2, u.grid_level, u.parent_unit_name, u.parent_id
+     FROM t_activity_stat_unit s
+     LEFT JOIN t_contractor_unit u ON u.id = s.unit_id
+     WHERE s.is_active = 1
+     ORDER BY s.sort_no, s.seq_no, s.id`
+  )
+  const seen = new Set()
+  const out = []
+  for (const r of rows) {
+    const key = r.unit_id != null ? `id:${r.unit_id}` : `name:${r.unit_name}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push({
+      id: r.unit_id != null ? r.unit_id : -r.stat_row_id,
+      stat_row_id: r.stat_row_id,
+      unit_id: r.unit_id,
+      unit_name: r.unit_name,
+      team_name: r.team_name || '',
+      well_no: r.well_no || '',
+      grid_l2: r.grid_l2 || '',
+      grid_level: r.grid_level || '',
+      parent_unit_name: r.parent_unit_name || '',
+      parent_id: r.parent_id || null,
+    })
+  }
+  return out
+}
+
+/** 按期次配置解析应报单位
+ *  - 期次显式指定了范围（如专项类比排查只指定几家）：直接按网格单位表取，保持该模块原口径
+ *  - 未指定范围（周一/周三固定活动）：= 安全活动看板的「受控单位名单」
+ */
 async function expectedUnits(period) {
   let ids = []
   try { ids = JSON.parse(period.expected_unit_ids || '[]') } catch (e) { ids = [] }
-  if (!Array.isArray(ids)) return listUnits()
-  ids = ids.map(Number).filter((n) => Number.isInteger(n) && n > 0)
-  if (!ids.length) return listUnits()
-  const marks = ids.map(() => '?').join(',')
-  const [rows] = await pool.query(
-    `SELECT id, unit_name, grid_l2, grid_level, parent_unit_name, parent_id
-     FROM t_contractor_unit WHERE is_active = 1 AND id IN (${marks})
-     ORDER BY FIELD(grid_level, '一级','二级','三级','四级'), CAST(seq_no AS UNSIGNED), id`,
-    ids
-  )
-  return rows
+  if (Array.isArray(ids)) {
+    ids = ids.map(Number).filter((n) => Number.isInteger(n) && n > 0)
+  } else {
+    ids = []
+  }
+  if (ids.length) {
+    const marks = ids.map(() => '?').join(',')
+    const [rows] = await pool.query(
+      `SELECT id, id AS unit_id, unit_name, grid_l2, grid_level, parent_unit_name, parent_id
+       FROM t_contractor_unit WHERE is_active = 1 AND id IN (${marks})
+       ORDER BY FIELD(grid_level, '一级','二级','三级','四级'), CAST(seq_no AS UNSIGNED), id`,
+      ids
+    )
+    if (rows.length) return rows
+  }
+  return statExpectedUnits()
 }
 
 /**
@@ -58,19 +102,29 @@ async function periodStats(period) {
      FROM t_activity_record r WHERE r.period_id = ? ORDER BY r.submitted_at DESC`,
     [period.id]
   )
-  const byUnit = {}
-  records.forEach((r) => { if (!byUnit[r.unit_id]) byUnit[r.unit_id] = r })
+  // 匹配口径：unit_id 优先，其次按单位名称（受控名单里手工填写的行没有 unit_id）
+  const byId = new Map()
+  const byName = new Map()
+  records.forEach((r) => {
+    if (r.unit_id != null && !byId.has(r.unit_id)) byId.set(r.unit_id, r)
+    if (!byName.has(r.unit_name)) byName.set(r.unit_name, r)
+  })
+  const used = new Set()
   const reported = []
   const unreported = []
   units.forEach((u) => {
-    const r = byUnit[u.id]
-    if (r) reported.push({ ...u, record: r, row_count: r.row_count, file_count: r.file_count })
-    else unreported.push(u)
+    let r = (u.unit_id != null ? byId.get(u.unit_id) : null) || byName.get(u.unit_name) || null
+    if (r) {
+      used.add(r.id)
+      reported.push({ ...u, record: r, row_count: r.row_count, file_count: r.file_count })
+    } else {
+      unreported.push(u)
+    }
   })
-  // 已上报但已不在应报名单里的单位（单位退场等情况），仍计入已报
-  const expectedIds = new Set(units.map((u) => u.id))
-  const extra = records.filter((r) => !expectedIds.has(r.unit_id)).map((r) => ({
-    id: r.unit_id, unit_name: r.unit_name, grid_l2: '', grid_level: '',
+  // 已上报但不在受控名单里的单位（名单漏配/单位退场等情况），仍计入已报
+  const extra = records.filter((r) => !used.has(r.id)).map((r) => ({
+    id: r.unit_id != null ? r.unit_id : -r.id, unit_id: r.unit_id,
+    unit_name: r.unit_name, grid_l2: '', grid_level: '', parent_unit_name: '',
     record: r, row_count: r.row_count, file_count: r.file_count,
   }))
   return {
@@ -324,8 +378,19 @@ async function monthlyStat(month, type) {
   }
 }
 
+/** 填报页单位下拉：与「应报」同源（受控单位名单），支持关键字筛选 */
+async function statUnitOptions(keyword = '') {
+  const list = await statExpectedUnits()
+  const kw = String(keyword || '').trim()
+  if (!kw) return list.map((u) => ({ id: u.id, unit_name: u.unit_name, grid_l2: u.grid_l2, grid_level: u.grid_level, parent_unit_name: u.parent_unit_name }))
+  return list
+    .filter((u) => u.unit_name.includes(kw) || (u.grid_l2 || '').includes(kw) || (u.parent_unit_name || '').includes(kw))
+    .map((u) => ({ id: u.id, unit_name: u.unit_name, grid_l2: u.grid_l2, grid_level: u.grid_level, parent_unit_name: u.parent_unit_name }))
+}
+
 module.exports = {
   listUnits, expectedUnits, periodStats, parseDef,
   ensureReminders, listReminders, ensureWeeklyPeriods,
   statUnits, saveStatUnits, statMonths, monthlyStat,
+  statExpectedUnits, statUnitOptions,
 }

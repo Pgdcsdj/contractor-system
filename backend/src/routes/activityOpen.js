@@ -59,6 +59,11 @@ router.get('/units', async (req, res) => {
   try { ok(res, await store.listUnits(req.query.keyword || '')) } catch (e) { fail(res, e) }
 })
 
+// 填报单位下拉：与「本期应报」同源（安全活动看板 → 受控单位名单）
+router.get('/report-units', async (req, res) => {
+  try { ok(res, await store.statUnitOptions(req.query.keyword || '')) } catch (e) { fail(res, e) }
+})
+
 // ─── 公开：可填报期次列表 ──────────────────────────────────────────────────
 router.get('/periods', async (req, res) => {
   try {

@@ -80,6 +80,10 @@ export function exportPeriodSummary(id, title, type) {
 export function getOpenUnits(keyword = '') {
   return request.get(`${OPEN}/units`, { params: { keyword } })
 }
+// 填报单位下拉：与「本期应报」同源（安全活动看板 → 受控单位名单）
+export function getOpenReportUnits(keyword = '') {
+  return request.get(`${OPEN}/report-units`, { params: { keyword } })
+}
 export function getOpenPeriods(type = '') {
   return request.get(`${OPEN}/periods`, { params: { type } })
 }

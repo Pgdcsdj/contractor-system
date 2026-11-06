@@ -209,7 +209,7 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import Icon from '@/components/Icon.vue'
 import { fmtDT, fmtDate } from '@/utils/datetime'
 import {
-  getOpenUnits, getOpenPeriods, getOpenPeriod, submitActivityForm,
+  getOpenReportUnits, getOpenPeriods, getOpenPeriod, submitActivityForm,
   importActivityFilled, submitActivityRows, uploadActivityFile, getMySubmission,
   deleteMyRow, openDownloadTemplate,
 } from '@/api/activity'
@@ -333,7 +333,7 @@ async function loadPeriods() {
 }
 async function loadUnits() {
   try {
-    const res = await getOpenUnits('')
+    const res = await getOpenReportUnits('')
     units.value = res.data?.data || []
     restoreIdentity()
   } catch (e) { showToast(errMsg(e), 'error') }
