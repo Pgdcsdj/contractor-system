@@ -45,6 +45,10 @@
 
         <!-- 分组：承包商安全活动 -->
         <div v-if="!sidebarCollapsed" class="nav-group-title">承包商安全活动</div>
+        <router-link to="/admin/activity-dashboard" class="nav-item">
+          <Icon name="dashboard" :size="20" class="nav-icon" />
+          <span v-if="!sidebarCollapsed" class="nav-label">安全活动看板</span>
+        </router-link>
         <router-link to="/admin/activity-monday" class="nav-item">
           <Icon name="clipboard" :size="20" class="nav-icon" />
           <span v-if="!sidebarCollapsed" class="nav-label">周一安全活动</span>
@@ -57,10 +61,6 @@
           <Icon name="list" :size="20" class="nav-icon" />
           <span v-if="!sidebarCollapsed" class="nav-label">上级检查类比排查</span>
           <span v-if="!sidebarCollapsed && remindUnread > 0" class="nav-remind-dot">{{ remindUnread }}</span>
-        </router-link>
-        <router-link to="/admin/activity-dashboard" class="nav-item">
-          <Icon name="trending" :size="20" class="nav-icon" />
-          <span v-if="!sidebarCollapsed" class="nav-label">安全活动看板</span>
         </router-link>
 
         <!-- 分组二：隐患整改 -->
