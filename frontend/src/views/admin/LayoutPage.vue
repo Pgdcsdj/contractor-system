@@ -58,6 +58,10 @@
           <span v-if="!sidebarCollapsed" class="nav-label">上级检查类比排查</span>
           <span v-if="!sidebarCollapsed && remindUnread > 0" class="nav-remind-dot">{{ remindUnread }}</span>
         </router-link>
+        <router-link to="/admin/activity-dashboard" class="nav-item">
+          <Icon name="trending" :size="20" class="nav-icon" />
+          <span v-if="!sidebarCollapsed" class="nav-label">安全活动看板</span>
+        </router-link>
 
         <!-- 分组二：隐患整改 -->
         <div v-if="!sidebarCollapsed" class="nav-group-title">隐患整改</div>
@@ -247,6 +251,7 @@ const routeMap = {
   ActivityMonday: '周一安全活动',
   ActivityWednesday: '周三学习活动',
   ActivityInspection: '上级检查类比排查',
+  ActivityDashboard: '安全活动看板',
   ActivitySubmit: '承包商安全活动填报',
 }
 

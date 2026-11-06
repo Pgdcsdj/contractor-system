@@ -197,7 +197,7 @@ import { fmtDT, fmtDate } from '@/utils/datetime'
 import { openActivitySubmit } from '@/utils/activityLink'
 import {
   getActivityPeriods, getActivityPeriod, createActivityPeriod, updateActivityPeriod,
-  deleteActivityPeriod, getActivityUnits, getActivityRecord, deleteActivityRecord,
+  deleteActivityPeriod, getActivityUnits, getActivityRecords, getActivityRecord, deleteActivityRecord,
   exportPeriodSummary,
 } from '@/api/activity'
 
@@ -313,9 +313,26 @@ async function loadPeriods() {
   const res = await getActivityPeriods({ type: periodType.value })
   periods.value = res.data?.data || []
   if (!periods.value.some((p) => String(p.id) === String(currentId.value))) {
-    // 默认落在离今天最近的一期（周一/周三批次由系统按周自动生成，列表不再是"最新在前"就够了）
-    currentId.value = nearestPeriodId(periods.value)
+    currentId.value = defaultPeriodId(periods.value)
   }
+}
+/** 管理端默认期次：优先落在「最近一期已有上报」的期次上（打开就能看到台账），否则落在离今天最近的一期 */
+function defaultPeriodId(list) {
+  if (!list.length) return ''
+  const t0 = new Date().setHours(0, 0, 0, 0)
+  const val = (p) => {
+    const d = fmtDate(p.activity_date)
+    return d ? new Date(`${d}T00:00:00`).getTime() : NaN
+  }
+  const withData = list.filter((p) => Number(p.reportedCount || 0) > 0)
+  if (withData.length) {
+    const past = withData.filter((p) => !Number.isNaN(val(p)) && val(p) <= t0)
+    if (past.length) return past.sort((a, b) => val(b) - val(a))[0].id
+    const future = withData.filter((p) => !Number.isNaN(val(p)))
+    if (future.length) return future.sort((a, b) => val(a) - val(b))[0].id
+    return withData[0].id
+  }
+  return nearestPeriodId(list)
 }
 /** 取离今天最近的一期；同距离优先未到期的（日期靠后） */
 function nearestPeriodId(list) {
@@ -445,7 +462,8 @@ onMounted(async () => { await loadPeriods(); await loadAll() })
 .page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
 .page-section-title { font-size: 20px; font-weight: 600; color: var(--c-text); margin: 0; }
 .sub { font-size: 13px; color: var(--c-text-2); margin: 5px 0 0; }
-.head-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.head-actions { display: flex; gap: 8px; flex-wrap: wrap; flex: 0 0 auto; }
+.head-actions .btn { width: auto; flex: 0 0 auto; }
 .card { background: var(--c-surface); border: 1px solid var(--c-border, #E6EAF0); border-radius: var(--r-lg, 12px); }
 .btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 8px; font-size: 13px; cursor: pointer; border: 1px solid var(--c-border, #E6EAF0); background: var(--c-surface); color: var(--c-text); }
 .btn:hover { border-color: var(--c-primary, #1D6FB8); }

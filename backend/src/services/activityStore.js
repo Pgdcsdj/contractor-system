@@ -211,7 +211,121 @@ async function ensureWeeklyPeriods(weeksBack = 3, weeksAhead = 3) {
   return created
 }
 
+// ─── 月度统计（周一 / 周三 活动完成情况）─────────────────────────────────────
+/** 受控单位名单：为空时按在册三/四级单位自动初始化一份 */
+// 首次自动初始化只允许执行一次（看板会并发取周一+周三，两个请求同时发现空表会重复插入）
+let statInitPromise = null
+
+async function statUnits() {
+  const sql = `SELECT id, unit_id, seq_no, unit_name, team_name, well_no
+               FROM t_activity_stat_unit WHERE is_active = 1
+               ORDER BY sort_no, seq_no, id`
+  const [rows] = await pool.query(sql)
+  if (rows.length) return rows
+  if (!statInitPromise) {
+    const p = (async () => {
+      // 双检：拿到锁后再确认一次，避免前一个初始化刚完成又被插入一遍
+      const [again] = await pool.query('SELECT id FROM t_activity_stat_unit LIMIT 1')
+      if (again.length) return
+      const units = await listUnits()
+      let i = 1
+      for (const u of units) {
+        await pool.execute(
+          'INSERT INTO t_activity_stat_unit (unit_id, seq_no, unit_name, sort_no) VALUES (?,?,?,?)',
+          [u.id, i, u.unit_name, i]
+        )
+        i++
+      }
+    })().catch(() => {})
+    statInitPromise = p
+    p.then(() => { if (statInitPromise === p) statInitPromise = null })
+  }
+  await statInitPromise
+  const [fresh] = await pool.query(sql)
+  return fresh
+}
+
+/** 保存受控单位名单（整表覆盖） */
+async function saveStatUnits(list) {
+  await pool.execute('DELETE FROM t_activity_stat_unit')
+  let i = 1
+  for (const r of list || []) {
+    const name = String(r.unit_name || '').trim()
+    if (!name) continue
+    const seq = Number(r.seq_no) || i
+    await pool.execute(
+      `INSERT INTO t_activity_stat_unit (unit_id, seq_no, unit_name, team_name, well_no, sort_no)
+       VALUES (?,?,?,?,?,?)`,
+      [
+        Number(r.unit_id) || null, seq, name.slice(0, 200),
+        String(r.team_name || '').slice(0, 100), String(r.well_no || '').slice(0, 120), i,
+      ]
+    )
+    i++
+  }
+  return statUnits()
+}
+
+/** 有期次的月份列表（近 24 个月） */
+async function statMonths() {
+  const [rows] = await pool.query(
+    `SELECT DISTINCT DATE_FORMAT(activity_date, '%Y-%m') AS m
+     FROM t_activity_period
+     WHERE period_type IN ('monday','wednesday') AND activity_date IS NOT NULL
+     ORDER BY m DESC LIMIT 24`
+  )
+  return rows.map((r) => r.m).filter(Boolean)
+}
+
+/** 某月某类型的完成情况：行=受控单位，列=该月各期 */
+async function monthlyStat(month, type) {
+  const [periods] = await pool.query(
+    `SELECT id, DATE_FORMAT(activity_date, '%Y-%m-%d') AS date, title
+     FROM t_activity_period
+     WHERE period_type = ? AND activity_date IS NOT NULL
+       AND DATE_FORMAT(activity_date, '%Y-%m') = ?
+     ORDER BY activity_date`,
+    [type, month]
+  )
+  const units = await statUnits()
+  const ids = periods.map((p) => p.id)
+  let recs = []
+  if (ids.length) {
+    const [r] = await pool.query(
+      `SELECT period_id, unit_id, unit_name FROM t_activity_record
+       WHERE period_id IN (${ids.map(() => '?').join(',')})`,
+      ids
+    )
+    recs = r
+  }
+  const byId = new Set(recs.map((r) => `${r.period_id}|${r.unit_id}`))
+  const byName = new Set(recs.map((r) => `${r.period_id}|${r.unit_name}`))
+  const rows = units.map((u) => {
+    const cells = periods.map((p) => byId.has(`${p.id}|${u.unit_id}`) || byName.has(`${p.id}|${u.unit_name}`))
+    const reported = cells.filter(Boolean).length
+    return {
+      id: u.id, unit_id: u.unit_id, seq_no: u.seq_no,
+      unit_name: u.unit_name, team_name: u.team_name, well_no: u.well_no,
+      cells, reported, missing: periods.length - reported,
+    }
+  })
+  const totalReported = rows.reduce((a, r) => a + r.reported, 0)
+  return {
+    periods,
+    rows,
+    totals: {
+      units: rows.length,
+      periodCount: periods.length,
+      reported: totalReported,
+      missing: rows.length * periods.length - totalReported,
+      rate: rows.length && periods.length
+        ? Math.round((totalReported / (rows.length * periods.length)) * 100) : 0,
+    },
+  }
+}
+
 module.exports = {
   listUnits, expectedUnits, periodStats, parseDef,
   ensureReminders, listReminders, ensureWeeklyPeriods,
+  statUnits, saveStatUnits, statMonths, monthlyStat,
 }

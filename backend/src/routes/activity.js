@@ -331,6 +331,51 @@ router.get('/periods/:id/export', async (req, res) => {
   } catch (e) { fail(res, e) }
 })
 
+// ─── 月度看板：周一 / 周三 安全活动完成情况统计 ──────────────────────────────
+router.get('/dashboard', async (req, res) => {
+  try {
+    try { await store.ensureWeeklyPeriods() } catch (e) { /* 自动建期次失败不影响看板 */ }
+    const months = await store.statMonths()
+    let month = String(req.query.month || '').slice(0, 7)
+    if (!/^\d{4}-\d{2}$/.test(month)) {
+      const [[{ m }]] = await pool.query("SELECT DATE_FORMAT(CURDATE(), '%Y-%m') AS m")
+      month = m
+    }
+    const [monday, wednesday] = await Promise.all([
+      store.monthlyStat(month, 'monday'),
+      store.monthlyStat(month, 'wednesday'),
+    ])
+    ok(res, { month, months, monday, wednesday })
+  } catch (e) { fail(res, e) }
+})
+
+// 受控单位名单（月度统计表的行设置：单位 / 队别 / 井号）
+router.get('/stat-units', async (req, res) => {
+  try { ok(res, await store.statUnits()) } catch (e) { fail(res, e) }
+})
+router.post('/stat-units', async (req, res) => {
+  try {
+    const rows = Array.isArray(req.body?.rows) ? req.body.rows : null
+    if (!rows) return res.status(400).json({ success: false, error: '参数错误：rows 应为数组' })
+    ok(res, await store.saveStatUnits(rows))
+  } catch (e) { fail(res, e) }
+})
+
+// 月度统计导出（两个 sheet，与手工台账同版式）
+router.get('/dashboard/export', async (req, res) => {
+  try {
+    const month = String(req.query.month || '').slice(0, 7)
+    if (!/^\d{4}-\d{2}$/.test(month)) {
+      return res.status(400).json({ success: false, error: '请指定月份（YYYY-MM）' })
+    }
+    const [monday, wednesday] = await Promise.all([
+      store.monthlyStat(month, 'monday'),
+      store.monthlyStat(month, 'wednesday'),
+    ])
+    xlsxDownload(res, svc.buildMonthlyStatWorkbook(month, monday, wednesday), `${month}_安全活动完成情况统计.xlsx`)
+  } catch (e) { fail(res, e) }
+})
+
 // ─── 系统内到期提醒 ────────────────────────────────────────────────────────
 router.get('/reminders', async (req, res) => {
   try { ok(res, await store.listReminders()) } catch (e) { fail(res, e) }

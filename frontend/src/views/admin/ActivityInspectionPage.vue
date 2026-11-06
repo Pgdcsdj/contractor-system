@@ -319,7 +319,8 @@ onMounted(async () => { await loadPeriods(); await loadReminders() })
 .page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
 .page-section-title { font-size: 20px; font-weight: 600; color: var(--c-text); margin: 0; }
 .sub { font-size: 13px; color: var(--c-text-2); margin: 5px 0 0; }
-.head-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.head-actions { display: flex; gap: 8px; flex-wrap: wrap; flex: 0 0 auto; }
+.head-actions .btn { width: auto; flex: 0 0 auto; }
 .card { background: var(--c-surface); border: 1px solid var(--c-border, #E6EAF0); border-radius: var(--r-lg, 12px); }
 .btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 8px; font-size: 13px; cursor: pointer; border: 1px solid var(--c-border, #E6EAF0); background: var(--c-surface); color: var(--c-text); }
 .btn:hover { border-color: var(--c-primary, #1D6FB8); }

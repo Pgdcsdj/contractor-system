@@ -235,9 +235,38 @@ function buildFormSummaryWorkbook(records, periodType, periodTitle) {
   return xlsx.write(wb, { type: 'buffer', bookType: 'xlsx' })
 }
 
+/** 按模板生成「月度安全活动完成情况统计」工作簿（两个 sheet：周一安全活动 / 周三培训）
+ *  block = { periods: [{ id, date }], rows: [{ seq_no, unit_name, team_name, well_no, cells:[bool], reported, missing }] }
+ */
+function buildMonthlyStatWorkbook(month, monday, wednesday) {
+  const wb = xlsx.utils.book_new()
+  const buildSheet = (sheetName, block) => {
+    const dates = (block.periods || []).map((p) => {
+      const d = String(p.date || '').slice(0, 10)
+      const [, mm, dd] = d.split('-')
+      return `${Number(mm)}/${Number(dd)}`
+    })
+    const header = ['序号', '单位名称', '队别', '井号', ...dates, '已报', '缺少']
+    const aoa = [[`${month} 月度安全活动完成情况统计 · ${sheetName}`], header]
+    ;(block.rows || []).forEach((r) => {
+      aoa.push([
+        r.seq_no || '', r.unit_name || '', r.team_name || '', r.well_no || '',
+        ...(r.cells || []).map((ok) => (ok ? '√' : '')),
+        r.reported || 0, r.missing || 0,
+      ])
+    })
+    const ws = xlsx.utils.aoa_to_sheet(aoa)
+    ws['!cols'] = header.map((c, i) => ({ wch: i === 1 ? 34 : (i === 2 || i === 3 ? 16 : 8) }))
+    xlsx.utils.book_append_sheet(wb, ws, sheetName)
+  }
+  buildSheet('周一安全活动', monday || {})
+  buildSheet('周三培训', wednesday || {})
+  return xlsx.write(wb, { type: 'buffer', bookType: 'xlsx' })
+}
+
 module.exports = {
   fmtDT, cleanCell, detectHeaderRow, normalizeColumns,
   parseStandardWorkbook, parseFilledWorkbook,
   buildTemplateWorkbook, buildBlankWorkbook,
-  buildSummaryWorkbook, buildFormSummaryWorkbook,
+  buildSummaryWorkbook, buildFormSummaryWorkbook, buildMonthlyStatWorkbook,
 }

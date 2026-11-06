@@ -914,6 +914,21 @@ async function autoMigrate() {
         UNIQUE KEY uk_period_type (period_id, remind_type), KEY idx_read (is_read)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='安全活动到期系统内提醒'
     `)
+    await ensureTable(`
+      CREATE TABLE IF NOT EXISTS t_activity_stat_unit (
+        id         INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        unit_id    INT UNSIGNED DEFAULT NULL COMMENT '关联 t_contractor_unit.id（可空=手工行）',
+        seq_no     INT          NOT NULL DEFAULT 0 COMMENT '表中序号',
+        unit_name  VARCHAR(200) NOT NULL DEFAULT '',
+        team_name  VARCHAR(100) NOT NULL DEFAULT '' COMMENT '队别',
+        well_no    VARCHAR(120) NOT NULL DEFAULT '' COMMENT '井号',
+        is_active  TINYINT      NOT NULL DEFAULT 1,
+        sort_no    INT          NOT NULL DEFAULT 0,
+        created_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        KEY idx_unit (unit_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='安全活动月度统计-受控单位名单'
+    `)
     console.log('[migrate] ✅ 承包商安全活动相关表结构已就绪')
 
     console.log('[migrate] ✅ 隐患闭环相关表结构已就绪')

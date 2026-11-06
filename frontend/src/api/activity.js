@@ -46,6 +46,20 @@ export function getActivitySummary(id) {
 export function getActivityReminders() {
   return request.get(`${ADMIN}/reminders`)
 }
+/** 月度看板：周一/周三 完成情况统计 */
+export function getActivityDashboard(month = '') {
+  return request.get(`${ADMIN}/dashboard`, { params: { month } })
+}
+/** 受控单位名单（月度统计表的行设置） */
+export function getActivityStatUnits() {
+  return request.get(`${ADMIN}/stat-units`)
+}
+export function saveActivityStatUnits(rows) {
+  return request.post(`${ADMIN}/stat-units`, { rows })
+}
+export function exportActivityDashboard(month) {
+  return adminDownload(`/dashboard/export?month=${encodeURIComponent(month)}`, `${month}_安全活动完成情况统计.xlsx`)
+}
 export function readActivityReminder(id) {
   return request.put(`${ADMIN}/reminders/${id}/read`)
 }

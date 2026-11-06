@@ -217,6 +217,11 @@ const routes = [
         component: () => import('@/views/admin/ActivityInspectionPage.vue'),
       },
       {
+        path: 'activity-dashboard',
+        name: 'ActivityDashboard',
+        component: () => import('@/views/admin/ActivityDashboardPage.vue'),
+      },
+      {
         path: 'quality/:id',
         name: 'QualityCheck',
         component: () => import('@/views/admin/QualityCheckPage.vue'),
