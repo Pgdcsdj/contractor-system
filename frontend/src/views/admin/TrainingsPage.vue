@@ -10,9 +10,14 @@
           <option value="closed">已关闭</option>
         </select>
       </div>
-      <router-link to="/admin/trainings/new" class="btn btn-primary" style="width:auto">
-        ➕ 新建培训
-      </router-link>
+      <div class="toolbar-right">
+        <button class="btn btn-outline" style="width:auto" :disabled="exportingList" @click="exportList">
+          {{ exportingList ? '导出中…' : '📋 导出清单' }}
+        </button>
+        <router-link to="/admin/trainings/new" class="btn btn-primary" style="width:auto">
+          ➕ 新建培训
+        </router-link>
+      </div>
     </div>
 
     <!-- 列表 -->
@@ -46,8 +51,8 @@
               <span class="badge badge-info">{{ typeLabel(t.material_type) }}</span>
             </td>
             <td>{{ t.total_questions || 0 }}</td>
-            <td>{{ t.pass_score ?? 60 }}分</td>
-            <td>{{ t.time_limit ?? 30 }}分钟</td>
+            <td class="nowrap">{{ t.pass_score ?? 60 }}分</td>
+            <td class="nowrap">{{ t.time_limit ?? 30 }}分钟</td>
             <td>
               <span :class="['badge', statusBadge(t.status)]">
                 {{ statusLabel(t.status) }}
@@ -93,11 +98,26 @@
                   🎯 抽题{{ examConfigLabel(t) }}
                 </button>
                 <button
+                  class="action-link export"
+                  title="导出该题库全部题目（xlsx）"
+                  @click="exportQuestions(t)"
+                >
+                  导出
+                </button>
+                <button
                   v-if="t.status === 'pending' && t.total_questions > 0"
                   class="action-link success"
                   @click="publishForm = { ...t }; showQuickPublish = true"
                 >
                   发布
+                </button>
+                <button
+                  v-if="t.status === 'closed'"
+                  class="action-link success"
+                  title="重新上线，保留原目标人群与考试配置"
+                  @click="republish(t)"
+                >
+                  重新发布
                 </button>
                 <button
                   v-if="t.status === 'published' || t.status === 'closed'"
@@ -515,6 +535,60 @@ async function deleteTraining(id) {
   }
 }
 
+// ── 重新发布（已关闭的题库再次上线，保留原目标人群与考试配置）──────────────
+async function republish(t) {
+  const tip = `确认重新发布「${t.title}」？\n\n` +
+    `• 题目 ${t.total_questions || 0} 道，发布后承包商可再次进入答题\n` +
+    `• 原目标人群（${targetLabel(t)}）与考试配置保持不变\n` +
+    `• 历史答题记录保留，不会清空`
+  if (!confirm(tip)) return
+  try {
+    const res = await request.post(`/api/material/${t.id}/republish`)
+    alert(res.data?.message || '已重新发布')
+    await fetchTrainings()
+  } catch (e) {
+    alert(e.response?.data?.error || '重新发布失败')
+  }
+}
+
+// ── 导出（题目 / 清单）────────────────────────────────────────────────────
+const exportingList = ref(false)
+
+function downloadBlob(res, filename) {
+  const blob = new Blob([res.data], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+  const url = window.URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  window.URL.revokeObjectURL(url)
+}
+
+async function exportQuestions(t) {
+  try {
+    const res = await request.get(`/api/material/${t.id}/export`, { responseType: 'blob', timeout: 300000 })
+    downloadBlob(res, `${String(t.title || '题库').slice(0, 40)}_题库导出.xlsx`)
+  } catch (e) {
+    alert('导出失败：' + (e.message || '请求出错'))
+  }
+}
+
+async function exportList() {
+  exportingList.value = true
+  try {
+    const res = await request.get('/api/material/export-list', { responseType: 'blob', timeout: 300000 })
+    const d = new Date()
+    const p = (n) => String(n).padStart(2, '0')
+    downloadBlob(res, `题库清单_${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}.xlsx`)
+  } catch (e) {
+    alert('导出清单失败：' + (e.message || '请求出错'))
+  } finally {
+    exportingList.value = false
+  }
+}
+
 // ── QR 码功能 ──
 async function showQRCode(training) {
   qrTrainingTitle.value = training.title
@@ -623,6 +697,8 @@ async function initPublish() {
   margin-bottom: 12px;
 }
 .filter-group { display: flex; gap: 8px; }
+.toolbar-right { display: flex; align-items: center; gap: 8px; }
+.nowrap { white-space: nowrap; }
 .filter-select {
   padding: 9px 12px; border: 1px solid var(--border);
   border-radius: 8px; font-size: 14px; background: #fff;
@@ -658,6 +734,8 @@ async function initPublish() {
 .action-link.success:hover { background: #e6f4ea; }
 .action-link.qrcode { color: #1a73e8; }
 .action-link.qrcode:hover { background: #e8f0fe; }
+.action-link.export { color: #0b7285; }
+.action-link.export:hover { background: #e3f4f7; }
 .action-link.quality { color: #7b1fa2; }
 .action-link.quality:hover { background: #f3e5f5; }
 .action-link.examcfg { color: #c2740b; }

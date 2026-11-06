@@ -12,6 +12,7 @@
 
 const express  = require('express')
 const multer   = require('multer')
+const XLSX     = require('xlsx')
 const { pool } = require('../db/db')
 const { uploadFile }   = require('../services/cosUpload')
 const { generateQuestions, generateImageQuestions } = require('../ai/aiQuestion')
@@ -683,6 +684,191 @@ router.get('/:id/questions', async (req, res) => {
   )
 
   res.json({ success: true, data: { material: material[0], questions } })
+})
+
+// ─── 题库导出 / 重新发布 ────────────────────────────────────────────────────
+const TYPE_CN = { single: '单选题', multiple: '多选题', judgment: '判断题', essay: '简答题' }
+const MODE_CN = { study: '学习', practice: '练习', exam: '考试' }
+const TARGET_CN = { all: '全员', unit: '指定承包商', specific: '指定人员', position: '指定岗位' }
+const STATUS_CN = { 3: '已发布', 4: '已关闭' }
+
+function optParse(v) {
+  if (!v) return null
+  if (typeof v === 'object') return v
+  try { const o = JSON.parse(v); return o && typeof o === 'object' ? o : null } catch (e) { return null }
+}
+function fmtTime(v) {
+  if (!v) return ''
+  const d = new Date(v)
+  if (Number.isNaN(d.getTime())) return String(v)
+  const p = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+function sendXlsx(res, wb, filename) {
+  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' })
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+  res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`)
+  res.send(buf)
+}
+
+// 导出某个题库的全部题目（xlsx，含「题目」「题库信息」两个 sheet）
+router.get('/:id/export', adminAuth, async (req, res) => {
+  const { id } = req.params
+  try {
+    const [[m]] = await pool.execute(
+      `SELECT m.*, c.name AS category_name FROM t_material m
+       LEFT JOIN t_material_category c ON c.id = m.category_id WHERE m.id = ?`, [id]
+    )
+    if (!m) return res.status(404).json({ success: false, error: '题库不存在' })
+    const [qs] = await pool.execute(
+      'SELECT * FROM t_question WHERE material_id = ? ORDER BY sort_order ASC, id ASC', [id]
+    )
+
+    // 选项列数：按实际最大选项个数（至少 A-D，最多 A-H）
+    let maxOpt = 4
+    qs.forEach((q) => {
+      const o = optParse(q.options)
+      if (o) maxOpt = Math.max(maxOpt, Object.keys(o).length)
+    })
+    maxOpt = Math.min(maxOpt, 8)
+    const letters = 'ABCDEFGH'.slice(0, maxOpt).split('')
+
+    const head = ['序号', '题型', '题干', ...letters.map((l) => `选项${l}`), '正确答案',
+      '分值', '难度', '认知层次', '解析', '知识点', '配图URL', '启用']
+    const aoa = [head]
+    qs.forEach((q, i) => {
+      const o = optParse(q.options) || {}
+      aoa.push([
+        i + 1,
+        TYPE_CN[q.type] || q.type,
+        q.question || '',
+        ...letters.map((l) => (o[l] != null ? String(o[l]) : '')),
+        q.answer || '',
+        q.score != null ? Number(q.score) : '',
+        q.difficulty != null ? Number(q.difficulty) : '',
+        q.bloom_level || '',
+        q.analysis || '',
+        q.knowledge_points || '',
+        q.image_url || '',
+        Number(q.status) === 1 ? '是' : '否',
+      ])
+    })
+    const ws = XLSX.utils.aoa_to_sheet(aoa)
+    ws['!cols'] = [
+      { wch: 6 }, { wch: 9 }, { wch: 60 },
+      ...letters.map(() => ({ wch: 18 })),
+      { wch: 10 }, { wch: 6 }, { wch: 6 }, { wch: 10 }, { wch: 50 }, { wch: 20 }, { wch: 30 }, { wch: 6 },
+    ]
+
+    // 第二张表：题库基本信息（便于归档回溯）
+    const [[eff]] = await pool.execute(
+      'SELECT COUNT(*) AS c FROM t_question WHERE material_id = ? AND status = 1', [id]
+    )
+    const info = [
+      ['项目', '内容'],
+      ['题库ID', m.id],
+      ['题库名称', m.title || ''],
+      ['分类', m.category_name || '未分类'],
+      ['答题模式', MODE_CN[m.mode] || m.mode || ''],
+      ['当前状态', STATUS_CN[Number(m.status)] || '待发布'],
+      ['题目总数', qs.length],
+      ['有效题目数', eff.c],
+      ['及格分', m.pass_score != null ? m.pass_score : ''],
+      ['考试时长(分钟)', m.time_limit != null ? m.time_limit : ''],
+      ['考试抽题(单选/多选/判断)',
+        `${m.exam_single_num || 0} / ${m.exam_multiple_num || 0} / ${m.exam_judgment_num || 0}（0=全抽）`],
+      ['目标人群', TARGET_CN[m.target_type] || m.target_type || ''],
+      ['创建时间', fmtTime(m.created_at)],
+      ['导出时间', fmtTime(new Date())],
+    ]
+    const ws2 = XLSX.utils.aoa_to_sheet(info)
+    ws2['!cols'] = [{ wch: 24 }, { wch: 60 }]
+
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, '题目')
+    XLSX.utils.book_append_sheet(wb, ws2, '题库信息')
+    sendXlsx(res, wb, `${(m.title || '题库').slice(0, 40)}_题库导出.xlsx`)
+  } catch (err) {
+    console.error('[material export error]', err.message)
+    res.status(500).json({ success: false, error: '导出失败：' + err.message })
+  }
+})
+
+// 导出题库清单（全部题库一览，便于管理留档）
+router.get('/export-list', adminAuth, async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      `SELECT m.id, m.title, m.mode, m.status, m.question_cnt, m.pass_score, m.time_limit,
+              m.exam_single_num, m.exam_multiple_num, m.exam_judgment_num,
+              m.target_type, m.created_at, c.name AS category_name,
+              (SELECT COUNT(*) FROM t_question q WHERE q.material_id = m.id AND q.status = 1) AS eff_cnt
+       FROM t_material m LEFT JOIN t_material_category c ON c.id = m.category_id
+       ORDER BY m.id DESC`
+    )
+    const aoa = [['题库ID', '题库名称', '分类', '答题模式', '状态', '题目总数', '有效题目', '及格分', '时长(分钟)',
+      '单选抽题', '多选抽题', '判断抽题', '目标人群', '创建时间']]
+    rows.forEach((r) => aoa.push([
+      r.id, r.title || '', r.category_name || '',
+      MODE_CN[r.mode] || r.mode || '',
+      STATUS_CN[Number(r.status)] || '待发布',
+      r.question_cnt || 0, r.eff_cnt || 0,
+      r.pass_score != null ? r.pass_score : '',
+      r.time_limit != null ? r.time_limit : '',
+      r.exam_single_num || 0, r.exam_multiple_num || 0, r.exam_judgment_num || 0,
+      TARGET_CN[r.target_type] || r.target_type || '',
+      fmtTime(r.created_at),
+    ]))
+    const ws = XLSX.utils.aoa_to_sheet(aoa)
+    ws['!cols'] = [{ wch: 8 }, { wch: 46 }, { wch: 16 }, { wch: 10 }, { wch: 9 }, { wch: 9 }, { wch: 9 },
+      { wch: 8 }, { wch: 11 }, { wch: 9 }, { wch: 9 }, { wch: 9 }, { wch: 14 }, { wch: 18 }]
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, '题库清单')
+    sendXlsx(res, wb, `题库清单_${fmtTime(new Date()).slice(0, 10)}.xlsx`)
+  } catch (err) {
+    console.error('[material export-list error]', err.message)
+    res.status(500).json({ success: false, error: '导出失败：' + err.message })
+  }
+})
+
+// 重新发布（已关闭 / 已下线 的题库再次上线）
+// 与首次发布的区别：**保留原有的目标人群、分类、时长、及格分与抽题配置**，只在显式传参时覆盖
+router.post('/:id/republish', adminAuth, async (req, res) => {
+  const { id } = req.params
+  try {
+    const [[m]] = await pool.execute('SELECT * FROM t_material WHERE id = ?', [id])
+    if (!m) return res.status(404).json({ success: false, error: '题库不存在' })
+
+    const [[{ cnt }]] = await pool.execute(
+      'SELECT COUNT(*) AS cnt FROM t_question WHERE material_id = ? AND status = 1', [id]
+    )
+    if (!cnt) return res.status(400).json({ success: false, error: '题库中没有有效题目，无法重新发布' })
+
+    const b = req.body || {}
+    const target_type = b.target_type !== undefined ? b.target_type : m.target_type
+    const target_value = b.target_value !== undefined
+      ? (b.target_value ? JSON.stringify(b.target_value) : null)
+      : m.target_value
+    const category_id = b.category_id !== undefined ? b.category_id : m.category_id
+    const time_limit = b.time_limit !== undefined && b.time_limit !== null && b.time_limit !== ''
+      ? Number(b.time_limit) : m.time_limit
+    const pass_score = b.pass_score !== undefined && b.pass_score !== null && b.pass_score !== ''
+      ? Number(b.pass_score) : m.pass_score
+
+    await pool.execute(
+      `UPDATE t_material SET status = 3, question_cnt = ?, target_type = ?, target_value = ?,
+        category_id = ?, time_limit = ?, pass_score = ?, updated_at = NOW() WHERE id = ?`,
+      [cnt, target_type, target_value, category_id, time_limit, pass_score, id]
+    )
+
+    res.json({
+      success: true,
+      message: `已重新发布（${cnt} 道题），历史答题记录保留；目标人群：${TARGET_CN[target_type] || target_type}`,
+      data: { id: Number(id), status: 3, question_cnt: cnt },
+    })
+  } catch (err) {
+    console.error('[republish error]', err.message)
+    res.status(500).json({ success: false, error: '重新发布失败：' + err.message })
+  }
 })
 
 // ─── POST /api/material/:id/retry-ai ─────────────────────────────────────────
