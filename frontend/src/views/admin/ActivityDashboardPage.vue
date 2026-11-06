@@ -38,32 +38,34 @@
         <table class="data-table stat-table">
           <thead>
             <tr>
-              <th>序号</th>
+              <th class="c-seq">序号</th>
               <th class="col-unit">单位名称</th>
-              <th>队别</th>
-              <th>井号</th>
-              <th v-for="p in blk.data.periods" :key="p.id">{{ mdLabel(p.date) }}</th>
-              <th>已报</th>
-              <th>缺少</th>
+              <th class="c-team">队别</th>
+              <th class="c-well">井号</th>
+              <th v-for="p in blk.data.periods" :key="p.id" class="c-date">{{ mdLabel(p.date) }}</th>
+              <th class="c-num">已报</th>
+              <th class="c-num">缺少</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="r in blk.data.rows" :key="r.id">
-              <td>{{ r.seq_no }}</td>
+              <td class="c-seq">{{ r.seq_no }}</td>
               <td class="col-unit"><strong>{{ r.unit_name }}</strong></td>
-              <td>{{ r.team_name || '-' }}</td>
-              <td>{{ r.well_no || '-' }}</td>
-              <td v-for="(c, i) in r.cells" :key="i" class="mark" :class="c ? 'ok' : 'miss'">{{ c ? '√' : '' }}</td>
-              <td class="ok-text">{{ r.reported }}</td>
-              <td :class="{ 'warn-text': r.missing > 0 }">{{ r.missing }}</td>
+              <td class="c-team">{{ r.team_name || '—' }}</td>
+              <td class="c-well">{{ r.well_no || '—' }}</td>
+              <td v-for="(c, i) in r.cells" :key="i" class="mark" :class="c ? 'ok' : 'miss'">
+                <span v-if="c" class="tick">✓</span>
+              </td>
+              <td class="c-num" :class="r.reported > 0 ? 'ok-text' : 'zero-text'">{{ r.reported }}</td>
+              <td class="c-num" :class="missClass(r, blk.data)">{{ r.missing }}</td>
             </tr>
           </tbody>
           <tfoot>
             <tr class="sum-row">
               <td colspan="4">合计</td>
-              <td v-for="(t, i) in colTotals(blk.data)" :key="i">{{ t }}</td>
-              <td>{{ blk.data.totals?.reported || 0 }}</td>
-              <td>{{ blk.data.totals?.missing || 0 }}</td>
+              <td v-for="(t, i) in colTotals(blk.data)" :key="i" class="c-date">{{ t }}</td>
+              <td class="c-num">{{ blk.data.totals?.reported || 0 }}</td>
+              <td class="c-num">{{ blk.data.totals?.missing || 0 }}</td>
             </tr>
           </tfoot>
         </table>
@@ -159,6 +161,14 @@ function mdLabel(d) {
 function colTotals(block) {
   return (block.periods || []).map((_, i) => (block.rows || []).filter((r) => r.cells?.[i]).length)
 }
+/** 缺少数着色：全勤=绿，部分缺报=橙（需催办），一期未报=灰（避免整片橙色噪音） */
+function missClass(row, block) {
+  const total = (block.periods || []).length
+  if (!total) return 'zero-text'
+  if (row.missing === 0) return 'ok-text'
+  if (row.missing === total) return 'zero-text'
+  return 'warn-text'
+}
 
 async function load() {
   loading.value = true
@@ -250,17 +260,42 @@ onMounted(load)
 .blk-meta { font-size: 12px; color: var(--c-text-3); }
 .blk-rate { font-size: 12px; color: var(--c-primary, #1D6FB8); font-weight: 600; }
 .spacer { flex: 1; }
-.table-scroll { overflow-x: auto; }
-.stat-table { width: 100%; font-size: 13px; }
-.stat-table th, .stat-table td { padding: 8px 10px; border-bottom: 1px solid var(--c-border, #E6EAF0); text-align: center; white-space: nowrap; }
-.stat-table th { background: var(--c-surface-2, #f7f8fa); font-weight: 600; color: var(--c-text-2); font-size: 12.5px; }
-.stat-table .col-unit { text-align: left; min-width: 220px; white-space: normal; }
-.stat-table td.mark { font-weight: 700; font-size: 14px; }
-.stat-table td.mark.ok { color: var(--c-success, #1d9e75); }
-.stat-table td.mark.miss { background: #fdf5f5; }
-.sum-row td { background: var(--c-surface-2, #f7f8fa); font-weight: 600; }
+.table-scroll { overflow: auto; max-height: 62vh; }
+.stat-table { width: 100%; table-layout: fixed; border-collapse: separate; border-spacing: 0; font-size: 13px; }
+.stat-table th, .stat-table td {
+  padding: 9px 8px; border-bottom: 1px solid var(--c-border, #E6EAF0);
+  text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.stat-table thead th {
+  position: sticky; top: 0; z-index: 3;
+  background: var(--c-surface-2, #f7f8fa); font-weight: 600; color: var(--c-text-2);
+  font-size: 12.5px; letter-spacing: .3px;
+}
+.stat-table tbody tr:nth-child(even) { background: #fbfcfe; }
+.stat-table tbody tr:hover { background: var(--c-blue-50, #eff6fd); }
+.stat-table .c-seq { width: 58px; color: var(--c-text-3); font-size: 12px; }
+.stat-table .col-unit { text-align: left; white-space: normal; word-break: break-all; padding-left: 14px; }
+.stat-table .c-team { width: clamp(106px, 7vw, 168px); color: var(--c-text-2); }
+.stat-table .c-well { width: clamp(126px, 9vw, 210px); color: var(--c-text-2); }
+.stat-table .c-date { width: clamp(64px, 4.4vw, 104px); }
+.stat-table .c-num { width: clamp(62px, 4vw, 92px); font-variant-numeric: tabular-nums; }
+.stat-table td.mark { padding: 5px 4px; }
+.stat-table td.mark.miss { background: #fdf6f6; }
+.stat-table td.mark.ok { background: #eef8f3; }
+.tick {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 19px; height: 19px; border-radius: 50%;
+  background: var(--c-success, #1d9e75); color: #fff;
+  font-size: 11px; font-weight: 700; line-height: 1;
+}
+.sum-row td {
+  position: sticky; bottom: 0; z-index: 2;
+  background: var(--c-surface-2, #f7f8fa); font-weight: 700;
+  border-top: 1px solid var(--c-border-strong, #D5DCE6);
+}
 .ok-text { color: var(--c-success, #1d9e75); font-weight: 600; }
 .warn-text { color: var(--c-warning, #ba7517); font-weight: 600; }
+.zero-text { color: var(--c-text-3, #94A3B8); }
 .empty-cell { text-align: center; color: var(--c-text-3); padding: 30px; font-size: 13px; }
 
 .modal-overlay { position: fixed; inset: 0; background: rgba(10, 19, 34, .55); display: flex; align-items: center; justify-content: center; z-index: 400; padding: 20px; }
