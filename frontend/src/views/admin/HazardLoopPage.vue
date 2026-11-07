@@ -68,11 +68,9 @@
             <col class="c-code" />
             <col class="c-invest" />
             <col class="c-unit" />
-            <col class="c-dept" />
-            <col class="c-bizhead" />
+            <col class="c-created" />
             <col class="c-loc" />
             <col class="c-desc" />
-            <col class="c-created" />
             <col class="c-level" />
             <col class="c-person" />
             <col class="c-plan" />
@@ -87,11 +85,9 @@
               <th>编号</th>
               <th>隐患排查项目</th>
               <th>责任单位</th>
-              <th>业务归口</th>
-              <th>业务部门负责人</th>
+              <th>检查时间</th>
               <th>场所</th>
               <th>问题描述</th>
-              <th>录入时间</th>
               <th>等级</th>
               <th>责任人</th>
               <th>计划完成</th>
@@ -101,10 +97,10 @@
           </thead>
           <tbody>
             <tr v-if="loading">
-              <td colspan="14" class="empty-cell"><div class="spinner" style="margin:0 auto"></div></td>
+              <td colspan="12" class="empty-cell"><div class="spinner" style="margin:0 auto"></div></td>
             </tr>
             <tr v-else-if="list.length === 0">
-              <td colspan="14" class="empty-cell">暂无隐患数据</td>
+              <td colspan="12" class="empty-cell">暂无隐患数据</td>
             </tr>
             <tr
               v-for="h in list"
@@ -115,17 +111,15 @@
               <td class="col-check" @click.stop>
                 <input type="checkbox" :checked="isSelected(h.id)" @change="toggleSelect(h.id)" />
               </td>
-              <td class="mono">{{ h.hazard_code }}</td>
+              <td class="mono" :title="h.hazard_code">{{ h.hazard_code }}</td>
               <td>{{ h.hazard_investigation_item || '-' }}</td>
-              <td>{{ h.unit_name || '-' }}</td>
-              <td>{{ h.business_dept || '-' }}</td>
-              <td>{{ h.business_dept_head || '-' }}</td>
+              <td :title="h.unit_name">{{ h.unit_name || '-' }}</td>
+              <td class="mono sm" :title="fmtDate(h.report_time || h.created_at)">{{ fmtDate(h.report_time || h.created_at) }}</td>
               <td>{{ h.location || '-' }}</td>
               <td class="desc-cell" :title="h.description">{{ h.description || '-' }}</td>
-              <td class="mono sm" :title="fmtDate(h.created_at)">{{ fmtDate(h.created_at) }}</td>
               <td><span :class="['badge', levelBadge(h.hazard_level)]">{{ h.hazard_level || '-' }}</span></td>
               <td>{{ h.responsible_person || '-' }}</td>
-              <td class="mono sm">{{ fmtDate(h.plan_finish_time) }}</td>
+              <td class="mono sm">{{ fmtDay(h.plan_finish_time) }}</td>
               <td>
                 <span :class="['badge', statusBadge(h.status)]">{{ statusLabel(h.status) }}</span>
                 <span v-if="h.is_overdue" class="badge badge-danger" style="margin-left:6px">超期</span>
@@ -242,6 +236,11 @@ function tabCount(key) {
 function fmtDate(v) {
   if (!v) return '-'
   return String(v).slice(0, 16).replace('T', ' ')
+}
+// 只到日（计划完成时间在列表里不需要时分）
+function fmtDay(v) {
+  if (!v) return '-'
+  return String(v).slice(0, 10).replace('T', ' ')
 }
 
 function buildParams() {
@@ -498,22 +497,21 @@ onUnmounted(() => {
 .tab-count.danger { background: var(--c-danger-bg); color: var(--c-danger); }
 
 .table-card { padding: 0; overflow-x: auto; }
-.data-table { width: 100%; min-width: 980px; border-collapse: collapse; table-layout: auto; }
+/* 固定列宽：12 列在窄屏也不会被「责任单位/问题描述」撑爆，
+   「问题描述」吃剩余宽度，超宽时才横向滚动（避免 sticky 操作列压住其他列） */
+.data-table { width: 100%; min-width: 1250px; border-collapse: collapse; table-layout: fixed; }
 
-/* 紧凑列给最小宽度兜底，不锁死 */
-.data-table colgroup col.c-check { width: 44px; min-width: 44px; }
-.data-table colgroup col.c-code { min-width: 120px; }
-.data-table colgroup col.c-unit { min-width: 90px; }
-.data-table colgroup col.c-dept { min-width: 110px; }
-.data-table colgroup col.c-invest { min-width: 120px; }
-.data-table colgroup col.c-bizhead { min-width: 110px; }
-.data-table colgroup col.c-loc { min-width: 80px; }
-.data-table colgroup col.c-level { min-width: 70px; }
-.data-table colgroup col.c-created { min-width: 150px; }
-.data-table colgroup col.c-person { min-width: 80px; }
-.data-table colgroup col.c-plan { min-width: 110px; }
-.data-table colgroup col.c-status { min-width: 80px; }
-.data-table colgroup col.c-action { min-width: 130px; }
+.data-table colgroup col.c-check   { width: 40px; }
+.data-table colgroup col.c-code    { width: 108px; }
+.data-table colgroup col.c-invest  { width: 106px; }
+.data-table colgroup col.c-unit    { width: 145px; }
+.data-table colgroup col.c-created { width: 128px; }
+.data-table colgroup col.c-loc     { width: 96px; }
+.data-table colgroup col.c-level   { width: 84px; }
+.data-table colgroup col.c-person  { width: 72px; }
+.data-table colgroup col.c-plan    { width: 106px; }
+.data-table colgroup col.c-status  { width: 108px; }
+.data-table colgroup col.c-action  { width: 100px; }
 
 /* 所有单元格：紧凑列不换行 + 溢出隐藏防重叠 */
 .data-table th, .data-table td {
@@ -521,19 +519,21 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   vertical-align: middle;
+  padding-left: 10px;
+  padding-right: 10px;
 }
 .data-table th.col-check, .data-table td.col-check { text-align: center; }
 .data-table td { cursor: pointer; }
+.data-table .action-link { padding: 2px 6px; }
 
 /* 问题描述列：独占剩余空间、折行显示全文 */
 .desc-cell {
   white-space: normal;
   word-break: break-word;
   line-height: 1.45;
-  max-width: 480px;
 }
 
-.data-table th:last-child, .data-table td:last-child { position: sticky; right: 0; background: var(--c-surface); z-index: 1; }
+/* 「操作」列不再 sticky：窄屏横向滚动时不会压住「状态」列 */
 .overdue-row td:first-child { box-shadow: inset 3px 0 0 var(--c-danger); }
 .overdue-row td { background: var(--c-danger-bg) !important; }
 .mono.sm { font-size: 12px; }
