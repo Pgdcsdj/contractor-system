@@ -39,8 +39,8 @@
             <div class="form-group"><label>业务部门负责人</label>
               <input v-model="form.business_dept_head" class="form-input" /></div>
 
-            <div class="form-group"><label>场所</label>
-              <input v-model="form.location" class="form-input" /></div>
+            <div class="form-group"><label>场所 <span class="req">*</span></label>
+              <input v-model="form.location" class="form-input" placeholder="必填，如：马10脱水井场" /></div>
 
             <div class="form-group"><label>隐患等级</label>
               <select v-model="form.hazard_level" class="form-input">
@@ -214,6 +214,10 @@ watch(
 
 async function submit() {
   if (!props.hazardId) return
+  if (!String(form.location || '').trim()) {
+    setFeedback('请填写场所（隐患所在具体场所/点位）', 'error')
+    return
+  }
   submitting.value = true
   feedback.value = ''
   const payload = {
@@ -249,6 +253,7 @@ async function submit() {
 </script>
 
 <style scoped>
+.req { color: var(--c-danger, #d93025); font-weight: 700; }
 .drawer-overlay {
   position: fixed; inset: 0; z-index: 1100;
   background: rgba(10, 19, 34, .5);

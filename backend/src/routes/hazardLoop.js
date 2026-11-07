@@ -144,6 +144,7 @@ router.post('/', adminAuth, async (req, res) => {
 
   // 必填校验
   if (!unit_name || !unit_name.trim()) return res.status(400).json({ success: false, error: '请填写隐患单位' })
+  if (!location || !String(location).trim()) return res.status(400).json({ success: false, error: '请填写场所站点' })
   if (!description || !description.trim()) return res.status(400).json({ success: false, error: '请填写隐患描述' })
   if (!hazard_level || !hazard_level.trim()) return res.status(400).json({ success: false, error: '请选择隐患等级' })
   if (!responsible_person || !responsible_person.trim()) return res.status(400).json({ success: false, error: '请填写整改责任人' })
@@ -243,6 +244,15 @@ router.post('/import', requireAdminOrSafety, importUpload.single('file'), async 
     res.json({ success: true, data })
   } catch (err) {
     console.error('[hazard import preview]', err && err.message ? err.message : err)
+    // 场所缺失门禁：整份文件判为不合格，前端据此提示并引导下载最新模板
+    if (err && err.code === 'MISSING_LOCATION') {
+      return res.status(400).json({
+        success: false,
+        code: 'MISSING_LOCATION',
+        error: err.message,
+        data: { missing: err.missing || ['场所'], templateUrl: err.templateUrl || '/api/hazards/import/template' },
+      })
+    }
     res.status(500).json({ success: false, error: '导入预览失败：' + (err && err.message ? err.message : '未知错误') })
   }
 })
@@ -274,6 +284,15 @@ router.post('/import/confirm', requireAdminOrSafety, importUpload.single('file')
         success: false,
         error: err.message || '导入失败，已整批回退，库未变更',
         data: { rollback: true, failAtRow: err.failAtRow != null ? err.failAtRow : null },
+      })
+    }
+    if (err && err.code === 'MISSING_LOCATION') {
+      console.error('[hazard import commit] 缺少「场所」列，整批拒绝')
+      return res.status(400).json({
+        success: false,
+        code: 'MISSING_LOCATION',
+        error: err.message,
+        data: { rollback: true, missing: err.missing || ['场所'], templateUrl: err.templateUrl || '/api/hazards/import/template' },
       })
     }
     console.error('[hazard import commit]', err && err.message ? err.message : err)

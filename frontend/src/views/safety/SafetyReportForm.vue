@@ -35,8 +35,8 @@
 
         <!-- 场所站点 -->
         <div class="form-group">
-          <label>场所站点</label>
-          <input v-model="form.location" class="form-input" placeholder="如：3#阀室 / 集气站" />
+          <label>场所站点 <span class="req">*</span></label>
+          <input v-model="form.location" class="form-input" placeholder="必填，如：3#阀室 / 集气站" />
         </div>
 
         <!-- 业务部门 -->
@@ -228,6 +228,7 @@ function resetForm() {
 
 async function handleSubmit() {
   if (!form.unit_name) return showToast('请选择责任单位', 'error')
+  if (!form.location.trim()) return showToast('请填写场所站点', 'error')
   if (!form.description.trim()) return showToast('请填写隐患描述', 'error')
   if (!form.hazard_level) return showToast('请选择隐患等级', 'error')
   if (!form.responsible_person.trim()) return showToast('请填写整改责任人', 'error')

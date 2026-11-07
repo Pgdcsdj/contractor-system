@@ -31,7 +31,7 @@
 
         <!-- 场所站点（位置两级联动：生产场站 → 施工点，前端拼 location） -->
         <div class="form-group">
-          <label>场所站点（生产场站 / 施工点）</label>
+          <label>场所站点（生产场站 / 施工点） <span class="req">*</span></label>
           <div class="cascade">
             <select v-model="centerStation" class="form-input" @change="onLocationChange">
               <option value="">生产场站</option>
@@ -282,6 +282,7 @@ function resetForm() {
 
 async function handleSubmit() {
   if (!form.unit_name) return showToast('请选择责任单位', 'error')
+  if (!String(form.location || '').trim()) return showToast('请选择场所站点', 'error')
   if (!form.description.trim()) return showToast('请填写隐患描述', 'error')
   if (!form.hazard_level) return showToast('请选择隐患等级', 'error')
   if (!form.responsible_person.trim()) return showToast('请填写整改责任人', 'error')

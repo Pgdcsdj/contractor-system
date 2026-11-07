@@ -49,7 +49,7 @@ const IMPORT_FIELDS = [
 // 字段 key → 中文名（用于表头模糊识别告警展示）
 const FIELD_LABELS = {
   unit_name: '责任单位',
-  location: '位置/部位',
+  location: '场所',
   hazard_level: '隐患等级',
   description: '问题描述',
   rectify_measures: '整改措施',
@@ -512,6 +512,9 @@ async function cleanRow(row, mapping, ctx) {
   rec.location = getVal('location')
   rec.rectify_measures = getVal('rectify_measures')
 
+  // 场所为硬必填（2026-11-07 业务要求：隐患必须能定位到具体场所/点位）
+  if (!rec.location) errors.push('缺少场所')
+
   // 业务部门 / 业务部门负责人（字典智能匹配，未命中保留原值并告警）
   const rawBizDeptPart = getVal('business_dept')
   const mBizDept = matchDictOption(rawBizDeptPart, bdRows)
@@ -616,10 +619,18 @@ async function parseWorkbook(buffer, originalname = '', opts = {}) {
   let error = 0
   let skippedClosed = 0
   let firstMapping = {}
+  // 场所必填门禁：记录是否有 sheet 识别到「场所」列、以及非空场所单元格数
+  let locationColumnSeen = false
+  let locationFilled = 0
 
   for (const sheetName of sheetNames) {
     const ws = wb.Sheets[sheetName]
     if (!ws) continue
+    // 模板自带的「填写说明」页不参与解析（其正文含列名，会被误判为数据行）
+    if (/^(填写说明|填表说明|说明|导入说明)$/.test(String(sheetName).trim())) {
+      sheets.push({ sheetName, rowCount: 0, valid: 0, error: 0, skippedClosed: 0, skipped: true })
+      continue
+    }
     const sheetRows = xlsx.utils.sheet_to_json(ws, { header: 1, defval: '' })
     const headerIdx = locateHeaderRow(sheetRows)
     if (headerIdx < 0) {
@@ -629,6 +640,7 @@ async function parseWorkbook(buffer, originalname = '', opts = {}) {
     }
     const headerRow = sheetRows[headerIdx].map((c) => String(c ?? '').trim())
     const { mapping, notes } = buildMapping(headerRow)
+    if (mapping.location >= 0) locationColumnSeen = true
     if (!firstMapping || !Object.keys(firstMapping).length) firstMapping = mapping
     if (notes && notes.length) {
       for (const n of notes) {
@@ -648,6 +660,7 @@ async function parseWorkbook(buffer, originalname = '', opts = {}) {
       if (isSignatureRow(row)) continue
 
       const rowNo = headerIdx + i + 2 // 1-based 绝对行号
+      if (mapping.location >= 0 && String(row[mapping.location] ?? '').trim()) locationFilled++
       const { rec, errors, warnings: rowWarnings } = await cleanRow(row, mapping, {
         unitMap, unitList, bdRows, bhRows, sheetName, sheetNames, importType, basisLib,
       })
@@ -712,6 +725,21 @@ async function parseWorkbook(buffer, originalname = '', opts = {}) {
       error: sheetError,
       skippedClosed: sheetSkipped,
     })
+  }
+
+  // ─── 场所必填门禁（2026-11-07 业务要求）─────────────────────────────────
+  // 判定标准：所有 sheet 都没有识别到「场所」列，或识别到了但整列为空 → 整份文件判为不合格，
+  // 直接终止（不进入预览/落库），由路由层返回 400 + 模板下载指引，请用户补列后重传。
+  if (totalRows > 0 && (!locationColumnSeen || locationFilled === 0)) {
+    const err = new Error(
+      '导入失败：文件中缺少「场所」列内容（未找到该列，或该列全部为空）。' +
+        '隐患录入要求必须填写场所/点位，请先在表格中补充「场所站点」列并逐行填写后重新上传，' +
+        '或下载最新导入模板按模板填写。'
+    )
+    err.code = 'MISSING_LOCATION'
+    err.missing = ['场所']
+    err.templateUrl = '/api/hazards/import/template'
+    throw err
   }
 
   // 回显映射（仅返回曾识别到的字段名）
@@ -971,7 +999,8 @@ async function commitImport(buffer, admin, filename = '', opts = {}) {
 }
 
 /**
- * 生成标准导入模板（单 sheet，列见设计 §E）。
+ * 生成标准导入模板（双 sheet：隐患导入模板 + 填写说明）。
+ * 2026-11-07：场所改为硬必填，模板内同步标注必填列，避免用户再次上传缺列文件。
  * @returns {Buffer} xlsx buffer
  */
 function generateTemplate() {
@@ -986,11 +1015,35 @@ function generateTemplate() {
     '13800000000', '2026-07-20', '生产服务中心', '', '否', '', '整改中',
     '（可选：留空则按「隐患排查项目」自动匹配依据库）',
   ]
-  const aoa = [headers, sample]
-  const ws = xlsx.utils.aoa_to_sheet(aoa)
+  const ws = xlsx.utils.aoa_to_sheet([headers, sample])
+  ws['!cols'] = headers.map((h) => ({ wch: h === '问题描述' || h === '整改措施' ? 34 : Math.max(12, h.length * 2 + 4) }))
+
   const wb = xlsx.utils.book_new()
   wb.SheetNames.push('隐患导入模板')
   wb.Sheets['隐患导入模板'] = ws
+
+  // 填写说明页：明确必填列，减少因缺列导致的整批导入失败
+  const guide = [
+    ['列名', '是否必填', '填写说明'],
+    ['场所站点', '必填（★）', '隐患所在的具体场所/点位，如「马10脱水井场」「3#阀室」。缺列或整列为空时整份文件会被拒绝导入。'],
+    ['问题描述', '必填（★）', '隐患的具体表现，一行一条，不要合并单元格。'],
+    ['整改责任人', '必填（★）', '可多人，用「、」分隔。'],
+    ['隐患排查项目', '建议填', '决定标准依据自动匹配；留空时依据库不匹配。'],
+    ['责任单位', '建议填', '支持简称智能匹配到承包商单位；留空则该行为空单位，需人工补。'],
+    ['计划完成时间', '建议填', '支持 2026-07-20 / 2026年7月20日 等写法；无法解析时置空并提示。'],
+    ['隐患等级', '选填', '一般 / 较大 / 重大；留空按「一般」处理。'],
+    ['业务归口 / 业务部门负责人', '选填', '按系统字典智能匹配，未命中保留原值。'],
+    ['整改进度 / 初始状态', '选填', '填写「已整改/已闭环」的行视为历史闭环，导入时自动跳过。'],
+    ['标准依据', '选填', '留空则按「隐患排查项目」自动匹配依据库。'],
+    ['', '', ''],
+    ['说明', '', '每个 sheet 的第一行须为表头；sheet 名视为「隐患排查项目」时以表内该列为准。'],
+    ['说明', '', '本模板由系统「隐患闭环 → 隐患录入 → 批量导入 → 下载模板」生成，请勿增删列名。'],
+  ]
+  const ws2 = xlsx.utils.aoa_to_sheet(guide)
+  ws2['!cols'] = [{ wch: 26 }, { wch: 12 }, { wch: 78 }]
+  wb.SheetNames.push('填写说明')
+  wb.Sheets['填写说明'] = ws2
+
   return xlsx.write(wb, { type: 'buffer', bookType: 'xlsx' })
 }
 

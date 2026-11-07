@@ -43,7 +43,20 @@
           style="display: none"
           @change="handleFileChange"
         />
-        <p v-if="parseError" class="parse-error">{{ parseError }}</p>
+        <p v-if="parseError && !missingCols.length" class="parse-error">{{ parseError }}</p>
+
+        <!-- 缺少必填列（目前为「场所」）：整份文件被拒绝，给出模板下载与重传指引 -->
+        <div v-if="missingCols.length" class="missing-box">
+          <div class="missing-title">❌ 导入失败：文件缺少必填列「{{ missingCols.join('、') }}」</div>
+          <p class="missing-text">{{ parseError }}</p>
+          <div class="missing-actions">
+            <button class="btn btn-primary" type="button" @click="downloadTemplate">⬇️ 下载最新标准模板</button>
+            <button class="btn btn-ghost" type="button" @click="triggerFile">重新选择文件</button>
+          </div>
+          <p class="missing-hint">
+            请按模板补齐「<b>{{ missingCols.join('、') }}</b>」列（每行填具体场所/点位，如「马10脱水井场」），保存后重新上传。
+          </p>
+        </div>
 
         <!-- .xls（Excel 97-2003）自动转换提示：明确告知截图不会进系统 -->
         <div v-if="isXlsSource" class="xls-notice">
@@ -271,6 +284,8 @@ const isDragover = ref(false)
 const importing = ref(false)
 const confirming = ref(false)
 const parseError = ref('')
+// 缺少的必填列（后端 400 返回 code=MISSING_LOCATION 时填充）
+const missingCols = ref([])
 const previewData = ref(null)
 const reportData = ref(null)
 const filterTab = ref('all')
@@ -476,6 +491,7 @@ async function handleParse() {
   if (!fileRef.value || importing.value) return
   importing.value = true
   parseError.value = ''
+  missingCols.value = []
   try {
     // 视频督查 .xlsx：先压缩再上传；压缩后结果缓存到 compressedFileRef（两次上传同一字节）
     const file = await ensureCompressed()
@@ -488,7 +504,11 @@ async function handleParse() {
     step.value = 'preview'
     filterTab.value = 'all'
   } catch (e) {
-    parseError.value = e.response?.data?.error || '解析失败，请检查文件格式'
+    const resp = e.response?.data || {}
+    parseError.value = resp.error || '解析失败，请检查文件格式'
+    missingCols.value = Array.isArray(resp.data?.missing)
+      ? resp.data.missing
+      : (resp.code === 'MISSING_LOCATION' ? ['场所'] : [])
   } finally {
     importing.value = false
   }
@@ -511,6 +531,12 @@ async function handleConfirm() {
   } catch (e) {
     const resp = e.response?.data || {}
     const inner = resp.data || {}
+    if (resp.code === 'MISSING_LOCATION') {
+      parseError.value = resp.error || '导入失败：文件缺少「场所」列'
+      missingCols.value = Array.isArray(inner.missing) ? inner.missing : ['场所']
+      step.value = 'upload'
+      return
+    }
     reportData.value = {
       rollback: true,
       rejected: !!inner.rejected,
@@ -559,6 +585,15 @@ async function downloadTemplate() {
 .file-upload:hover, .file-upload.dragover { border-color: var(--primary); background: rgba(25, 118, 210, 0.06); }
 .upload-icon { font-size: 34px; display: block; margin-bottom: 8px; }
 .file-upload p { font-size: 13px; color: var(--text-secondary); word-break: break-all; }
+.missing-box {
+  margin: 4px 0 16px; padding: 14px 16px; border-radius: 10px;
+  background: #fdecea; border: 1px solid #f5c2c0; color: #8a1f1a;
+}
+.missing-title { font-size: 14px; font-weight: 700; margin-bottom: 6px; }
+.missing-text { font-size: 13px; line-height: 1.7; margin: 0 0 10px; color: #8a1f1a; }
+.missing-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.missing-actions .btn { width: auto; flex: 0 0 auto; padding-left: 16px; padding-right: 16px; }
+.missing-hint { font-size: 12.5px; line-height: 1.7; margin: 0; color: #a33; }
 .parse-error { color: var(--danger); font-size: 13px; margin: 8px 0; }
 
 /* 导入类型选择 */
