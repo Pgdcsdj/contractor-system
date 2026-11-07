@@ -27,49 +27,50 @@
         <div class="icon">📚</div>
         <p>暂无培训</p>
       </div>
-      <table v-else class="data-table">
+      <div v-else class="table-wrap">
+        <table class="data-table train-table">
         <thead>
           <tr>
-            <th>培训标题</th>
-            <th>分类</th>
-            <th>类型</th>
-            <th>题目数</th>
-            <th>及格分</th>
-            <th>时限</th>
-            <th>状态</th>
-            <th>目标人群</th>
-            <th>AI</th>
-            <th>发布时间</th>
-            <th>操作</th>
+            <th class="col-title">培训标题</th>
+            <th class="col-cat">分类</th>
+            <th class="col-type">模式</th>
+            <th class="col-num">题目数</th>
+            <th class="col-score">及格分</th>
+            <th class="col-time">时限</th>
+            <th class="col-status">状态</th>
+            <th class="col-target">目标人群</th>
+            <th class="col-ai">AI</th>
+            <th class="col-date">发布时间</th>
+            <th class="col-ops">操作</th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="t in filtered" :key="t.id">
-            <td><strong>{{ t.title }}</strong></td>
-            <td><span v-if="t.category_name" class="badge badge-info">{{ t.category_name }}</span><span v-else class="badge badge-muted">未分类</span></td>
-            <td>
-              <span class="badge badge-info">{{ typeLabel(t.material_type) }}</span>
+            <td class="title-cell col-title" :title="t.title"><strong>{{ t.title }}</strong></td>
+            <td class="col-cat"><span v-if="t.category_name" class="badge badge-info">{{ t.category_name }}</span><span v-else class="badge badge-muted">未分类</span></td>
+            <td class="col-type">
+              <span class="badge" :class="modeBadge(t.mode)">{{ modeLabel(t.mode) }}</span>
             </td>
-            <td>{{ t.total_questions || 0 }}</td>
-            <td class="nowrap">{{ t.pass_score ?? 60 }}分</td>
-            <td class="nowrap">{{ t.time_limit ?? 30 }}分钟</td>
-            <td>
+            <td class="col-num">{{ t.total_questions || 0 }}</td>
+            <td class="nowrap col-score">{{ t.pass_score ?? 60 }}分</td>
+            <td class="nowrap col-time">{{ t.time_limit ?? 30 }}分钟</td>
+            <td class="col-status">
               <span :class="['badge', statusBadge(t.status)]">
                 {{ statusLabel(t.status) }}
               </span>
             </td>
-            <td>
-              <span class="badge badge-muted">{{ targetLabel(t) }}</span>
+            <td class="col-target">
+              <span class="badge badge-muted" :title="targetLabel(t)">{{ targetShort(t) }}</span>
             </td>
-            <td>
+            <td class="col-ai">
               <span v-if="t.ai_status === 0" class="badge badge-muted">未触发</span>
               <span v-else-if="t.ai_status === 1" class="badge badge-info">出题中…</span>
               <span v-else-if="t.ai_status === 2" class="badge badge-success">已就绪</span>
               <span v-else-if="t.ai_status === 3" class="badge badge-danger">出题失败</span>
               <span v-else class="badge badge-muted">{{ t.ai_status }}</span>
             </td>
-            <td>{{ t.published_at ? formatDate(t.published_at) : '-' }}</td>
-            <td>
+            <td class="nowrap col-date">{{ t.published_at ? formatDate(t.published_at) : '-' }}</td>
+            <td class="col-ops">
               <div class="action-btns">
                 <button
                   class="action-link primary"
@@ -143,7 +144,8 @@
             </td>
           </tr>
         </tbody>
-      </table>
+        </table>
+      </div>
     </div>
 
     <!-- QR 码弹窗 -->
@@ -384,10 +386,8 @@ const filtered = computed(() => {
   return trainings.value.filter((t) => t.status === filterStatus.value)
 })
 
-const typeMap = { video: '视频通报', regulation: '制度文件', other: '其他' }
 const statusMap = { pending: '待发布', published: '已发布', closed: '已关闭' }
 
-function typeLabel(t) { return typeMap[t] || t }
 function statusLabel(s) { return statusMap[s] || s }
 function targetLabel(t) {
   const type = t.target_type || 'all'
@@ -403,6 +403,23 @@ function targetLabel(t) {
 }
 function statusBadge(s) {
   return { pending: 'badge-warning', published: 'badge-success', closed: 'badge-danger' }[s] || ''
+}
+// 三模式：study 学习 / practice 练习 / exam 考试
+const modeMap = { study: '学习', practice: '练习', exam: '考试' }
+function modeLabel(m) { return modeMap[m] || m || '-' }
+function modeBadge(m) {
+  return { study: 'badge-info', practice: 'badge-warning', exam: 'badge-success' }[m] || 'badge-muted'
+}
+// 列表里的紧凑写法（完整内容见 title 提示）
+function targetShort(t) {
+  const type = t.target_type || 'all'
+  let val = t.target_value
+  try { val = typeof val === 'string' ? JSON.parse(val || 'null') : val } catch { val = null }
+  const n = Array.isArray(val) ? val.length : 0
+  if (type === 'unit') return n ? `承包商${n}` : '承包商'
+  if (type === 'position') return n ? `岗位${n}` : '岗位'
+  if (type === 'specific') return `指定${n}人`
+  return '全员'
 }
 function formatDate(iso) {
   if (!iso) return '-'
@@ -690,7 +707,8 @@ async function initPublish() {
 </script>
 
 <style scoped>
-.trainings-page { max-width: 1100px; }
+/* 自适应宽度：随容器撑满，容器变窄时横向滚动而非挤压内容 */
+.trainings-page { max-width: 100%; }
 
 .toolbar {
   display: flex; align-items: center; justify-content: space-between;
@@ -704,6 +722,45 @@ async function initPublish() {
   border-radius: 8px; font-size: 14px; background: #fff;
 }
 .list-card { padding: 0; overflow: hidden; }
+
+/* ===== 题库列表：自适应表格 ===== */
+.table-wrap { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.train-table {
+  table-layout: fixed;
+  width: 100%;
+  min-width: 960px; /* 11 列的最小可读宽度；低于此宽度才横向滚动 */
+}
+.train-table th,
+.train-table td { white-space: nowrap; overflow: hidden; }
+.list-card .train-table th,
+.list-card .train-table td { padding: 10px 8px; }
+.train-table th { white-space: nowrap; }
+.train-table .col-title { width: 186px; white-space: normal; }
+.train-table .col-cat { width: 74px; }
+.train-table .col-type { width: 56px; }
+.train-table .col-num { width: 58px; text-align: center; }
+.train-table .col-score { width: 58px; text-align: center; }
+.train-table .col-time { width: 62px; text-align: center; }
+.train-table .col-status { width: 64px; }
+.train-table .col-target { width: 78px; }
+.train-table .col-ai { width: 68px; }
+.train-table .col-date { width: 78px; }
+.train-table .col-ops { width: 178px; white-space: normal; }
+/* 紧凑徽章：左右内边距收窄，避免「专项培训」被截成「专项…」 */
+.train-table .badge { padding-left: 5px; padding-right: 5px; }
+
+/* 标题最多两行，超出省略；完整标题在 hover title 提示里 */
+.title-cell strong {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; white-space: normal; word-break: break-word;
+  line-height: 1.45; font-weight: 600;
+}
+/* 徽章单行不换行；超宽省略 */
+.train-table .badge {
+  display: inline-block; max-width: 100%;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  vertical-align: middle;
+}
 
 .data-table { width: 100%; border-collapse: collapse; font-size: 14px; }
 .data-table th {
@@ -725,6 +782,12 @@ async function initPublish() {
 .action-link.primary:hover { background: #e8f0fe; }
 
 .action-btns { display: flex; gap: 8px; flex-wrap: wrap; }
+/* 列表内操作按钮排紧一些，控制在 2 行内 */
+.train-table .action-btns { gap: 2px 3px; }
+.train-table .action-link { padding: 2px 4px; font-size: 12px; }
+.train-table th.col-num,
+.train-table th.col-score,
+.train-table th.col-time { text-align: center; }
 .action-link {
   background: none; border: none; cursor: pointer;
   font-size: 13px; font-weight: 500; padding: 3px 8px;
