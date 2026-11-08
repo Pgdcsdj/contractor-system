@@ -23,6 +23,7 @@ const path = require('path')
 const { pool } = require('../db/db')
 const { resolveRecorderContext } = require('./permission')
 const { LEVELS } = require('../constants/hazardStates')
+const { loadRules, resolveStation } = require('./stationResolver')
 const { extractImages, matchImagesToRows } = require('./xlsxImageExtractor')
 const { uploadAndBind } = require('./hazardPhotoImport')
 const { loadBasisLibrary, matchStandardBasis } = require('./standardBasisService')
@@ -878,24 +879,29 @@ async function commitImport(buffer, admin, filename = '', opts = {}) {
     conn = await pool.getConnection()
     await conn.beginTransaction()
     const recorderCtx = await resolveRecorderContext(admin)
+    // 归属规则缓存（批量导入按 location 自动归属）
+    await loadRules()
 
     const INSERT_SQL = `INSERT INTO t_hazard
-        (hazard_code, contractor_unit_id, unit_name, location, description, standard_basis, hazard_level,
+        (hazard_code, contractor_unit_id, unit_name, location, center_station_name, gas_station_name, description, standard_basis, hazard_level,
          rectify_measures, responsible_person,
          plan_finish_time, business_dept, hazard_investigation_item, business_dept_head, status,
          reported_by, reported_by_name, report_time, photo_url, rectify_status, closed_at,
          recorder_id, recorder_name, recorder_unit_id, recorder_unit_name, deleted_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, ?, ?, ?, ?, ?, ?, NULL)`
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, ?, ?, ?, ?, ?, ?, NULL)`
 
     for (const r of validRowObjs) {
       const rec = r.data
       const hazard_code = await genCode(conn)
+      const st = resolveStation(rec.location) || { center_station_name: '', gas_station_name: '' }
       const planFinish = rec.plan_finish_time ? rec.plan_finish_time : null
       const [ins] = await conn.execute(INSERT_SQL, [
         hazard_code,
         rec.contractor_unit_id ? Number(rec.contractor_unit_id) : null,
         rec.unit_name || '',
         rec.location || '',
+        st.center_station_name,
+        st.gas_station_name,
         rec.description || '',
         rec.standard_basis || '',
         rec.hazard_level || '',

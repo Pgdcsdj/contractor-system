@@ -10,6 +10,14 @@
           + 新增关联
         </button>
         <button class="btn btn-outline" v-if="isLocationTab" @click="showLocImport = true">导入位置</button>
+        <button class="btn btn-outline" v-if="isStationTab" @click="showMapImport = true">按运维明细表回填</button>
+        <button class="btn btn-outline" v-if="isStationTab" :disabled="backfilling" @click="doBackfill">
+          {{ backfilling ? '归属中…' : '重新归属隐患' }}
+        </button>
+      </div>
+
+      <div v-if="backfillMsg" class="backfill-bar" :class="{ warn: backfillWarn }">
+        {{ backfillMsg }}
       </div>
 
       <!-- 分段 Tab：数组驱动（隐患分类 / 隐患分级 / 责任单位·业务口 / 业务部门负责人） -->
@@ -32,6 +40,8 @@
             <th>排序</th>
             <th>编码</th>
             <th>名称</th>
+            <th v-if="isStationTab">中心站</th>
+            <th v-if="isStationTab">集气站</th>
             <th>操作</th>
           </tr>
         </thead>
@@ -46,6 +56,11 @@
             <td>{{ item.sort_order }}</td>
             <td><code class="code-cell">{{ item.code }}</code></td>
             <td><strong>{{ item.name }}</strong></td>
+            <td v-if="isStationTab">
+              <span v-if="item.center_station_name" class="tag-center">{{ item.center_station_name }}</span>
+              <span v-else class="muted-dash">未归属</span>
+            </td>
+            <td v-if="isStationTab">{{ item.gas_station_name || '-' }}</td>
             <td>
               <button class="action-link" @click="openEdit(item, activeTab)">编辑</button>
               <button class="action-link danger" @click="removeItem(item, activeTab)">删除</button>
@@ -98,6 +113,30 @@
         <div class="form-group">
           <label>名称 (name)</label>
           <input v-model="formName" class="form-input" placeholder="如：作业 或 重大" />
+        </div>
+        <div class="form-group" v-if="formType === 'center_station'">
+          <label>所属中心站</label>
+          <input
+            v-model="formCenterStation"
+            class="form-input"
+            list="center-station-options"
+            placeholder="如：马103中心站（用于中心站排名统计）"
+          />
+          <datalist id="center-station-options">
+            <option v-for="c in centerStationOptions" :key="c" :value="c" />
+          </datalist>
+        </div>
+        <div class="form-group" v-if="formType === 'center_station'">
+          <label>所属集气站（场站）</label>
+          <input
+            v-model="formGasStation"
+            class="form-input"
+            list="gas-station-options"
+            placeholder="如：马101集气站 / 马10脱水井场"
+          />
+          <datalist id="gas-station-options">
+            <option v-for="g in gasStationOptions" :key="g" :value="g" />
+          </datalist>
         </div>
         <div class="form-group">
           <label>排序</label>
@@ -158,6 +197,40 @@
         </div>
       </div>
     </div>
+
+    <!-- 按「各中心站运维区域明细表」回填中心站 / 集气站 -->
+    <div v-if="showMapImport" class="modal-overlay" @click.self="showMapImport = false">
+      <div class="modal">
+        <h3>按运维区域明细表回填归属</h3>
+        <p class="modal-hint">
+          上传《通南巴项目部-各中心站运维区域明细表》。系统读取「中心站名称」「场站（采气井台）」「场内单井」三列，
+          自动把每个生产场站归到对应的中心站与集气站（按单井名匹配，匹配不上的保留原值）。
+        </p>
+        <div class="form-group">
+          <input type="file" accept=".xlsx,.xls" @change="onMapFileChange" />
+        </div>
+        <p v-if="mapMsg" class="loc-msg" :class="mapMsgType">{{ mapMsg }}</p>
+        <div v-if="mapResult" class="map-result">
+          <div class="map-line">匹配成功：<b>{{ mapResult.matched }}</b> 个场站；未匹配：<b>{{ mapResult.unmatchedCount }}</b> 行</div>
+          <div class="map-line" v-if="mapResult.byCenter">
+            各中心站已归属：
+            <span v-for="(v, k) in mapResult.byCenter" :key="k" class="map-chip">{{ k }} {{ v }}</span>
+          </div>
+          <div class="map-line warn" v-if="mapResult.unmatchedCount">
+            未匹配行（前 50）：{{ (mapResult.unmatched || []).map((x) => x.well || x.station).slice(0, 20).join('、') }}
+          </div>
+          <div class="map-line warn" v-if="(mapResult.stillUnassigned || []).length">
+            仍未归属的场站（{{ mapResult.stillUnassigned.length }}）：{{ mapResult.stillUnassigned.slice(0, 20).join('、') }}
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-outline" @click="showMapImport = false" :disabled="mapImporting">关闭</button>
+          <button class="btn btn-primary" @click="submitMapImport" :disabled="!mapFile || mapImporting">
+            {{ mapImporting ? '回填中…' : '开始回填' }}
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -172,6 +245,8 @@ import {
   saveRectifyUnitBiz,
   deleteRectifyUnitBiz,
   importLocationDict,
+  importStationMap,
+  backfillHazardStation,
 } from '@/api/hazard'
 
 // 隐患等级枚举（与后端 LEVELS 保持一致：重大隐患 / 较大隐患 / 一般隐患）
@@ -189,8 +264,10 @@ const DICT_TABS = [
 
 const activeTab = ref('level')
 const isCategory = computed(() => activeTab.value === 'category')
-// 表格列数（含默认等级列为 5，否则 4）
-const colspan = computed(() => (isCategory.value ? 5 : 4))
+// 生产场站 Tab：额外展示「中心站 / 集气站」两列（用于按中心站统计排名）
+const isStationTab = computed(() => activeTab.value === 'center_station')
+// 表格列数（基数 4：排序/编码/名称/操作；category +1、生产场站 +2）
+const colspan = computed(() => 4 + (isCategory.value ? 1 : 0) + (isStationTab.value ? 2 : 0))
 
 const dictMap = reactive({})
 const loadingMap = reactive({})
@@ -202,7 +279,24 @@ const formCode = ref('')
 const formName = ref('')
 const formDefaultLevel = ref('一般')
 const formSort = ref(99)
+const formCenterStation = ref('')
+const formGasStation = ref('')
 const saving = ref(false)
+
+// 中心站下拉建议值：四个中心站固定前置 + 已有数据去重
+const CENTER_STATIONS = ['马103中心站', '马1-11中心站', '马10中心站', '马3中心站']
+const centerStationOptions = computed(() => {
+  const used = (dictMap['center_station'] || [])
+    .map((i) => i.center_station_name)
+    .filter(Boolean)
+  return Array.from(new Set([...CENTER_STATIONS, ...used]))
+})
+const gasStationOptions = computed(() => {
+  const used = (dictMap['center_station'] || [])
+    .map((i) => i.gas_station_name)
+    .filter(Boolean)
+  return Array.from(new Set(used)).sort()
+})
 
 const currentTab = computed(
   () => DICT_TABS.find((t) => t.type === activeTab.value) || DICT_TABS[0]
@@ -261,6 +355,8 @@ function openAdd() {
   formName.value = ''
   formDefaultLevel.value = '一般'
   formSort.value = 99
+  formCenterStation.value = ''
+  formGasStation.value = ''
   showForm.value = true
 }
 
@@ -271,6 +367,8 @@ function openEdit(item, type) {
   formName.value = item.name
   formDefaultLevel.value = item.default_level || '一般'
   formSort.value = item.sort_order
+  formCenterStation.value = item.center_station_name || ''
+  formGasStation.value = item.gas_station_name || ''
   showForm.value = true
 }
 
@@ -283,6 +381,10 @@ async function handleSave() {
       code: formCode.value.trim(),
       name: formName.value.trim(),
       sort_order: Number(formSort.value) || 0,
+    }
+    if (formType.value === 'center_station') {
+      payload.center_station_name = formCenterStation.value.trim()
+      payload.gas_station_name = formGasStation.value.trim()
     }
     if (editingId.value) {
       await updateHazardDict(editingId.value, payload)
@@ -449,15 +551,96 @@ async function submitLocImport() {
   }
 }
 
+// ─── 按运维区域明细表回填中心站 / 集气站 ────────────────────────────────
+const showMapImport = ref(false)
+const mapFile = ref(null)
+const mapImporting = ref(false)
+const mapMsg = ref('')
+const mapMsgType = ref('success')
+const mapResult = ref(null)
+
+function onMapFileChange(e) {
+  const f = e.target.files && e.target.files[0]
+  mapFile.value = f || null
+  mapResult.value = null
+  mapMsg.value = ''
+}
+
+async function submitMapImport() {
+  if (!mapFile.value || mapImporting.value) return
+  mapImporting.value = true
+  mapMsg.value = ''
+  try {
+    const res = await importStationMap(mapFile.value)
+    mapMsgType.value = 'success'
+    mapMsg.value = res.data?.message || '回填完成'
+    mapResult.value = res.data?.data || null
+    await loadType('center_station')
+  } catch (e) {
+    mapMsgType.value = 'error'
+    mapMsg.value = e.response?.data?.error || '回填失败'
+    mapResult.value = null
+  } finally {
+    mapImporting.value = false
+  }
+}
+
+// ─── 按归属规则批量回填隐患的中心站 / 场站 ──────────────────────────────
+const backfilling = ref(false)
+const backfillMsg = ref('')
+const backfillWarn = ref(false)
+
+async function doBackfill() {
+  if (backfilling.value) return
+  backfilling.value = true
+  backfillWarn.value = false
+  backfillMsg.value = ''
+  try {
+    const res = await backfillHazardStation(false)
+    const d = res.data?.data || {}
+    const centers = Object.entries(d.byCenter || {})
+      .map(([k, v]) => `${k} ${v}`)
+      .join(' / ')
+    backfillWarn.value = (d.unmatched || 0) > 0
+    backfillMsg.value =
+      `归属完成：共 ${d.total || 0} 条，新增归属 ${d.matched || 0} 条，仍未归属 ${d.unmatched || 0} 条` +
+      (centers ? `；当前分布 ${centers}` : '')
+  } catch (e) {
+    backfillWarn.value = true
+    backfillMsg.value = e.response?.data?.error || '归属失败'
+  } finally {
+    backfilling.value = false
+  }
+}
+
 onMounted(() => {
-  // 预加载全部字典类型
-  const tasks = DICT_TABS.map((t) => loadType(t.type))
+  // 预加载全部字典类型（rectify_biz 是前端虚拟 Tab，走 loadBizLinks，不是后端字典类型）
+  const tasks = DICT_TABS.filter((t) => t.type !== 'rectify_biz').map((t) => loadType(t.type))
   loadBizLinks()
   return Promise.all(tasks)
 })
 </script>
 
 <style scoped>
+.tag-center {
+  display: inline-block; padding: 1px 8px; border-radius: 999px;
+  background: #e8f0fe; color: #1a56db; font-size: 12px; white-space: nowrap;
+}
+.muted-dash { color: var(--text-secondary, #999); font-size: 12px; }
+.map-result {
+  margin: 8px 0 12px; padding: 10px 12px; border-radius: 8px;
+  background: #f6f8fa; border: 1px solid var(--border, #e5e7eb); font-size: 13px; line-height: 1.8;
+}
+.map-line.warn { color: #b45309; }
+.map-chip {
+  display: inline-block; margin: 0 6px 4px 0; padding: 1px 8px; border-radius: 999px;
+  background: #eef2ff; color: #3730a3; font-size: 12px;
+}
+.backfill-bar {
+  margin: 0 0 14px; padding: 9px 12px; border-radius: 8px; font-size: 13px; line-height: 1.6;
+  background: #ecfdf5; color: #047857; border: 1px solid #a7f3d0;
+}
+.backfill-bar.warn { background: #fffbeb; color: #b45309; border-color: #fde68a; }
 .hazard-settings-page { max-width: 860px; }
 .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
 .header h2 { font-size: 18px; }

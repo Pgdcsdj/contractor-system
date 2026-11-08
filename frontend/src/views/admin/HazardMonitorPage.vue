@@ -89,6 +89,91 @@
       </table>
     </div>
 
+    <!-- 行3：四中心站隐患排名（考核） -->
+    <div class="card station-rank-card">
+      <div class="card-head-row">
+        <h3 class="card-title">
+          四中心站隐患排名（考核）
+          <span class="sub-count">（按检查时间统计，问题越多排名越前）</span>
+        </h3>
+        <div class="rank-filter">
+          <input v-model="rankStart" type="date" class="filter-date" />
+          <span class="tilde">~</span>
+          <input v-model="rankEnd" type="date" class="filter-date" />
+          <button class="btn btn-outline btn-sm" :disabled="rankLoading" @click="loadRanking">
+            {{ rankLoading ? '统计中…' : '统计' }}
+          </button>
+          <button class="btn btn-ghost btn-sm" :disabled="rankLoading" @click="resetRank">重置</button>
+        </div>
+      </div>
+
+      <div class="unit-bars">
+        <div class="unit-item" v-for="r in rankRows" :key="r.center_station_name">
+          <span class="rank-no" :class="'rk' + r.rank">{{ r.rank }}</span>
+          <span class="unit-name" :title="r.center_station_name">{{ r.center_station_name }}</span>
+          <div class="bar">
+            <div class="bar-fill bar-station" :style="{ width: pct(r.total, rankMax) + '%' }"></div>
+          </div>
+          <span class="unit-count">{{ r.total }}</span>
+        </div>
+      </div>
+
+      <table class="data-table unit-table station-table">
+        <thead>
+          <tr>
+            <th style="width: 56px">排名</th>
+            <th>中心站</th>
+            <th style="width: 78px">隐患数</th>
+            <th style="width: 78px">已闭环</th>
+            <th style="width: 78px">未闭环</th>
+            <th style="width: 78px">超期</th>
+            <th style="width: 92px">闭环率</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="r in rankRows" :key="r.center_station_name">
+            <td><span class="rank-no" :class="'rk' + r.rank">{{ r.rank }}</span></td>
+            <td>{{ r.center_station_name }}</td>
+            <td><strong>{{ r.total }}</strong></td>
+            <td>{{ r.closed }}</td>
+            <td>
+              <span v-if="r.open" class="badge badge-warning">{{ r.open }}</span>
+              <span v-else class="muted">0</span>
+            </td>
+            <td>
+              <span v-if="r.overdue" class="badge badge-danger">{{ r.overdue }}</span>
+              <span v-else class="muted">0</span>
+            </td>
+            <td>{{ r.close_rate }}%</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="rank-summary">
+        <span>
+          已归属 <strong>{{ rankSummary.assigned }}</strong> 条 / 共
+          <strong>{{ rankSummary.total }}</strong> 条，归属覆盖率
+          <strong>{{ rankSummary.assigned_rate }}%</strong>
+        </span>
+        <span v-if="rankUnassigned.total" class="rank-warn">
+          <Icon name="bell" :size="14" />
+          另有 <strong>{{ rankUnassigned.total }}</strong> 条隐患的场所不属于四个中心站运维区域（多为产建/钻井作业新井），未计入排名
+        </span>
+      </div>
+
+      <div v-if="rankUnassigned.sample.length" class="unassigned-box">
+        <div class="unassigned-title">未归属场所 TOP {{ rankUnassigned.sample.length }}</div>
+        <div class="unassigned-chips">
+          <span v-for="s in rankUnassigned.sample" :key="s.location || '_empty'" class="u-chip">
+            {{ s.location || '（空场所）' }}<em>{{ s.count }}</em>
+          </span>
+        </div>
+        <p class="unassigned-tip">
+          补全方式：在「隐患模块设置 → 生产场站」上传最新的运维区域明细表，或人工补充归属规则后点「重新归属隐患」。
+        </p>
+      </div>
+    </div>
+
     <!-- 超期预警清单（Sprint 3 新增面板） -->
     <div class="card overdue-card" ref="overdueRef">
       <h3 class="card-title">
@@ -189,7 +274,7 @@
 import { ref, computed, onMounted } from 'vue'
 import Icon from '@/components/Icon.vue'
 import { getHazardStats, getOverdueHazards } from '@/api/stats'
-import { triggerOverdueNotify } from '@/api/hazard'
+import { triggerOverdueNotify, getCenterStationRanking } from '@/api/hazard'
 import { statusLabel, statusBadge, levelBadge } from '@/utils/hazardStatus'
 import { pct, maxOf, sortUnits } from '@/utils/statsFormat'
 
@@ -296,6 +381,42 @@ const xLabels = computed(() =>
   trend.value.map((p, i) => ({ x: pointXY('newCount', i, trend.value.length).x, label: p.label }))
 )
 
+// ── 四中心站隐患排名（考核） ──
+const rankRows = ref([])
+const rankMax = ref(1)
+const rankUnassigned = ref({ total: 0, sample: [] })
+const rankSummary = ref({ total: 0, assigned: 0, assigned_rate: 0 })
+const rankLoading = ref(false)
+const rankStart = ref('')
+const rankEnd = ref('')
+
+async function loadRanking() {
+  rankLoading.value = true
+  try {
+    const params = {}
+    if (rankStart.value) params.start_date = rankStart.value
+    if (rankEnd.value) params.end_date = rankEnd.value
+    const res = await getCenterStationRanking(params)
+    const d = res.data?.data
+    if (d) {
+      rankRows.value = d.rows || []
+      rankMax.value = Math.max(1, ...(d.rows || []).map((r) => Number(r.total) || 0))
+      rankUnassigned.value = d.unassigned || { total: 0, sample: [] }
+      rankSummary.value = d.summary || { total: 0, assigned: 0, assigned_rate: 0 }
+    }
+  } catch (e) {
+    console.error('[HazardMonitor] 中心站排名加载失败', e)
+  } finally {
+    rankLoading.value = false
+  }
+}
+
+function resetRank() {
+  rankStart.value = ''
+  rankEnd.value = ''
+  loadRanking()
+}
+
 // ── 加载 ──
 async function load() {
   loading.value = true
@@ -310,6 +431,7 @@ async function load() {
   }
   // 超期清单独立加载，统计卡失败不影响其展示
   await loadOverdue()
+  await loadRanking()
 }
 
 // ── 超期预警清单：滚动锚点 ──
@@ -424,6 +546,34 @@ onMounted(load)
 .unit-count { width: 34px; font-size: 13px; font-weight: 600; color: var(--c-text); text-align: right; flex-shrink: 0; }
 .unit-table { margin-top: 4px; }
 .muted { color: var(--c-text-3); }
+
+/* 四中心站排名（考核） */
+.station-rank-card { margin-bottom: 20px; }
+.card-head-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; }
+.card-head-row .card-title { margin: 0; }
+.rank-filter { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.filter-date { height: 32px; padding: 0 8px; border: 1px solid var(--c-border); border-radius: 8px; font-size: 13px; color: var(--c-text); background: var(--c-surface); outline: none; }
+.filter-date:focus { border-color: var(--c-primary); }
+.tilde { color: var(--c-text-3); font-size: 13px; }
+.rank-filter .btn { width: auto; height: 32px; padding: 0 14px; font-size: 13px; }
+.rank-no { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 8px; font-size: 12px; font-weight: 700; color: #fff; background: var(--c-text-3); flex-shrink: 0; }
+.rank-no.rk1 { background: var(--c-danger); }
+.rank-no.rk2 { background: var(--c-warning); }
+.rank-no.rk3 { background: var(--c-blue-600); }
+.rank-no.rk4 { background: var(--c-success); }
+.bar-station { background: linear-gradient(90deg, var(--c-warning), var(--c-danger)); }
+.station-table th, .station-table td { text-align: left; }
+.station-table th:first-child, .station-table td:first-child { text-align: center; }
+.rank-summary { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; font-size: 13px; color: var(--c-text-2); }
+.rank-summary strong { color: var(--c-text); }
+.rank-warn { display: inline-flex; align-items: center; gap: 6px; color: var(--c-warning); }
+.rank-warn strong { color: var(--c-warning); }
+.unassigned-box { margin-top: 12px; padding: 12px 14px; border: 1px dashed var(--c-border-strong); border-radius: 10px; background: var(--c-surface-2); }
+.unassigned-title { font-size: 12px; font-weight: 600; color: var(--c-text-2); margin-bottom: 8px; }
+.unassigned-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.u-chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; background: var(--c-surface); border: 1px solid var(--c-border); font-size: 12px; color: var(--c-text-2); }
+.u-chip em { font-style: normal; font-weight: 700; color: var(--c-danger); }
+.unassigned-tip { margin: 10px 0 0; font-size: 12px; color: var(--c-text-3); line-height: 1.6; }
 
 /* 趋势 */
 .trend-hint { font-size: 12px; color: var(--c-text-3); font-weight: 500; }

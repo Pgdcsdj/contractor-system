@@ -162,6 +162,48 @@ export function importLocationDict(file) {
   })
 }
 
+// 按「各中心站运维区域明细表」回填生产场站的「中心站 / 集气站」两列
+export function importStationMap(file) {
+  const fd = new FormData()
+  fd.append('file', file)
+  const token =
+    localStorage.getItem('tnb_admin_token') || localStorage.getItem('tnb_token') || ''
+  return request.post('/api/hazard-dict/import-station-map', fd, {
+    headers: {
+      'Content-Type': 'multipart/form-data',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  })
+}
+
+// ─────────── 四中心站归属与排名考核 ───────────
+
+/** 四中心站隐患排名（按 report_time 检查时间口径） */
+export function getCenterStationRanking(params = {}) {
+  return request.get('/api/hazards/center-station-ranking', { params })
+}
+
+/** 按现有归属规则批量回填隐患的中心站/场站；force=true 时全表重算 */
+export function backfillHazardStation(force = false) {
+  return request.post('/api/hazard-dict/backfill-hazard-station', { force })
+}
+
+/** 场所归属规则列表 */
+export function getStationRules(params = {}) {
+  return request.get('/api/hazard-dict/station-rules', { params })
+}
+
+/** 新增/更新人工归属规则 */
+export function createStationRule(payload) {
+  return request.post('/api/hazard-dict/station-rules', payload)
+}
+
+/** 删除人工归属规则 */
+export function deleteStationRule(id) {
+  return request.delete(`/api/hazard-dict/station-rules/${id}`)
+}
+
+
 /** 获取整改单位 → 业务口 关联列表 */
 export function getRectifyUnitBiz() {
   return request.get('/api/rectify-unit-biz')

@@ -478,6 +478,73 @@ async function autoMigrate() {
     }
     // 5.66 中心站不再硬编码种子（改由 T3 「字典导入」接口 / 用户维护）
 
+    // 5.67 t_hazard_dict 增加「中心站」「集气站」两列
+    //      用途：给「生产场站」字典项标注所属中心站 / 集气站（场站），
+    //      后期按四个中心站（马103 / 马1-11 / 马10 / 马3）统计隐患数量做排名考核。
+    for (const col of [
+      { name: 'center_station_name', def: "VARCHAR(64) NOT NULL DEFAULT '' COMMENT '所属中心站（生产场站归属，用于中心站排名考核）'" },
+      { name: 'gas_station_name',    def: "VARCHAR(64) NOT NULL DEFAULT '' COMMENT '所属集气站/场站（生产场站归属）'" },
+    ]) {
+      if (!(await ensureColumn('t_hazard_dict', col.name))) {
+        console.log(`[migrate] 正在添加 t_hazard_dict.${col.name} 字段...`)
+        await pool.execute(`ALTER TABLE t_hazard_dict ADD COLUMN ${col.name} ${col.def}`)
+        console.log(`[migrate] ✅ t_hazard_dict.${col.name} 字段添加完成`)
+      }
+    }
+    // 索引（幂等：SHOW INDEX 判断后再建）
+    {
+      const [idxRows] = await pool.execute(
+        `SHOW INDEX FROM t_hazard_dict WHERE Key_name = 'idx_center_station'`
+      )
+      if (!idxRows.length) {
+        await pool.execute('ALTER TABLE t_hazard_dict ADD INDEX idx_center_station (type, center_station_name)')
+        console.log('[migrate] ✅ t_hazard_dict 中心站索引创建完成')
+      }
+    }
+
+    // 5.68 t_hazard 增加「中心站」「场站」归属列 + 规则表 t_station_rule
+    //      用途：按隐患「场所」自由文本自动归属到四个中心站（马103/马1-11/马10/马3），
+    //      供中心站隐患排名考核统计。归属规则来自运维明细表导入 + 人工维护。
+    for (const col of [
+      { name: 'center_station_name', def: "VARCHAR(64) NOT NULL DEFAULT '' COMMENT '所属中心站（按场所自动归属，排名考核用）'" },
+      { name: 'gas_station_name',    def: "VARCHAR(64) NOT NULL DEFAULT '' COMMENT '所属场站/集气站（按场所自动归属）'" },
+    ]) {
+      if (!(await ensureColumn('t_hazard', col.name))) {
+        console.log(`[migrate] 正在添加 t_hazard.${col.name} 字段...`)
+        await pool.execute(`ALTER TABLE t_hazard ADD COLUMN ${col.name} ${col.def}`)
+        console.log(`[migrate] ✅ t_hazard.${col.name} 字段添加完成`)
+      }
+    }
+    // 索引（幂等：SHOW INDEX 判断后再建）
+    for (const idx of [
+      { name: 'idx_hazard_center', cols: 'center_station_name, report_time' },
+      { name: 'idx_hazard_center_unit', cols: 'unit_name, center_station_name' },
+    ]) {
+      const [idxRows] = await pool.execute(
+        `SHOW INDEX FROM t_hazard WHERE Key_name = '${idx.name}'`
+      )
+      if (!idxRows.length) {
+        await pool.execute(`ALTER TABLE t_hazard ADD INDEX ${idx.name} (${idx.cols})`)
+        console.log(`[migrate] ✅ t_hazard 索引 ${idx.name} 创建完成`)
+      }
+    }
+    // 归属规则表
+    await pool.execute(`
+      CREATE TABLE IF NOT EXISTS t_station_rule (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        match_key VARCHAR(64) NOT NULL COMMENT '归一化匹配键',
+        raw_name VARCHAR(128) NOT NULL DEFAULT '' COMMENT '原始名称',
+        kind VARCHAR(16) NOT NULL DEFAULT 'well' COMMENT 'center|station|well',
+        center_station_name VARCHAR(64) NOT NULL DEFAULT '',
+        gas_station_name VARCHAR(64) NOT NULL DEFAULT '',
+        source VARCHAR(16) NOT NULL DEFAULT 'excel' COMMENT 'excel|manual',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uk_match_key (match_key),
+        KEY idx_center (center_station_name)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='场所名称到中心站的归属规则'
+    `)
+    console.log('[migrate] ✅ t_station_rule 表就绪')
+
     // 5.7 种子：整改单位（NOT EXISTS 防重复；business_dept_head 不种子，用户自行维护）。
     // ⚠ 业务部门(business_dept) 5 个硬编码种子已移除：业务口改由用户全权拥有，不再回弹。
     await pool.execute(`

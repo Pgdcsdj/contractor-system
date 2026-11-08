@@ -27,6 +27,7 @@ const schedulerConfig = require('../services/schedulerConfig')
 const { STATUS, LEVELS } = require('../constants/hazardStates')
 const { applyRecorderScope, resolveRecorderContext } = require('../services/permission')
 const importService = require('../services/importService')
+const { loadRules, resolveStation, CENTER_STATIONS } = require('../services/stationResolver')
 const { matchStandardBasisDb } = require('../services/standardBasisService')
 const { decodeFilename } = require('../utils/filename')
 const path = require('path')
@@ -167,16 +168,20 @@ router.post('/', adminAuth, async (req, res) => {
       if (m.matched) standardBasisValue = m.standard_basis
     }
 
+    // 场所 → 中心站自动归属（宁可空也不要错，未命中即空）
+    await loadRules()
+    const st = resolveStation(location) || { center_station_name: '', gas_station_name: '' }
+
     const [result] = await pool.execute(
       `INSERT INTO t_hazard
-        (hazard_code, contractor_unit_id, unit_name, location, description, standard_basis, hazard_level,
+        (hazard_code, contractor_unit_id, unit_name, location, center_station_name, gas_station_name, description, standard_basis, hazard_level,
          rectify_measures, responsible_person,
          plan_finish_time, business_dept, hazard_investigation_item, business_dept_head, status,
          reported_by, reported_by_name, report_time, photo_url, rectify_status,
          recorder_id, recorder_name, recorder_unit_id, recorder_unit_name, remark, deleted_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'reported', ?, ?, NOW(), ?, '未整改', ?, ?, ?, ?, ?, NULL)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'reported', ?, ?, NOW(), ?, '未整改', ?, ?, ?, ?, ?, NULL)`,
       [
-        hazard_code, safeUnitId, unit_name.trim(), location.trim(), description.trim(),
+        hazard_code, safeUnitId, unit_name.trim(), location.trim(), st.center_station_name, st.gas_station_name, description.trim(),
         standardBasisValue,
         hazard_level, rectify_measures,
         responsible_person.trim(), plan_finish_time,
@@ -754,6 +759,97 @@ router.delete('/:id', adminAuth, async (req, res) => {
   }
 })
 
+// ─── GET /api/hazards/center-station-ranking —— 四中心站隐患排名统计 ──────────
+// ⚠ 必须定义在 router.get('/:id') 之前，否则会被 :id 占位符吞掉。
+// 时间口径：report_time（前端「检查时间」）；start_date/end_date 可选；end_date 含当天 23:59:59。
+// 排名方向：隐患越多排名越靠前（第 1 名 = 问题最多）。固定输出 4 个中心站。
+router.get('/center-station-ranking', requireAdminOrSafety, async (req, res) => {
+  const { start_date, end_date, unit_name } = req.query
+  const unitFilter = unit_name && String(unit_name).trim() ? String(unit_name).trim() : ''
+  try {
+    const where = ['deleted_at IS NULL']
+    const params = []
+    if (start_date) { where.push('report_time >= ?'); params.push(String(start_date) + ' 00:00:00') }
+    if (end_date) { where.push('report_time <= ?'); params.push(String(end_date) + ' 23:59:59') }
+    if (unitFilter) { where.push('unit_name = ?'); params.push(unitFilter) }
+
+    const sql = `
+      SELECT center_station_name,
+             COUNT(*) AS total,
+             SUM(status = 'closed') AS closed_cnt,
+             SUM(status <> 'closed') AS open_cnt,
+             SUM(status <> 'closed' AND plan_finish_time IS NOT NULL AND plan_finish_time < NOW()) AS overdue_cnt
+        FROM t_hazard
+       WHERE ${where.join(' AND ')}
+       GROUP BY center_station_name`
+    const [rows] = await pool.query(sql, params)
+
+    const byCenter = new Map()
+    let grandTotal = 0
+    let assignedTotal = 0
+    for (const r of rows) {
+      const name = r.center_station_name || ''
+      const rec = {
+        total: Number(r.total) || 0,
+        closed: Number(r.closed_cnt) || 0,
+        open: Number(r.open_cnt) || 0,
+        overdue: Number(r.overdue_cnt) || 0,
+      }
+      byCenter.set(name, rec)
+      grandTotal += rec.total
+      if (name) assignedTotal += rec.total
+    }
+
+    // 固定 4 个中心站，缺数据补 0
+    const outRows = CENTER_STATIONS.map((c) => {
+      const d = byCenter.get(c) || { total: 0, closed: 0, open: 0, overdue: 0 }
+      return {
+        center_station_name: c,
+        total: d.total,
+        closed: d.closed,
+        open: d.open,
+        overdue: d.overdue,
+        close_rate: d.total ? Math.round((d.closed / d.total) * 1000) / 10 : 0,
+        rank: 0,
+      }
+    })
+    outRows.sort((a, b) => b.total - a.total)
+    outRows.forEach((r, i) => { r.rank = i + 1 })
+
+    // 未归属样本（按场所聚合 Top10）
+    const [unRows] = await pool.query(
+      `SELECT location, COUNT(*) AS c
+         FROM t_hazard
+        WHERE deleted_at IS NULL AND (center_station_name = '' OR center_station_name IS NULL)
+        ${unitFilter ? 'AND unit_name = ?' : ''}
+        GROUP BY location ORDER BY c DESC LIMIT 10`,
+      unitFilter ? [unitFilter] : []
+    )
+    const unassignedTotal = (byCenter.get('') || { total: 0 }).total
+    const sample = unRows.map((r) => ({
+      location: r.location || '',
+      count: Number(r.c) || 0,
+    }))
+
+    res.json({
+      success: true,
+      data: {
+        rows: outRows,
+        centers: CENTER_STATIONS,
+        unassigned: { total: unassignedTotal, sample },
+        summary: {
+          total: grandTotal,
+          assigned: assignedTotal,
+          assigned_rate: grandTotal ? Math.round((assignedTotal / grandTotal) * 1000) / 10 : 0,
+        },
+      },
+    })
+  } catch (err) {
+    console.error('[center-station-ranking]', err.message)
+    res.status(500).json({ success: false, error: '排名统计失败：' + err.message })
+  }
+})
+
 // ─── GET /api/hazards/:id —— 隐患详情（含照片）───────────────────────────────
 router.get('/:id', adminAuth, async (req, res) => {
   const id = Number(req.params.id)
@@ -836,6 +932,14 @@ router.patch('/:id', requireAdminOrSafety, async (req, res) => {
   if (!sets.length) {
     return res.status(400).json({ success: false, error: '未提供任何可更新字段' })
   }
+  // 场所变更时重算中心站归属（宁可空也不要错）
+  if (req.body.location !== undefined) {
+    await loadRules()
+    const st = resolveStation(req.body.location) || { center_station_name: '', gas_station_name: '' }
+    sets.push('center_station_name = ?'); params.push(st.center_station_name)
+    sets.push('gas_station_name = ?'); params.push(st.gas_station_name)
+  }
+
   // 等级合法性校验（若传入）
   if (req.body.hazard_level !== undefined && req.body.hazard_level !== '' && !LEVELS.includes(req.body.hazard_level)) {
     return res.status(400).json({ success: false, error: '隐患等级非法' })
