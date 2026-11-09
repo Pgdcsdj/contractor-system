@@ -46,3 +46,8 @@ backend/probe_*
 backend/_*
 backend/src/__vb_run*.sh
 frontend/inject_v.js
+
+# 部署打包产物（临时）
+dist_*.tgz
+dist_v*.tgz
+*.tar.gz

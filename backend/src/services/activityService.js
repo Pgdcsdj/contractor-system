@@ -12,10 +12,46 @@
 const xlsx = require('xlsx')
 
 // ─── 单元格/表头清洗 ───────────────────────────────────────────────────────
+/**
+ * 日期样式文本归一化：把各队五花八门的日期写法统一成 YYYY-MM-DD。
+ *
+ * 背景：承包商回填的表格里，「整改（计划）完成时间」这类日期列，
+ * 一部分是 Excel 真正的日期单元格（SheetJS 按单元格格式输出成 11/9/26），
+ * 一部分是手打文本（2026.11.8），导出后会混在一列里，很难看也很难排序。
+ *
+ * 只识别「整格就是一个日期」的情况，命中才转换，否则原样返回：
+ *   A) 年前置：2026.11.8 / 2026-11-8 / 2026/11/8 / 2026年11月8日（允许尾部 00:00:00）
+ *   B) Excel 美式：11/9/26、11/9/2026（只认斜杠，避免把条款号 2.5.10 误判成日期）
+ */
+function normDateText(s) {
+  if (!s || typeof s !== 'string') return s
+  const t = s.trim()
+  // 太长的肯定不是纯日期，先挡掉，省得白跑正则
+  if (t.length > 24) return s
+
+  let y, m, d
+  let mm = t.match(/^(\d{4})[.\-/年](\d{1,2})[.\-/月](\d{1,2})日?(?:\s+00:00(?::00)?)?$/)
+  if (mm) {
+    y = Number(mm[1]); m = Number(mm[2]); d = Number(mm[3])
+  } else {
+    mm = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/)
+    if (!mm) return s
+    let a = Number(mm[1]); let b = Number(mm[2]); const yy = Number(mm[3])
+    // 11/9/26 这类默认「月/日/年」；若第一段 >12 说明是「日/月/年」写法
+    if (a > 12 && b <= 12) { const tmp = a; a = b; b = tmp }
+    m = a; d = b
+    y = yy < 100 ? (yy <= 79 ? 2000 + yy : 1900 + yy) : yy
+  }
+  if (!(m >= 1 && m <= 12) || !(d >= 1 && d <= 31) || y < 1900 || y > 2999) return s
+  const p = (n) => String(n).padStart(2, '0')
+  return `${y}-${p(m)}-${p(d)}`
+}
+
 function cleanCell(v) {
   if (v === null || v === undefined) return ''
   if (v instanceof Date) return fmtDT(v).slice(0, 10)
-  return String(v).replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim()
+  const s = String(v).replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim()
+  return normDateText(s)
 }
 
 /**
@@ -265,7 +301,7 @@ function buildMonthlyStatWorkbook(month, monday, wednesday) {
 }
 
 module.exports = {
-  fmtDT, cleanCell, detectHeaderRow, normalizeColumns,
+  fmtDT, cleanCell, normDateText, detectHeaderRow, normalizeColumns,
   parseStandardWorkbook, parseFilledWorkbook,
   buildTemplateWorkbook, buildBlankWorkbook,
   buildSummaryWorkbook, buildFormSummaryWorkbook, buildMonthlyStatWorkbook,
