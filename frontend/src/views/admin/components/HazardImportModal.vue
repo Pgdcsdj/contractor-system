@@ -66,7 +66,10 @@
             <li v-for="(m, i) in unitMismatches" :key="i">
               <span class="unit-row-no">{{ m.sheetName || '' }}{{ m.rowNo ? ' 第 ' + m.rowNo + ' 行' : '' }}</span>
               责任单位「<b>{{ m.raw }}</b>」
-              <template v-if="m.suggests && m.suggests.length">
+              <template v-if="m.reason === 'internal'">
+                → 属项目部内部机构（甲方），不是承包商单位，请改填具体施工单位全称
+              </template>
+              <template v-else-if="m.suggests && m.suggests.length">
                 → 建议改为 <b>{{ m.suggests.join(' / ') }}</b>
               </template>
               <template v-else>

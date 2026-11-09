@@ -27,6 +27,8 @@ const { loadRules, resolveStation } = require('./stationResolver')
 const { extractImages, matchImagesToRows } = require('./xlsxImageExtractor')
 const { uploadAndBind } = require('./hazardPhotoImport')
 const { loadBasisLibrary, matchStandardBasis } = require('./standardBasisService')
+const { lookupAlias } = require('./unitAlias')
+const { INTERNAL_ORG_NAMES } = require('../constants/internalUnits')
 
 // ─── 规范字段 → 列名别名（命中优先级：越靠前越优先；buildMapping 中长别名优先）──
 const IMPORT_FIELDS = [
@@ -398,6 +400,10 @@ function normUnit(s) {
   return t.toUpperCase()
 }
 
+// 内部机构（一/二级网格）归一化集合：不是承包商单位，匹配入口先拦截
+// 注：normUnit 是函数声明（hoisted），此处可安全调用
+const INTERNAL_ORG_NORMS = new Set(INTERNAL_ORG_NAMES.map((n) => normUnit(n)))
+
 // 归一化后的标准单位名（缓存到 unitList 元素上，避免逐行重复计算）
 function unitNorm(u) {
   if (!u) return ''
@@ -407,7 +413,7 @@ function unitNorm(u) {
 
 // 责任单位智能匹配：原始值（简称/别名/包含全称的子串/近似写法）→ 解析出 t_contractor_unit 全称与 id
 // unitList 元素：{ id, full, short, unit_name, norm? }（full/short 已归一化小写去空格）
-// 返回 { matched, id, unit_name, method? }，method ∈ 'exact'|'norm'|'num'|'short'|'contains'|'edit'
+// 返回 { matched, id, unit_name, method? }，method ∈ 'exact'|'alias'|'norm'|'num'|'short'|'contains'|'edit'
 function resolveUnit(raw, unitList) {
   const norm = String(raw ?? '').trim().replace(/\s/g, '').toLowerCase()
   if (!norm || !Array.isArray(unitList) || !unitList.length) {
@@ -420,6 +426,20 @@ function resolveUnit(raw, unitList) {
   // 2) 归一化后相等且唯一（抹平括号后缀 / 空白 / 集团前缀 / 异写）
   //    例：中原建工 → 中原建工（普光项目部）；中原井下 → 中原井下（普光项目部）
   const nRaw = normUnit(raw)
+  // 0) 内部机构（一/二级网格）不是承包商单位，直接判未匹配
+  //    否则「通南巴项目部」会被下面的「名称包含」命中「天然气产销厂通南巴项目部」
+  if (nRaw && INTERNAL_ORG_NORMS.has(nRaw)) {
+    return { matched: false, id: null, unit_name: String(raw ?? '').trim(), internal: true }
+  }
+  // 1.5) 别名表：历史简称 / 旧名 / 冗余写法 → 在册标准全称
+  //      例：「天然气产销厂通南巴项目组」→「天然气产销厂通南巴项目部」
+  //          「中原井下812队」「中原井下\nSY812队」→「中原井下ZY-812队」
+  //      别名表见 services/unitAlias.js，仅在目标确为在册单位时生效
+  const aliasName = lookupAlias(nRaw, 'hazard')
+  if (aliasName) {
+    const hit = unitList.find((u) => u.unit_name === aliasName)
+    if (hit) return { matched: true, id: hit.id, unit_name: hit.unit_name, method: 'alias' }
+  }
   if (nRaw) {
     const eq = unitList.filter((u) => unitNorm(u) === nRaw)
     if (eq.length === 1) return { matched: true, id: eq[0].id, unit_name: eq[0].unit_name, method: 'norm' }
@@ -492,6 +512,8 @@ function resolveUnit(raw, unitList) {
 function suggestUnits(raw, unitList, limit = 3) {
   const base = normUnit(raw)
   if (!base || !Array.isArray(unitList) || !unitList.length) return []
+  // 内部机构（项目部/组室）不是承包商单位，不给「XX项目部」类误导性候选
+  if (INTERNAL_ORG_NORMS.has(base)) return []
   const scored = []
   for (const u of unitList) {
     const n = unitNorm(u)
@@ -577,13 +599,21 @@ async function cleanRow(row, mapping, ctx) {
       }
     } else {
       // 软提示 + 硬错误：既给候选建议，也登记为整表门禁（UNIT_UNMATCH）的依据
-      const sug = suggestUnits(rawUnit, unitList)
-      errors.push(
-        `责任单位「${rawUnit}」不在网格化管理库在册名单` +
-          (sug.length ? `，建议改为：${sug.map((s) => '「' + s + '」').join(' 或 ')}` : '，且无可参考的相似单位') +
-          '（可在「承包商准入→网格化管理」查看在册单位全称）'
-      )
-      unitMismatch = { raw: rawUnit, suggests: sug }
+      if (m.internal) {
+        // 内部机构（项目部/组室）不是承包商单位，给专门提示而非候选建议
+        errors.push(
+          `责任单位「${rawUnit}」是项目部内部机构（甲方），不是承包商单位，请填写具体施工单位全称（可在「承包商准入→网格化管理」查看）`
+        )
+        unitMismatch = { raw: rawUnit, suggests: [], reason: 'internal' }
+      } else {
+        const sug = suggestUnits(rawUnit, unitList)
+        errors.push(
+          `责任单位「${rawUnit}」不在网格化管理库在册名单` +
+            (sug.length ? `，建议改为：${sug.map((s) => '「' + s + '」').join(' 或 ')}` : '，且无可参考的相似单位') +
+            '（可在「承包商准入→网格化管理」查看在册单位全称）'
+        )
+        unitMismatch = { raw: rawUnit, suggests: sug }
+      }
     }
   }
 
@@ -864,6 +894,8 @@ async function parseWorkbook(buffer, originalname = '', opts = {}) {
       rowNo: r.rowNo,
       raw: r.unitMismatch.raw,
       suggests: r.unitMismatch.suggests || [],
+      // reason='internal' 表示填的是项目部内部机构（甲方），不是"名称写错"，前端提示文案要区分
+      reason: r.unitMismatch.reason || 'unmatched',
     }))
     err.templateUrl = '/api/hazards/import/template'
     throw err

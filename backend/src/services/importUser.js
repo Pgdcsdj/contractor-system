@@ -15,6 +15,8 @@
 const xlsx = require('xlsx')
 const { pool } = require('../db/db')
 const { genQrToken } = require('../utils/hashHelper')
+const { lookupAlias } = require('./unitAlias')
+const { INTERNAL_ORG_NAMES } = require('../constants/internalUnits')
 
 // ─── 字段映射（宽松匹配，支持中文表头变体）─────────────────────────────────────
 // 注意：unit=承包商单位, supervising_unit=主管单位（甲方）
@@ -82,6 +84,9 @@ function normUnit(s) {
     .toUpperCase()
 }
 
+// 内部机构（一/二级网格）归一化集合：不是承包商单位，匹配入口先拦截
+const INTERNAL_ORG_NORMS = new Set(INTERNAL_ORG_NAMES.map((n) => normUnit(n)))
+
 /**
  * 将原始单位名称匹配到白名单，返回 { id, unit_name } 或 null
  * @param {string} raw   Excel 中的原始值
@@ -91,11 +96,23 @@ function matchUnit(raw, list) {
   const rawStr = String(raw || '').trim()
   if (!rawStr || !Array.isArray(list) || !list.length) return null
 
+  // 0. 内部机构（一/二级网格）不是承包商单位，直接判未匹配
+  if (INTERNAL_ORG_NORMS.has(normUnit(rawStr))) return null
+
   // 1. 精确相等
   const exact = list.find(u => u.unit_name === rawStr)
   if (exact) return { id: exact.id, unit_name: exact.unit_name }
 
   const nr = normUnit(rawStr)
+
+  // 2.5 别名表：历史简称 / 旧名 / 只写到公司层级的写法 → 在册标准全称
+  //     例：「西南钻井」→「西南钻井分公司」；「天然气产销厂」→「天然气产销厂通南巴项目部」
+  //     见 services/unitAlias.js（personnel 场景比 hazard 多启用「西南钻井」）
+  const aliasName = lookupAlias(nr, 'personnel')
+  if (aliasName) {
+    const hit = list.find(u => u.unit_name === aliasName)
+    if (hit) return { id: hit.id, unit_name: hit.unit_name }
+  }
 
   // 2. 归一化后相等且唯一
   const normEq = list.filter(u => normUnit(u.unit_name) === nr)
@@ -198,6 +215,10 @@ async function importUsers(buffer, adminId = 0, filename = '') {
     // ── 承包商单位：必须与网格化管理库在册单位一致 ──
     if (data.unit) {
       const rawUnit = data.unit
+      if (INTERNAL_ORG_NORMS.has(normUnit(rawUnit))) {
+        failList.push({ row: rowNum, data: row, error: `第${rowNum}行 「${rawUnit}」是项目部内部机构（甲方），不是承包商单位，请填写具体施工单位全称` })
+        continue
+      }
       const hit = matchUnit(rawUnit, unitList)
       if (!hit) {
         failList.push({ row: rowNum, data: row, error: `第${rowNum}行 承包商单位「${rawUnit}」不在网格化管理库在册名单，请到「承包商准入→网格化管理」核对后改为标准全称` })
@@ -315,4 +336,4 @@ function generateFailReport(failList) {
   return xlsx.write(wb, { type: 'buffer', bookType: 'xlsx' })
 }
 
-module.exports = { importUsers, generateFailReport }
+module.exports = { importUsers, generateFailReport, matchUnit, normUnit }
