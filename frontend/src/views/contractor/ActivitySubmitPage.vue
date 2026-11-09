@@ -154,11 +154,13 @@
 
       <!-- 附件 -->
       <section v-if="period" class="card">
-        <h2 class="sec-title">③ 上传附件（签到表 / 照片 / 材料）</h2>
+        <h2 class="sec-title">③ 上传附件{{ type === 'inspection' ? '（排查佐证材料）' : '（签到表 / 照片 / 材料）' }}</h2>
         <div class="upload-row">
-          <select v-model="fileCategory" class="form-input">
+          <select v-if="categories.length > 1" v-model="fileCategory" class="form-input">
             <option v-for="c in categories" :key="c" :value="c">{{ c }}</option>
           </select>
+          <!-- 上级检查类比排查只有一个附件类别，不需要下拉，直接静态展示 -->
+          <span v-else class="cat-fixed">{{ fileCategory }}</span>
           <div class="file-upload small" @click="triggerFile">
             <Icon name="upload" :size="20" />
             <span>{{ attachFile ? attachFile.name : '选择文件（PDF/图片/Word/Excel，单文件 ≤20MB）' }}</span>
@@ -166,6 +168,9 @@
           <input ref="attachInput" type="file" accept=".pdf,.jpg,.jpeg,.png,.doc,.docx,.xlsx,.xls" style="display:none" @change="onAttachChange" />
           <button class="btn btn-outline" :disabled="uploading || !attachFile" @click="doUpload">{{ uploading ? '上传中…' : '上传附件' }}</button>
         </div>
+        <p v-if="type === 'inspection'" class="hint attach-hint">
+          可上传整改前后对比照片、情况说明等佐证材料；照片建议标注拍摄位置与时间。
+        </p>
       </section>
 
       <!-- 本单位本期上报回显 -->
@@ -237,7 +242,10 @@ const WEDNESDAY_FIELDS = [
 ]
 const MONDAY_CATS = ['签到表', '参会人照片', '检查问题汇总', '其他附件']
 const WEDNESDAY_CATS = ['学习材料', '学习照片', '其他附件']
-const INSPECTION_CATS = ['排查佐证材料', '整改照片', '回填表', '其他附件']
+// 上级检查类比排查：附件只保留一类「排查佐证材料（整改前后照片、说明）」
+// （原为 排查佐证材料 / 整改照片 / 回填表 / 其他附件，用户明确要合并成一类；
+//   历史附件仍按各自 category 回显，不受影响）
+const INSPECTION_CATS = ['排查佐证材料（整改前后照片、说明）']
 
 const TABS = [
   { key: 'monday', label: '周一安全活动', sub: 'HSE 活动记录', icon: 'clipboard' },
@@ -392,6 +400,9 @@ function switchType(t) {
   type.value = t
   periodId.value = ''
   Object.keys(form).forEach((k) => delete form[k])
+  // 附件类别随场景切换重置，避免带着上一场景的旧类别（如「签到表」）落到单类别场景
+  fileCategory.value = categories.value[0] || ''
+  attachFile.value = null
   loadPeriods()
 }
 function identity(extra = {}) {
@@ -590,6 +601,16 @@ textarea.form-input { resize: vertical; }
 .row-field .form-input { padding: 6px 8px; font-size: 12px; }
 .upload-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .upload-row > select { width: 180px; }
+/* 全局 .btn 是 width:100%，会把「上传附件」挤到下一行独占整行，这里复原为自适应宽度 */
+.upload-row > .btn { width: auto; flex: 0 0 auto; }
+/* 单类别时替代下拉框的静态标签，宽度与下拉保持一致，视觉上不塌陷 */
+.cat-fixed {
+  display: inline-flex; align-items: center; min-height: 40px; padding: 9px 14px;
+  border: 1px solid var(--c-border, #E6EAF0); border-radius: var(--r, 8px);
+  background: var(--c-surface-2, #f7f8fa); color: var(--c-text, #1f2937);
+  font-size: 13.5px; font-weight: 600; white-space: nowrap;
+}
+.attach-hint { margin-top: 8px; }
 .mine-card { border-color: var(--c-primary, #1D6FB8); }
 .mine-rows { margin-top: 12px; }
 .table-scroll { overflow-x: auto; }
