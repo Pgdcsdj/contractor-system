@@ -23,91 +23,168 @@
 
     <div v-if="errorMsg" class="error-toast">{{ errorMsg }}</div>
 
-    <!-- 步骤一：选择 / 创建项目 -->
-    <div v-if="step === 1" class="cd-grid">
-      <section class="card step-card">
-      <h2 class="step-h"><span class="step-no">1</span> 选择工程 / 项目</h2>
-
-      <div class="form-grid">
-        <div class="fg">
-          <label>承包商单位 *</label>
-          <select v-model="form.unit_id" class="form-input">
-            <option value="">— 请选择 —</option>
-            <option v-for="u in units" :key="u.id" :value="u.id">{{ u.short_name || u.unit_name }}</option>
-          </select>
-        </div>
-        <div class="fg fg-wide">
-          <label>工程 / 项目名称 *</label>
-          <input v-model.trim="form.project_name" class="form-input" placeholder="如：XX井钻前工程 / XX管道施工" @keyup.enter="createOrOpen" />
-        </div>
-      </div>
-
-      <div class="step-actions">
-        <button class="btn btn-primary" @click="createOrOpen" :disabled="!form.unit_id || !form.project_name || loadingPkg">
-          <Icon v-if="loadingPkg" name="loop" :size="16" class="spin" />
-          {{ loadingPkg ? '处理中…' : '创建 / 进入项目' }}
+    <!-- ───────── 步骤一：选择窗口（新建 / 修改）+ 表单 ───────── -->
+    <div v-if="step === 1">
+      <!-- 选择窗口：两个大按钮切换 -->
+      <div class="mode-switch">
+        <button :class="['mode-card', mode === 'new' ? 'on' : '']" @click="switchMode('new')">
+          <span class="mc-ico"><Icon name="plus" :size="20" /></span>
+          <span class="mc-text">
+            <span class="mc-title">新建项目录入</span>
+            <span class="mc-sub">首次上报的工程 / 项目，先建台账再逐项上传资料</span>
+          </span>
+          <span class="mc-check" v-if="mode === 'new'"><Icon name="check" :size="15" /></span>
         </button>
-        <button class="btn btn-outline" @click="showSearch = !showSearch">
-          <Icon name="search" :size="16" /> 查询已有项目
+        <button :class="['mode-card', mode === 'edit' ? 'on' : '']" @click="switchMode('edit')">
+          <span class="mc-ico alt"><Icon name="pencil" :size="20" /></span>
+          <span class="mc-text">
+            <span class="mc-title">修改已有项目</span>
+            <span class="mc-sub">补传 / 替换 / 删除已上报资料，按单位选项目即可</span>
+          </span>
+          <span class="mc-check" v-if="mode === 'edit'"><Icon name="check" :size="15" /></span>
         </button>
       </div>
 
-      <!-- 查询已有项目 -->
-      <div v-if="showSearch" class="search-box">
-        <div class="form-grid">
-          <div class="fg">
-            <select v-model="searchUnit" class="form-input">
-              <option value="">全部单位</option>
-              <option v-for="u in units" :key="u.id" :value="u.id">{{ u.short_name || u.unit_name }}</option>
-            </select>
-          </div>
-          <div class="fg fg-wide">
-            <input v-model.trim="searchKw" class="form-input" placeholder="项目名称关键字" @input="searchPackages" />
-          </div>
-        </div>
-        <div v-if="searchResults.length" class="search-results">
-          <button v-for="p in searchResults" :key="p.id" class="sr-item" @click="selectPackage(p)">
-            <span class="sr-name">{{ p.project_name }}</span>
-            <span class="sr-meta">{{ p.unit_name }} · {{ p.file_count }} 个文件 · {{ p.status ? '已提交' : '进行中' }}</span>
+      <div class="cd-grid">
+        <section class="card step-card">
+          <!-- 新建项目 -->
+          <template v-if="mode === 'new'">
+            <h2 class="step-h"><span class="step-no">1</span> 新建项目台账</h2>
+            <p class="step-tip">同一承包商下，项目名称重复时系统会自动进入已有项目，不会重复建包。</p>
+            <div class="form-grid">
+              <div class="fg">
+                <label>承包商单位 *</label>
+                <select v-model="form.unit_id" class="form-input">
+                  <option value="">— 请选择 —</option>
+                  <option v-for="u in units" :key="u.id" :value="u.id">{{ u.short_name || u.unit_name }}</option>
+                </select>
+              </div>
+              <div class="fg fg-wide">
+                <label>工程 / 项目名称 *</label>
+                <input v-model.trim="form.project_name" class="form-input" placeholder="如：XX井钻前工程 / XX管道施工" @keyup.enter="createOrOpen" />
+              </div>
+            </div>
+            <div class="step-actions">
+              <button class="btn btn-primary" @click="createOrOpen" :disabled="!form.unit_id || !form.project_name || loadingPkg">
+                <Icon v-if="loadingPkg" name="loop" :size="16" class="spin" />
+                {{ loadingPkg ? '处理中…' : '创建并进入项目' }}
+                <Icon v-if="!loadingPkg" name="chevronRight" :size="16" />
+              </button>
+            </div>
+          </template>
+
+          <!-- 修改已有项目：选单位 → 项目自动列出，直接下拉选 -->
+          <template v-else>
+            <h2 class="step-h"><span class="step-no">2</span> 选择已有项目</h2>
+            <p class="step-tip">先选承包商单位，该单位已建的项目会自动列在下面，直接下拉选即可，无需输入关键词。</p>
+            <div class="form-grid">
+              <div class="fg fg-narrow">
+                <label>承包商单位 *</label>
+                <select v-model="pickUnit" class="form-input" @change="loadUnitPackages">
+                  <option value="">— 请选择 —</option>
+                  <option v-for="u in units" :key="u.id" :value="u.id">{{ u.short_name || u.unit_name }}</option>
+                </select>
+              </div>
+              <div class="fg fg-wide fg-block">
+                <label>工程 / 项目 *</label>
+                <select v-model="pickedPkgId" class="form-input" :disabled="!pickUnit || loadingPkgs || !unitPackages.length">
+                  <option value="">
+                    {{ !pickUnit ? '— 请先选择承包商单位 —'
+                      : loadingPkgs ? '加载中…'
+                      : !unitPackages.length ? '— 该单位暂无项目 —'
+                      : `— 请选择（共 ${unitPackages.length} 个项目）—` }}
+                  </option>
+                  <option v-for="p in unitPackages" :key="p.id" :value="p.id">{{ pkgLabel(p) }}</option>
+                </select>
+              </div>
+            </div>
+
+            <div v-if="pickUnit && !loadingPkgs && !unitPackages.length" class="pick-empty">
+              <Icon name="inbox" :size="16" />
+              「{{ unitNameOf(pickUnit) }}」名下还没有任何项目，请改用
+              <a href="javascript:;" class="link" @click="switchMode('new')">新建项目录入</a>。
+            </div>
+
+            <div v-if="pickedPkg" class="pick-preview">
+              <div class="pp-name">{{ pickedPkg.project_name }}</div>
+              <div class="pp-meta">
+                {{ pickedPkg.unit_name }} · 上报人 {{ pickedPkg.reporter_name || '—' }} ·
+                {{ pickedPkg.file_count }} 个文件 · {{ pickedPkg.status ? '已提交' : '进行中' }}
+              </div>
+              <div class="pp-gate" :class="gateMissingOf(pickedPkg) > 0 ? 'bad' : 'ok'">
+                <template v-if="gateMissingOf(pickedPkg) > 0">
+                  <span class="star">★</span> 开工门槛资料还缺 <b>{{ gateMissingOf(pickedPkg) }}</b> 项（共 {{ pkgTotals.gate_total }} 项）
+                </template>
+                <template v-else>
+                  <Icon name="check" :size="14" /> 开工门槛资料已齐全（{{ pkgTotals.gate_total }}/{{ pkgTotals.gate_total }}）
+                </template>
+              </div>
+            </div>
+
+            <div class="step-actions">
+              <button class="btn btn-primary" @click="openPicked" :disabled="!pickedPkgId">
+                进入项目上传资料 <Icon name="chevronRight" :size="16" />
+              </button>
+            </div>
+          </template>
+        </section>
+
+        <aside class="feed-panel card">
+          <div class="feed-title">最新录入项目 <span class="feed-sub">（全部承包商）</span></div>
+          <div v-if="feedLoading" class="feed-empty">加载中…</div>
+          <div v-else-if="!allPackages.length" class="feed-empty">暂无项目</div>
+          <button v-for="p in allPackages" :key="p.id" class="feed-item" @click="openDetail(p.id)">
+            <div class="feed-name">{{ p.project_name }}</div>
+            <div class="feed-meta">{{ p.unit_name }} · {{ p.file_count }} 个文件 · {{ p.status ? '已提交' : '进行中' }}</div>
+            <div class="feed-gate" :class="gateMissingOf(p) > 0 ? 'bad' : 'ok'">
+              <span v-if="gateMissingOf(p) > 0">★ 开工门槛缺 {{ gateMissingOf(p) }} 项</span>
+              <span v-else>✓ 门槛齐全</span>
+            </div>
+            <div class="feed-time">{{ fmtTime(p.updated_at) }}</div>
           </button>
-        </div>
-        <div v-else-if="searched" class="empty-mini">未找到匹配项目</div>
+        </aside>
       </div>
-      </section>
-
-      <aside class="feed-panel card">
-        <div class="feed-title">最新录入项目 <span class="feed-sub">（全部承包商）</span></div>
-        <div v-if="feedLoading" class="feed-empty">加载中…</div>
-        <div v-else-if="!allPackages.length" class="feed-empty">暂无项目</div>
-        <button v-for="p in allPackages" :key="p.id" class="feed-item" @click="openDetail(p.id)">
-          <div class="feed-name">{{ p.project_name }}</div>
-          <div class="feed-meta">{{ p.unit_name }} · {{ p.file_count }} 个文件 · {{ p.status ? '已提交' : '进行中' }}</div>
-          <div class="feed-time">{{ fmtTime(p.updated_at) }}</div>
-        </button>
-      </aside>
     </div>
 
-    <!-- 步骤二：上传资料 -->
+    <!-- ───────── 步骤二：上传资料 ───────── -->
     <section v-else class="upload-stage">
       <div class="upload-main">
         <div class="card proj-head">
           <div>
             <div class="proj-name">{{ packageInfo.project_name }}</div>
             <div class="proj-meta">{{ packageInfo.unit_name }} · 上报人 {{ packageInfo.reporter_name || '—' }}</div>
+            <div v-if="gateMissing > 0" class="proj-alert">
+              <span class="star">★</span> 还有 <b>{{ gateMissing }}</b> 项开工门槛资料未上传（表中带 <span class="star">★</span> 的行）
+            </div>
           </div>
           <button class="btn btn-ghost" @click="backToStep1"><Icon name="chevronLeft" :size="16" /> 换项目</button>
         </div>
 
         <div v-for="group in catalogTree" :key="group.category" class="card cat-block">
-          <div class="cat-title">{{ group.category }}</div>
-          <div v-for="item in group.items" :key="item.id" class="doc-row" :class="{ done: hasFile(item.id) }">
+          <div class="cat-title">
+            {{ group.category }}
+            <span v-if="missingInGroup(group) > 0" class="cat-miss">★ 缺 {{ missingInGroup(group) }} 项必备</span>
+          </div>
+          <div
+            v-for="item in group.items" :key="item.id"
+            class="doc-row"
+            :class="{
+              done: hasFile(item.id),
+              miss: !hasFile(item.id) && item.requiredType === 'gate',
+              pend: !hasFile(item.id) && item.requiredType !== 'gate',
+            }"
+          >
             <div class="doc-info">
-              <span class="doc-name">{{ item.name }}</span>
+              <span class="doc-name">
+                <span v-if="!hasFile(item.id) && item.requiredType === 'gate'" class="star" title="开工必备资料，尚未上传">★</span>
+                {{ item.name }}
+              </span>
               <span class="doc-tags">
                 <span class="tag tag-freq">{{ item.freq }}</span>
                 <span :class="['tag', item.requiredType === 'gate' ? 'tag-gate' : 'tag-dyn']">
                   {{ item.requiredType === 'gate' ? '开工门槛' : '动态维护' }}
                 </span>
+                <span v-if="!hasFile(item.id) && item.requiredType === 'gate'" class="tag tag-miss">必备缺项</span>
               </span>
             </div>
             <div class="doc-actions">
@@ -118,7 +195,7 @@
                 <button class="mini-btn" @click="triggerReplace(item.id)"><Icon name="pencil" :size="14" /> 替换</button>
                 <button class="mini-btn danger" @click="deleteFile(filesByCatalog[item.id])"><Icon name="x" :size="14" /> 删除</button>
               </template>
-              <button v-else class="mini-btn up" @click="triggerPick(item.id)" :disabled="uploading[item.id]">
+              <button v-else class="mini-btn up" :class="{ urgent: item.requiredType === 'gate' }" @click="triggerPick(item.id)" :disabled="uploading[item.id]">
                 <Icon v-if="uploading[item.id]" name="loop" :size="14" class="spin" />
                 <Icon v-else name="upload" :size="14" /> 上传
               </button>
@@ -132,7 +209,7 @@
         <div class="card side-card">
           <div class="side-title">资料齐全度</div>
           <div class="ring-row">
-            <div class="ring gate" :class="gateTotal && gateDone === gateTotal ? 'ok' : ''">
+            <div class="ring gate" :class="gateTotal && gateDone === gateTotal ? 'ok' : 'bad'">
               <div class="ring-num">{{ gateDone }}/{{ gateTotal }}</div>
               <div class="ring-lbl">开工门槛</div>
             </div>
@@ -140,6 +217,9 @@
               <div class="ring-num">{{ dynDone }}/{{ dynTotal }}</div>
               <div class="ring-lbl">动态维护</div>
             </div>
+          </div>
+          <div v-if="gateMissing > 0" class="side-alert">
+            <span class="star">★</span> 还差 <b>{{ gateMissing }}</b> 项开工门槛资料，未补齐不得开工。
           </div>
           <div class="side-tip">
             <Icon name="alert" :size="14" /> 开工门槛资料为开工前必须的否决项，缺项不得开工。
@@ -192,15 +272,22 @@ const identity = ref({
   phone: localStorage.getItem('cd_phone') || '',
 })
 const step = ref(1)
+
+// 选择窗口：new = 新建项目录入 / edit = 修改已有项目
+const mode = ref('new')
+
 const form = ref({ unit_id: '', project_name: '' })
+
+// 修改已有项目：先选单位 → 自动列出该单位的项目 → 直接下拉选
+const pickUnit = ref('')
+const unitPackages = ref([])
+const pickedPkgId = ref('')
+const loadingPkgs = ref(false)
+const pkgTotals = ref({ gate_total: 0, dyn_total: 0 })
+
 const packageId = ref(null)
 const packageInfo = ref(null)
 const files = ref([])
-const showSearch = ref(false)
-const searchResults = ref([])
-const searchKw = ref('')
-const searchUnit = ref('')
-const searched = ref(false)
 const loadingPkg = ref(false)
 const uploading = ref({})
 const submitting = ref(false)
@@ -224,6 +311,17 @@ function saveIdentity() {
 }
 function showError(m) { errorMsg.value = m; setTimeout(() => { errorMsg.value = '' }, 4000) }
 
+function switchMode(m) {
+  if (mode.value === m) return
+  mode.value = m
+  if (m === 'new') { pickUnit.value = ''; unitPackages.value = []; pickedPkgId.value = '' }
+}
+
+function unitNameOf(id) {
+  const u = units.value.find(x => String(x.id) === String(id))
+  return u ? (u.short_name || u.unit_name) : ''
+}
+
 async function loadBase() {
   try {
     const [u, c] = await Promise.all([
@@ -246,12 +344,48 @@ function fmtTime(x) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
+// 某项目还缺几项开工门槛资料
+function gateMissingOf(p) {
+  const total = Number(pkgTotals.value.gate_total) || 0
+  const done = Number(p.gate_done) || 0
+  return Math.max(0, total - done)
+}
+
+// 下拉里的一行文案：把「缺几项」放最前面 —— 项目名普遍很长，下拉宽度放不下会被截断，
+// 最该先看到的判断依据（★缺N / ✓齐全）必须保证永远可见。完整项目名见下方预览块。
+function pkgLabel(p) {
+  const total = pkgTotals.value.gate_total || 0
+  const lack = gateMissingOf(p)
+  const flag = lack > 0 ? `★缺${lack}` : '✓齐全'
+  return `${flag}　｜　门槛 ${p.gate_done || 0}/${total}　｜　${p.file_count || 0} 文件　｜　${p.status ? '已提交' : '进行中'}　｜　${p.project_name}`
+}
+
+const pickedPkg = computed(() => unitPackages.value.find(p => String(p.id) === String(pickedPkgId.value)) || null)
+
+// 选单位后自动拉该单位的项目（无需输入关键词）
+async function loadUnitPackages() {
+  pickedPkgId.value = ''
+  unitPackages.value = []
+  if (!pickUnit.value) return
+  loadingPkgs.value = true
+  try {
+    const res = await request.get('/api/contractor-docs/packages', { params: { unit_id: pickUnit.value } })
+    unitPackages.value = res.data.data || []
+    if (res.data.totals) pkgTotals.value = res.data.totals
+  } catch {
+    unitPackages.value = []
+  } finally {
+    loadingPkgs.value = false
+  }
+}
+
 // 加载全员最新录入项目（公开列表，无过滤参数）
 async function loadAllPackages() {
   feedLoading.value = true
   try {
     const res = await request.get('/api/contractor-docs/packages')
     allPackages.value = res.data.data || []
+    if (res.data.totals) pkgTotals.value = res.data.totals
   } catch {
     // 失败静默：侧栏留空，不影响主流程
     allPackages.value = []
@@ -303,6 +437,16 @@ const gateTotal = computed(() => countItems('gate'))
 const dynTotal = computed(() => countItems('dynamic'))
 const gateDone = computed(() => countItems('gate', true))
 const dynDone = computed(() => countItems('dynamic', true))
+const gateMissing = computed(() => Math.max(0, gateTotal.value - gateDone.value))
+
+// 某分类下还缺几项开工门槛资料
+function missingInGroup(group) {
+  let n = 0
+  for (const it of group.items) {
+    if (it.requiredType === 'gate' && !filesByCatalog.value[it.id]) n++
+  }
+  return n
+}
 
 async function createOrOpen() {
   if (!identity.value.name || !identity.value.phone) {
@@ -327,20 +471,9 @@ async function createOrOpen() {
   }
 }
 
-async function searchPackages() {
-  searched.value = true
-  try {
-    const params = {}
-    if (searchUnit.value) params.unit_id = searchUnit.value
-    if (searchKw.value) params.keyword = searchKw.value
-    const res = await request.get('/api/contractor-docs/packages', { params })
-    searchResults.value = res.data.data || []
-  } catch { searchResults.value = [] }
-}
-
-async function selectPackage(p) {
-  showSearch.value = false
-  await selectPackageById(p.id)
+function openPicked() {
+  if (!pickedPkgId.value) return
+  selectPackageById(pickedPkgId.value)
 }
 
 async function selectPackageById(pid) {
@@ -361,6 +494,7 @@ async function selectPackageById(pid) {
       if (p.reporter_phone) identity.value.phone = p.reporter_phone
     }
     step.value = 2
+    window.scrollTo({ top: 0, behavior: 'smooth' })
   } catch (e) {
     showError('打开项目失败：' + (e.response?.data?.error || e.message))
   }
@@ -469,6 +603,9 @@ function backToStep1() {
   packageId.value = null
   packageInfo.value = null
   files.value = []
+  // 回到选择窗口时保持当前模式；若在"修改"模式，刷新一下该单位的项目列表（文件数/齐全度可能已变）
+  if (mode.value === 'edit' && pickUnit.value) loadUnitPackages()
+  loadAllPackages()
 }
 
 onMounted(() => { loadBase(); loadAllPackages() })
@@ -495,15 +632,53 @@ onMounted(() => { loadBase(); loadAllPackages() })
 
 .error-toast { background: var(--c-danger-bg); color: var(--c-danger); padding: 10px 14px; border-radius: var(--r); font-size: 13.5px; margin-bottom: 14px; }
 
-.step-card { margin-top: 6px; }
-.step-h { font-size: 16px; font-weight: 700; color: var(--c-text); display: flex; align-items: center; gap: 10px; margin-bottom: 18px; }
+/* ── 选择窗口（新建 / 修改） ── */
+.mode-switch { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 16px; }
+.mode-card {
+  position: relative; display: flex; align-items: flex-start; gap: 12px; text-align: left;
+  background: var(--c-surface); border: 1.5px solid var(--c-border); border-radius: var(--r-lg);
+  padding: 16px 18px; cursor: pointer; transition: all .16s ease; box-shadow: var(--shadow-sm);
+}
+.mode-card:hover { border-color: var(--c-blue-400, #7db0dd); transform: translateY(-1px); }
+.mode-card.on { border-color: var(--c-blue-600); background: linear-gradient(180deg, var(--c-blue-50), var(--c-surface) 70%); box-shadow: 0 0 0 3px rgba(29,111,184,.12); }
+.mc-ico { flex-shrink: 0; width: 38px; height: 38px; border-radius: 11px; display: inline-flex; align-items: center; justify-content: center; background: var(--c-blue-600); color: #fff; }
+.mc-ico.alt { background: #0f9d76; }
+.mc-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.mc-title { font-size: 15px; font-weight: 700; color: var(--c-text); }
+.mc-sub { font-size: 12.5px; color: var(--c-text-3); line-height: 1.5; }
+.mc-check { position: absolute; top: 12px; right: 12px; width: 20px; height: 20px; border-radius: 50%; background: var(--c-blue-600); color: #fff; display: inline-flex; align-items: center; justify-content: center; }
+
+.step-card { margin-top: 0; }
+.step-h { font-size: 16px; font-weight: 700; color: var(--c-text); display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
 .step-no { width: 26px; height: 26px; border-radius: 50%; background: var(--c-blue-600); color: #fff; display: inline-flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 700; }
+.step-tip { font-size: 12.5px; color: var(--c-text-3); line-height: 1.6; margin-bottom: 16px; }
 .form-grid { display: flex; gap: 14px; flex-wrap: wrap; }
 .fg { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 200px; }
+.fg-narrow { flex: 0 0 260px; min-width: 200px; }
 .fg-wide { flex: 2; min-width: 280px; }
+/* 工程/项目名称普遍很长，单独占一行，避免下拉里被截断看不全 */
+.fg-block { flex: 1 1 100%; min-width: 100%; }
 .fg label { font-size: 13px; color: var(--c-text-2); font-weight: 600; }
-.form-input { padding: 11px 13px; border: 1px solid var(--c-border-strong); border-radius: var(--r); font-size: 14px; font-family: var(--font-sans); color: var(--c-text); background: var(--c-surface); }
+
+/* 下拉框必须用 background-color：background 简写会清掉全局 select.form-input 的 data-uri 箭头 */
+.form-input {
+  padding: 11px 13px; border: 1px solid var(--c-border-strong); border-radius: var(--r);
+  font-size: 14px; font-family: var(--font-sans); color: var(--c-text);
+  background-color: var(--c-surface); width: 100%;
+}
 .form-input:focus { outline: none; border-color: var(--c-blue-600); box-shadow: 0 0 0 3px rgba(29,111,184,.15); }
+.form-input:disabled { background-color: var(--c-surface-2); color: var(--c-text-3); cursor: not-allowed; }
+
+.pick-empty { display: flex; align-items: center; gap: 6px; margin-top: 14px; padding: 11px 14px; border-radius: var(--r); background: #fff8e6; color: #96620a; font-size: 13px; }
+.link { color: var(--c-blue-600); text-decoration: underline; font-weight: 600; }
+
+.pick-preview { margin-top: 14px; padding: 14px 16px; border-radius: var(--r); background: var(--c-surface-2); border: 1px dashed var(--c-border-strong); }
+.pp-name { font-size: 14.5px; font-weight: 700; color: var(--c-text); line-height: 1.5; }
+.pp-meta { font-size: 12.5px; color: var(--c-text-2); margin-top: 4px; }
+.pp-gate { font-size: 13px; margin-top: 8px; font-weight: 600; }
+.pp-gate.bad { color: #c0392b; }
+.pp-gate.ok { color: var(--c-success); display: flex; align-items: center; gap: 5px; }
+.pp-gate b { font-size: 15px; }
 
 .step-actions { display: flex; gap: 12px; margin-top: 18px; flex-wrap: wrap; }
 .btn { display: inline-flex; align-items: center; gap: 7px; padding: 10px 18px; border-radius: var(--r); font-size: 14px; font-weight: 600; cursor: pointer; border: 1px solid transparent; transition: background .16s ease, border-color .16s ease, opacity .16s; }
@@ -516,38 +691,43 @@ onMounted(() => { loadBase(); loadAllPackages() })
 .btn-ghost:hover { color: var(--c-blue-600); }
 .btn.block { width: 100%; justify-content: center; margin-top: 14px; }
 
-.search-box { margin-top: 18px; padding-top: 16px; border-top: 1px dashed var(--c-border); }
-.search-results { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; max-height: 280px; overflow-y: auto; }
-.sr-item { text-align: left; background: var(--c-surface-2); border: 1px solid var(--c-border); border-radius: var(--r); padding: 11px 14px; cursor: pointer; display: flex; flex-direction: column; gap: 3px; transition: border-color .15s, background .15s; }
-.sr-item:hover { border-color: var(--c-blue-600); background: var(--c-blue-50); }
-.sr-name { font-size: 14px; font-weight: 600; color: var(--c-text); }
-.sr-meta { font-size: 12px; color: var(--c-text-3); }
-.empty-mini { font-size: 13px; color: var(--c-text-3); margin-top: 12px; text-align: center; }
+/* ★ 必备缺项标记 */
+.star { color: #e0342b; font-weight: 900; font-size: 14px; display: inline-block; margin-right: 3px; animation: starPulse 1.8s ease-in-out infinite; }
+@keyframes starPulse { 0%, 100% { opacity: 1; transform: scale(1) } 50% { opacity: .55; transform: scale(1.15) } }
 
 .upload-stage { display: grid; grid-template-columns: 1fr 280px; gap: 18px; margin-top: 6px; align-items: start; }
 .upload-main { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
-.proj-head { display: flex; align-items: center; justify-content: space-between; }
-.proj-name { font-size: 16px; font-weight: 700; color: var(--c-text); }
+.proj-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.proj-name { font-size: 16px; font-weight: 700; color: var(--c-text); line-height: 1.5; }
 .proj-meta { font-size: 12.5px; color: var(--c-text-2); margin-top: 2px; }
+.proj-alert { margin-top: 8px; font-size: 13px; color: #c0392b; background: #fff4f3; border: 1px solid #f6cdc9; padding: 7px 11px; border-radius: var(--r-sm); }
 
 .cat-block { padding: 16px 18px; }
-.cat-title { font-size: 14px; font-weight: 700; color: var(--c-blue-700); margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--c-border); }
-.doc-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 0; border-bottom: 1px dashed var(--c-border); }
+.cat-title { font-size: 14px; font-weight: 700; color: var(--c-blue-700); margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--c-border); display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.cat-miss { font-size: 11.5px; font-weight: 700; color: #c0392b; background: #fde8e8; padding: 2px 8px; border-radius: 20px; }
+.doc-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 8px; border-bottom: 1px dashed var(--c-border); border-radius: var(--r-sm); }
 .doc-row:last-child { border-bottom: none; }
-.doc-row.done { background: linear-gradient(90deg, var(--c-success-bg), transparent 60%); border-radius: var(--r-sm); padding-left: 8px; padding-right: 8px; }
+.doc-row.done { background: linear-gradient(90deg, var(--c-success-bg), transparent 60%); }
+/* 必备资料缺失：整行淡红底 + 左侧红条，一眼能扫出来 */
+.doc-row.miss { background: linear-gradient(90deg, #fff1f0, transparent 75%); border-left: 3px solid #e0342b; padding-left: 11px; }
+.doc-row.pend { background: transparent; }
 .doc-info { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
-.doc-name { font-size: 14px; color: var(--c-text); }
-.doc-tags { display: flex; gap: 6px; }
+.doc-name { font-size: 14px; color: var(--c-text); display: flex; align-items: center; gap: 2px; }
+.doc-row.miss .doc-name { font-weight: 700; color: #b02a22; }
+.doc-tags { display: flex; gap: 6px; flex-wrap: wrap; }
 .tag { font-size: 11px; padding: 2px 8px; border-radius: 20px; font-weight: 600; }
 .tag-freq { background: var(--c-surface-2); color: var(--c-text-2); }
 .tag-gate { background: #fde8e8; color: #c0392b; }
 .tag-dyn { background: #e8f1fd; color: #2563eb; }
+.tag-miss { background: #e0342b; color: #fff; }
 .doc-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
 .file-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--c-blue-700); text-decoration: none; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: var(--c-blue-50); padding: 5px 9px; border-radius: var(--r-sm); }
 .file-chip:hover { text-decoration: underline; }
 .mini-btn { display: inline-flex; align-items: center; gap: 4px; font-size: 12.5px; padding: 6px 10px; border-radius: var(--r-sm); border: 1px solid var(--c-border-strong); background: var(--c-surface); color: var(--c-text-2); cursor: pointer; transition: all .15s; }
 .mini-btn:hover { border-color: var(--c-blue-600); color: var(--c-blue-600); }
 .mini-btn.up { border-color: var(--c-blue-600); color: var(--c-blue-600); }
+.mini-btn.up.urgent { background: #e0342b; border-color: #e0342b; color: #fff; }
+.mini-btn.up.urgent:hover { background: #c0392b; border-color: #c0392b; color: #fff; }
 .mini-btn.danger:hover { border-color: var(--c-danger); color: var(--c-danger); }
 
 .upload-side { position: sticky; top: 20px; }
@@ -557,10 +737,14 @@ onMounted(() => { loadBase(); loadAllPackages() })
 .ring { flex: 1; border-radius: var(--r); padding: 14px 8px; text-align: center; border: 1px solid var(--c-border); }
 .ring.gate { background: #fde8e8; }
 .ring.dyn { background: #e8f1fd; }
+.ring.gate.bad { border-color: #e0342b; animation: ringBlink 2.2s ease-in-out infinite; }
+@keyframes ringBlink { 0%, 100% { box-shadow: 0 0 0 0 rgba(224,52,43,.35) } 50% { box-shadow: 0 0 0 5px rgba(224,52,43,0) } }
 .ring.ok { box-shadow: 0 0 0 2px var(--c-success); }
 .ring-num { font-size: 22px; font-weight: 800; color: var(--c-text); }
 .ring-lbl { font-size: 12px; color: var(--c-text-2); margin-top: 2px; }
-.side-tip { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; color: var(--c-text-2); margin-top: 14px; line-height: 1.5; }
+.side-alert { display: flex; gap: 6px; align-items: flex-start; font-size: 12.5px; color: #c0392b; background: #fff4f3; border: 1px solid #f6cdc9; border-radius: var(--r-sm); padding: 9px 11px; margin-top: 12px; line-height: 1.55; }
+.side-alert b { font-size: 14px; }
+.side-tip { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; color: var(--c-text-2); margin-top: 12px; line-height: 1.5; }
 .side-tip svg { flex-shrink: 0; margin-top: 1px; color: #c0392b; }
 
 .spin { animation: spin .9s linear infinite; }
@@ -575,6 +759,9 @@ onMounted(() => { loadBase(); loadAllPackages() })
 .feed-item:hover { border-color: var(--c-blue-600); background: var(--c-blue-50); }
 .feed-name { font-size: 14px; font-weight: 600; color: var(--c-text); }
 .feed-meta { font-size: 12px; color: var(--c-text-3); margin-top: 3px; }
+.feed-gate { font-size: 11.5px; font-weight: 700; margin-top: 4px; }
+.feed-gate.bad { color: #c0392b; }
+.feed-gate.ok { color: var(--c-success); }
 .feed-time { font-size: 11px; color: var(--c-text-3); margin-top: 3px; }
 .feed-empty { font-size: 13px; color: var(--c-text-3); text-align: center; padding: 20px 0; }
 
@@ -594,10 +781,12 @@ onMounted(() => { loadBase(); loadAllPackages() })
 @media (max-width: 900px) {
   .cd-grid { grid-template-columns: 1fr; }
   .feed-panel { position: static; max-height: none; }
+  .mode-switch { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 820px) {
   .upload-stage { grid-template-columns: 1fr; }
   .upload-side { position: static; }
+  .fg-narrow { flex: 1 1 100%; }
 }
 </style>

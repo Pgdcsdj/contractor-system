@@ -214,25 +214,43 @@ router.post('/packages', async (req, res) => {
   }
 })
 
-// GET /api/contractor-docs/packages —— 查包（建/选：按单位+关键字）
+// GET /api/contractor-docs/packages —— 查包（按单位筛选；供公开端"修改已有项目"下拉按单位联动）
 router.get('/packages', async (req, res) => {
   try {
     const { unit_id = '', keyword = '' } = req.query
     const where = []
     const params = []
     if (unit_id) { where.push('p.unit_id = ?'); params.push(unit_id) }
-    if (keyword) { where.push('p.project_name LIKE ?'); params.push(`%${keyword}%`) }
+    if (keyword) {
+      where.push('(p.project_name LIKE ? OR u.unit_name LIKE ? OR p.unit_name LIKE ? OR p.reporter_name LIKE ?)')
+      const like = `%${keyword}%`
+      params.push(like, like, like, like)
+    }
     const sql = `SELECT p.id, p.project_name,
                         COALESCE(NULLIF(u.unit_name, ''), p.unit_name) AS unit_name,
                         COALESCE(NULLIF(u.short_name, ''), p.unit_short, p.unit_name) AS unit_short,
                         p.reporter_name, p.status, p.updated_at,
-                        (SELECT COUNT(*) FROM t_doc_file f WHERE f.package_id = p.id) AS file_count
+                        (SELECT COUNT(*) FROM t_doc_file f WHERE f.package_id = p.id) AS file_count,
+                        (SELECT COUNT(*) FROM t_doc_file f JOIN t_doc_catalog c ON f.catalog_id = c.id
+                         WHERE f.package_id = p.id AND c.required_type = 'gate' AND c.is_active = 1) AS gate_done,
+                        (SELECT COUNT(*) FROM t_doc_file f JOIN t_doc_catalog c ON f.catalog_id = c.id
+                         WHERE f.package_id = p.id AND c.required_type = 'dynamic' AND c.is_active = 1) AS dyn_done
                  FROM t_doc_package p
                  LEFT JOIN t_contractor_unit u ON u.id = p.unit_id
                  ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-                 ORDER BY p.updated_at DESC LIMIT 50`
+                 ORDER BY p.updated_at DESC LIMIT 100`
     const [rows] = await pool.execute(sql, params)
-    res.json({ success: true, data: rows })
+    // 齐全度分母（前端下拉里直接显示 "5/13 门槛" —— 选项目前就能看出谁还缺开工资料）
+    const [tot] = await pool.execute(
+      `SELECT SUM(required_type='gate' AND is_active=1) AS gate_total,
+              SUM(required_type='dynamic' AND is_active=1) AS dyn_total
+       FROM t_doc_catalog`
+    )
+    res.json({
+      success: true,
+      data: rows,
+      totals: { gate_total: tot[0].gate_total || 0, dyn_total: tot[0].dyn_total || 0 },
+    })
   } catch (e) {
     console.error('[contractorDoc] list packages', e.message)
     res.status(500).json({ success: false, error: '查询项目失败' })
