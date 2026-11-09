@@ -707,4 +707,171 @@ router.get('/admin/export', requireRole('admin', 'superadmin'), async (req, res)
   }
 })
 
+// ════════════════════════════════════════════════════════════════════════════
+//  开工资料补录提醒（管理员在台账里一键提醒 → 安全员工作台待办）
+// ════════════════════════════════════════════════════════════════════════════
+
+// 计算某项目"未录入"的资料项（口径与前端弹窗一致：目录启用项 − 已上传的 catalog_id）
+async function loadMissingItems(packageId) {
+  const [cats] = await pool.execute(
+    `SELECT id, category, item_name, freq, required_type
+       FROM t_doc_catalog WHERE is_active = 1
+      ORDER BY category, sort_order, id`
+  )
+  const [fs] = await pool.execute(
+    'SELECT DISTINCT catalog_id FROM t_doc_file WHERE package_id = ?', [packageId]
+  )
+  const done = new Set(fs.map((r) => Number(r.catalog_id)))
+  return cats.filter((c) => !done.has(Number(c.id)))
+}
+
+async function nameOfAdmin(id) {
+  if (!id) return ''
+  const [r] = await pool.execute('SELECT real_name FROM t_admin WHERE id = ? LIMIT 1', [id])
+  return r.length ? (r[0].real_name || '') : ''
+}
+
+// POST /api/contractor-docs/admin/packages/:id/remind —— 管理员发起补录提醒
+router.post('/admin/packages/:id/remind', requireRole('admin', 'superadmin'), async (req, res) => {
+  try {
+    const id = Number(req.params.id)
+    const message = String(req.body?.message || '').slice(0, 500)
+    const [pk] = await pool.execute(
+      `SELECT p.id, p.unit_id, p.project_name,
+              COALESCE(NULLIF(u.unit_name, ''), p.unit_name) AS unit_name
+         FROM t_doc_package p LEFT JOIN t_contractor_unit u ON u.id = p.unit_id
+        WHERE p.id = ?`, [id]
+    )
+    if (!pk.length) return res.status(404).json({ success: false, error: '项目不存在' })
+    const pkg = pk[0]
+
+    const missing = await loadMissingItems(id)
+    if (!missing.length) {
+      return res.json({
+        success: true, data: { created: false, missing_total: 0, missing_gate: 0 },
+        message: '该项目的开工资料已齐全，无需提醒',
+      })
+    }
+    const gate = missing.filter((m) => m.required_type === 'gate').length
+    const detail = JSON.stringify(missing.map((m) => ({
+      category: m.category, item_name: m.item_name, freq: m.freq, required_type: m.required_type,
+    })))
+    const creatorName = await nameOfAdmin(req.admin?.id)
+
+    // 同一项目已有待处理提醒 → 刷新缺项内容，不重复堆记录（避免反复点提醒刷屏）
+    const [ex] = await pool.execute(
+      "SELECT id FROM t_doc_reminder WHERE package_id = ? AND status = 'pending' LIMIT 1", [id]
+    )
+    let reminderId
+    if (ex.length) {
+      reminderId = ex[0].id
+      await pool.execute(
+        `UPDATE t_doc_reminder
+            SET unit_id = ?, unit_name = ?, project_name = ?, missing_total = ?, missing_gate = ?,
+                missing_detail = ?, message = ?, created_by = ?, created_by_name = ?, created_at = NOW()
+          WHERE id = ?`,
+        [pkg.unit_id, pkg.unit_name, pkg.project_name, missing.length, gate, detail, message,
+          req.admin?.id || null, creatorName, reminderId]
+      )
+    } else {
+      const [r] = await pool.execute(
+        `INSERT INTO t_doc_reminder
+           (package_id, unit_id, unit_name, project_name, missing_total, missing_gate,
+            missing_detail, message, status, created_by, created_by_name)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+        [id, pkg.unit_id, pkg.unit_name, pkg.project_name, missing.length, gate, detail, message,
+          req.admin?.id || null, creatorName]
+      )
+      reminderId = r.insertId
+    }
+    res.json({
+      success: true,
+      data: { id: reminderId, created: !ex.length, missing_total: missing.length, missing_gate: gate },
+      message: `已提醒安全员：${pkg.unit_name} · ${pkg.project_name} 还缺 ${missing.length} 项资料（必备 ${gate} 项）`,
+    })
+  } catch (e) {
+    console.error('[contractorDoc] remind', e.message)
+    res.status(500).json({ success: false, error: '发起提醒失败' })
+  }
+})
+
+// GET /api/contractor-docs/reminders —— 提醒列表（管理端追踪 / 安全员工作台待办）
+router.get('/reminders', requireRole('admin', 'superadmin', 'safety'), async (req, res) => {
+  try {
+    const { status = '' } = req.query
+    const where = []
+    const params = []
+    if (status) { where.push('r.status = ?'); params.push(status) }
+    const [rows] = await pool.execute(
+      `SELECT r.* FROM t_doc_reminder r
+       ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+       ORDER BY CASE WHEN r.status = 'pending' THEN 0 ELSE 1 END, r.created_at DESC
+       LIMIT 300`,
+      params
+    )
+    const list = rows.map((r) => {
+      let detail = []
+      try { detail = JSON.parse(r.missing_detail || '[]') } catch { detail = [] }
+      return { ...r, missing_detail: detail }
+    })
+    const [cnt] = await pool.execute(
+      "SELECT SUM(status = 'pending') AS pending, SUM(status = 'done') AS done FROM t_doc_reminder"
+    )
+    res.json({
+      success: true,
+      data: list,
+      stats: { pending: Number(cnt[0].pending) || 0, done: Number(cnt[0].done) || 0 },
+    })
+  } catch (e) {
+    console.error('[contractorDoc] reminders list', e.message)
+    res.status(500).json({ success: false, error: '查询提醒失败' })
+  }
+})
+
+// GET /api/contractor-docs/reminders/count —— 待处理数量（侧栏角标 / 工作台卡片）
+router.get('/reminders/count', requireRole('admin', 'superadmin', 'safety'), async (req, res) => {
+  try {
+    const [r] = await pool.execute("SELECT COUNT(*) AS c FROM t_doc_reminder WHERE status = 'pending'")
+    res.json({ success: true, data: { pending: Number(r[0].c) || 0 } })
+  } catch (e) {
+    res.status(500).json({ success: false, error: '查询失败' })
+  }
+})
+
+// PATCH /api/contractor-docs/reminders/:id —— 安全员处理（标记已补录 / 撤回为待处理）
+router.patch('/reminders/:id', requireRole('admin', 'superadmin', 'safety'), async (req, res) => {
+  try {
+    const id = Number(req.params.id)
+    const { status, note } = req.body || {}
+    const [rows] = await pool.execute('SELECT id FROM t_doc_reminder WHERE id = ?', [id])
+    if (!rows.length) return res.status(404).json({ success: false, error: '提醒不存在' })
+
+    if (status !== undefined && !['pending', 'done'].includes(status)) {
+      return res.status(400).json({ success: false, error: '状态取值非法' })
+    }
+    const handlerName = await nameOfAdmin(req.admin?.id)
+    if (status === 'done') {
+      await pool.execute(
+        `UPDATE t_doc_reminder
+            SET status = 'done', handled_by = ?, handled_by_name = ?, handled_at = NOW(),
+                handle_note = COALESCE(?, handle_note)
+          WHERE id = ?`,
+        [req.admin?.id || null, handlerName, note !== undefined ? String(note).slice(0, 500) : null, id]
+      )
+    } else if (status === 'pending') {
+      await pool.execute(
+        `UPDATE t_doc_reminder
+            SET status = 'pending', handled_by = NULL, handled_by_name = '', handled_at = NULL
+          WHERE id = ?`, [id]
+      )
+    } else if (note !== undefined) {
+      await pool.execute('UPDATE t_doc_reminder SET handle_note = ? WHERE id = ?', [String(note).slice(0, 500), id])
+    }
+    res.json({ success: true })
+  } catch (e) {
+    console.error('[contractorDoc] reminder patch', e.message)
+    res.status(500).json({ success: false, error: '处理失败' })
+  }
+})
+
 module.exports = router

@@ -652,6 +652,31 @@ async function autoMigrate() {
         KEY idx_catalog (catalog_id)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='承包商开工资料-附件'
     `)
+    // 8.2.1 开工资料补录提醒（管理员在台账"查看资料"里一键提醒 → 安全员工作台待办）
+    await ensureTable(`
+      CREATE TABLE IF NOT EXISTS t_doc_reminder (
+        id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        package_id      INT UNSIGNED NOT NULL COMMENT 't_doc_package.id',
+        unit_id         INT UNSIGNED DEFAULT NULL,
+        unit_name       VARCHAR(100) NOT NULL DEFAULT '',
+        project_name    VARCHAR(150) NOT NULL DEFAULT '',
+        missing_total   SMALLINT     NOT NULL DEFAULT 0 COMMENT '未录入资料项数',
+        missing_gate    SMALLINT     NOT NULL DEFAULT 0 COMMENT '其中开工门槛（否决项）项数',
+        missing_detail  TEXT         COMMENT 'JSON：[{category,item_name,freq,required_type}]',
+        message         VARCHAR(500) NOT NULL DEFAULT '' COMMENT '提醒附言',
+        status          VARCHAR(16)  NOT NULL DEFAULT 'pending' COMMENT 'pending 待处理 / done 已处理',
+        created_by      INT UNSIGNED DEFAULT NULL,
+        created_by_name VARCHAR(50)  NOT NULL DEFAULT '',
+        created_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        handled_by      INT UNSIGNED DEFAULT NULL,
+        handled_by_name VARCHAR(50)  NOT NULL DEFAULT '',
+        handled_at      DATETIME     DEFAULT NULL,
+        handle_note     VARCHAR(500) NOT NULL DEFAULT '',
+        KEY idx_status (status),
+        KEY idx_package (package_id),
+        KEY idx_created (created_at)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='承包商开工资料补录提醒（管理员→安全员）'
+    `)
     // 8.3 种子目录（仅首次空表时写入，幂等）
     const [cc] = await pool.execute('SELECT COUNT(*) AS c FROM t_doc_catalog')
     if (cc[0].c === 0) {

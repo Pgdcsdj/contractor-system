@@ -71,6 +71,11 @@ const routes = [
         name: 'SafetyRectify',
         component: () => import('@/views/safety/SafetyRectifyList.vue'),
       },
+      {
+        path: 'doc-reminders',
+        name: 'SafetyDocReminders',
+        component: () => import('@/views/safety/SafetyDocReminderPage.vue'),
+      },
     ],
   },
   // ── 承包商开工资料上报（需求 C，公开免登录）──────────────────────────────

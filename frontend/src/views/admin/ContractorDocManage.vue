@@ -109,23 +109,86 @@
       </div>
     </section>
 
-    <!-- 查看文件弹窗 -->
+    <!-- 查看文件弹窗：分「已录入 / 未录入」两块 -->
     <div v-if="showFiles" class="modal-overlay" @click.self="showFiles = false">
       <div class="modal modal-lg">
+        <div class="modal-scroll">
         <h3>资料明细 · {{ curPkg?.unit_name }}</h3>
         <div class="pkg-sub">{{ curPkg?.project_name }}</div>
-        <div class="file-list">
-          <div v-for="f in fileRows" :key="f.id" class="file-row">
-            <span class="fr-cat">{{ f.category }}</span>
-            <span class="fr-name">{{ f.catalog_name }}</span>
-            <a class="fr-link" :href="f.cos_url" target="_blank" rel="noopener"><Icon name="file" :size="14" /> {{ f.sys_name }}</a>
-            <span class="fr-meta">录入：{{ f.uploader_name }} · {{ fmt(f.uploaded_at) }}</span>
-            <button class="mini-btn" @click="pickFileReplace(f)"><Icon name="loop" :size="13" /> 换</button>
-            <button class="mini-btn" @click="openEditFile(f)"><Icon name="pencil" :size="13" /> 改</button>
-            <button class="mini-btn danger" @click="delFile(f)"><Icon name="x" :size="13" /> 删</button>
+
+        <!-- 汇总条 -->
+        <div class="msum">
+          <div class="msum-item ok">
+            <span class="msum-n">{{ fileRows.length }}</span>
+            <span class="msum-l">已录入</span>
           </div>
-          <div v-if="!fileRows.length" class="empty-mini">该项目暂无上传文件</div>
+          <div class="msum-item" :class="missingItems.length ? 'bad' : 'ok'">
+            <span class="msum-n">{{ missingItems.length }}</span>
+            <span class="msum-l">未录入<template v-if="missingGateCount">（必备 {{ missingGateCount }}）</template></span>
+          </div>
+          <div class="msum-bar">
+            <div class="msum-bar-in" :style="{ width: donePercent + '%' }" :class="missingItems.length ? 'warn' : 'ok'"></div>
+          </div>
+          <div class="msum-pct">{{ donePercent }}%</div>
         </div>
+
+        <div v-if="remindTip" class="remind-tip" :class="remindTipType">{{ remindTip }}</div>
+
+        <!-- ① 已录入资料 -->
+        <div class="blk">
+          <div class="blk-head done-head">
+            <span class="blk-ico">✔</span> 已录入资料
+            <span class="blk-n">{{ fileRows.length }}</span>
+            <span class="blk-hint">可下载 / 替换 / 改资料项 / 删除</span>
+          </div>
+          <div class="file-list">
+            <div v-for="f in fileRows" :key="f.id" class="file-row">
+              <div class="fr-main">
+                <span class="fr-cat">{{ f.category }}</span>
+                <span class="fr-name">{{ f.catalog_name }}</span>
+                <a class="fr-link" :href="f.cos_url" target="_blank" rel="noopener"><Icon name="file" :size="14" /> {{ f.sys_name }}</a>
+              </div>
+              <div class="fr-side">
+                <span class="fr-meta">录入：{{ f.uploader_name }} · {{ fmt(f.uploaded_at) }}</span>
+                <button class="mini-btn" @click="pickFileReplace(f)"><Icon name="loop" :size="13" /> 换</button>
+                <button class="mini-btn" @click="openEditFile(f)"><Icon name="pencil" :size="13" /> 改</button>
+                <button class="mini-btn danger" @click="delFile(f)"><Icon name="x" :size="13" /> 删</button>
+              </div>
+            </div>
+            <div v-if="!fileRows.length" class="empty-mini">该项目还没有上传任何资料</div>
+          </div>
+        </div>
+
+        <!-- ② 未录入资料 -->
+        <div class="blk">
+          <div class="blk-head miss-head">
+            <span class="blk-ico">✖</span> 未录入资料
+            <span class="blk-n bad">{{ missingItems.length }}</span>
+            <span class="blk-hint">带 <span class="star">★</span> 为开工门槛（否决项），缺失不得开工</span>
+          </div>
+          <div class="miss-list">
+            <div v-for="g in missingGroups" :key="g.category" class="mg">
+              <div class="mg-cat">
+                {{ g.category }}
+                <span v-if="g.gateCount" class="mg-gate">★ 必备缺 {{ g.gateCount }}</span>
+              </div>
+              <div v-for="m in g.items" :key="m.id" class="miss-row" :class="{ gate: m.required_type === 'gate' }">
+                <span class="star" v-if="m.required_type === 'gate'">★</span>
+                <span class="mr-name">{{ m.item_name }}</span>
+                <span class="mr-tags">
+                  <span v-if="m.freq" class="tag tag-freq">{{ m.freq }}</span>
+                  <span :class="['tag', m.required_type === 'gate' ? 'tag-gate' : 'tag-dyn']">
+                    {{ m.required_type === 'gate' ? '开工门槛' : '动态维护' }}
+                  </span>
+                </span>
+              </div>
+            </div>
+            <div v-if="!missingItems.length" class="empty-mini">
+              <span class="ok-mark">✔</span> 目录内资料已全部录入，无需补录
+            </div>
+          </div>
+        </div>
+
         <div class="add-bar">
           <select v-model="addFrm.catalog_id" class="form-input add-select">
             <option value="">选择资料项后增补…</option>
@@ -133,7 +196,21 @@
           </select>
           <button class="mini-btn primary" :disabled="!addFrm.catalog_id" @click="pickFileAdd">＋ 增补文件</button>
         </div>
-        <div class="modal-actions"><button class="btn btn-outline" @click="showFiles = false">关闭</button></div>
+        </div><!-- /modal-scroll -->
+
+        <div class="modal-actions space">
+          <button
+            class="btn btn-remind"
+            :disabled="!missingItems.length || reminding"
+            @click="sendRemind"
+            :title="missingItems.length ? '提醒安全员到工作台跟进补录' : '资料已齐全，无需提醒'"
+          >
+            <Icon v-if="reminding" name="loop" :size="15" class="spin" />
+            <Icon v-else name="bell" :size="15" />
+            {{ reminding ? '发送中…' : `提醒安全员补录${missingItems.length ? `（缺 ${missingItems.length} 项）` : ''}` }}
+          </button>
+          <button class="btn btn-outline" @click="showFiles = false">关闭</button>
+        </div>
       </div>
     </div>
 
@@ -265,6 +342,62 @@ const pkgFrm = ref({ id: null, unit_id: '', project_name: '', reporter_name: '',
 const activeCount = computed(() => catalogAll.value.filter(c => c.is_active).length)
 const activeCatalogs = computed(() => catalogAll.value.filter(c => c.is_active))
 
+// ── 弹窗「已录入 / 未录入」两块 ─────────────────────────────────────────────
+// 未录入 = 目录启用项 − 本项目已上传的 catalog_id（口径与后端 loadMissingItems 一致）
+const uploadedIds = computed(() => {
+  const s = new Set()
+  for (const f of fileRows.value) s.add(Number(f.catalog_id))
+  return s
+})
+const missingItems = computed(() =>
+  catalogAll.value
+    .filter(c => c.is_active && !uploadedIds.value.has(Number(c.id)))
+    .sort((a, b) => (a.category === b.category ? (a.sort_order - b.sort_order) : String(a.category).localeCompare(String(b.category), 'zh')))
+)
+const missingGateCount = computed(() => missingItems.value.filter(m => m.required_type === 'gate').length)
+const missingGroups = computed(() => {
+  const map = new Map()
+  for (const m of missingItems.value) {
+    if (!map.has(m.category)) map.set(m.category, { category: m.category, items: [], gateCount: 0 })
+    const g = map.get(m.category)
+    g.items.push(m)
+    if (m.required_type === 'gate') g.gateCount++
+  }
+  return [...map.values()]
+})
+const totalCatalog = computed(() => activeCatalogs.value.length)
+const donePercent = computed(() => {
+  const t = totalCatalog.value
+  return t ? Math.round((fileRows.value.length / t) * 100) : 0
+})
+
+const reminding = ref(false)
+const remindTip = ref('')
+const remindTipType = ref('ok')
+let remindTimer = null
+function flashTip(msg, type = 'ok') {
+  remindTip.value = msg
+  remindTipType.value = type
+  clearTimeout(remindTimer)
+  remindTimer = setTimeout(() => { remindTip.value = '' }, 6000)
+}
+// 提醒安全员补录：后端按当前缺项生成/刷新一条待办，安全员在工作台看到并跟进
+async function sendRemind() {
+  if (!curPkg.value || !missingItems.value.length) return
+  reminding.value = true
+  try {
+    const res = await request.post(`/api/contractor-docs/admin/packages/${curPkg.value.id}/remind`, {
+      message: `管理端核查：${curPkg.value.unit_name} · ${curPkg.value.project_name} 尚有 ${missingItems.value.length} 项资料未录入（必备 ${missingGateCount.value} 项），请督促承包商补齐。`,
+    })
+    const d = res.data?.data || {}
+    flashTip(res.data?.message || `已提醒安全员（缺 ${d.missing_total} 项）`, 'ok')
+  } catch (e) {
+    flashTip('提醒失败：' + (e.response?.data?.error || e.message), 'bad')
+  } finally {
+    reminding.value = false
+  }
+}
+
 function fmt(iso) {
   if (!iso) return '—'
   const d = new Date(iso)
@@ -337,6 +470,7 @@ async function refreshLedgerAfterEdit() {
 async function viewFiles(r) {
   curPkg.value = r
   addFrm.value = { catalog_id: '' }
+  remindTip.value = ''
   await refreshFiles()
   showFiles.value = true
 }
@@ -586,8 +720,11 @@ onMounted(() => { loadUnits(); fetchLedger(); fetchCatalog() })
 .action-link.danger:hover { background: var(--c-danger-bg); }
 
 .modal-overlay { position: fixed; inset: 0; background: rgba(10,19,34,.55); backdrop-filter: blur(3px); z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 20px; }
-.modal { background: var(--c-surface); border-radius: var(--r-lg); padding: 26px; width: 100%; max-width: 460px; box-shadow: var(--shadow-lg); }
-.modal-lg { max-width: 640px; }
+.modal { background: var(--c-surface); border-radius: var(--r-lg); padding: 26px; width: 100%; max-width: 460px; box-shadow: var(--shadow-lg); max-height: 90vh; overflow-y: auto; }
+/* 查看资料弹窗：头部内容可滚，底部「提醒安全员」操作栏固定，避免按钮被滚出视野 */
+.modal-lg { max-width: 800px; padding: 0; display: flex; flex-direction: column; max-height: 88vh; overflow: hidden; }
+.modal-lg .modal-scroll { flex: 1; overflow-y: auto; padding: 24px 26px 4px; }
+.modal-lg .modal-actions.space { flex-shrink: 0; margin: 0; padding: 14px 26px; border-top: 1px solid var(--c-border); background: var(--c-surface); justify-content: space-between; }
 .modal h3 { font-size: 17px; font-weight: 700; color: var(--c-text); margin-bottom: 16px; }
 .pkg-sub { font-size: 13px; color: var(--c-text-2); line-height: 1.6; margin: -8px 0 14px; }
 textarea.form-input { resize: vertical; line-height: 1.6; }
@@ -597,8 +734,11 @@ textarea.form-input { resize: vertical; line-height: 1.6; }
 .form-group label { font-size: 13px; color: var(--c-text-2); font-weight: 600; }
 .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 18px; }
 
-.file-list { display: flex; flex-direction: column; gap: 8px; max-height: 420px; overflow-y: auto; margin-top: 4px; }
+/* 两块的滚动交给外层 .modal-scroll 统一处理，内层不再设 max-height，避免双重滚动条把行切一半 */
+.file-list { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
 .file-row { display: flex; align-items: center; gap: 10px; padding: 9px 12px; background: var(--c-surface-2); border-radius: var(--r); flex-wrap: wrap; }
+.fr-main { display: flex; align-items: center; gap: 8px; flex: 1 1 300px; min-width: 0; flex-wrap: wrap; }
+.fr-side { display: flex; align-items: center; gap: 5px; flex-shrink: 0; flex-wrap: wrap; }
 .fr-cat { font-size: 12px; color: var(--c-blue-700); font-weight: 600; background: var(--c-blue-50); padding: 2px 8px; border-radius: 20px; }
 .fr-name { font-size: 13px; color: var(--c-text); max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fr-link { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--c-blue-600); text-decoration: none; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -613,6 +753,54 @@ textarea.form-input { resize: vertical; line-height: 1.6; }
 .add-bar { display: flex; gap: 8px; align-items: center; margin-top: 12px; padding: 10px 12px; background: var(--c-surface-2); border-radius: var(--r); }
 .add-select { flex: 1; min-width: 0; }
 .empty-mini { font-size: 13px; color: var(--c-text-3); text-align: center; padding: 24px; }
+
+/* ── 弹窗：已录入 / 未录入 两块 ── */
+.star { color: #e0342b; font-weight: 900; margin-right: 3px; }
+.ok-mark { color: var(--c-success); font-weight: 900; margin-right: 4px; }
+
+.msum { display: flex; align-items: center; gap: 14px; padding: 12px 14px; background: var(--c-surface-2); border-radius: var(--r); margin-bottom: 14px; flex-wrap: wrap; }
+.msum-item { display: flex; align-items: baseline; gap: 5px; }
+.msum-n { font-size: 20px; font-weight: 800; line-height: 1; }
+.msum-item.ok .msum-n { color: var(--c-success); }
+.msum-item.bad .msum-n { color: #e0342b; }
+.msum-l { font-size: 12.5px; color: var(--c-text-2); }
+.msum-bar { flex: 1; min-width: 120px; height: 8px; background: #e6ebf2; border-radius: 20px; overflow: hidden; }
+.msum-bar-in { height: 100%; border-radius: 20px; transition: width .3s ease; }
+.msum-bar-in.ok { background: var(--c-success); }
+.msum-bar-in.warn { background: #f0a03c; }
+.msum-pct { font-size: 13px; font-weight: 700; color: var(--c-text-2); min-width: 38px; text-align: right; }
+
+.remind-tip { font-size: 13px; padding: 9px 13px; border-radius: var(--r-sm); margin-bottom: 12px; }
+.remind-tip.ok { background: var(--c-success-bg); color: var(--c-success); }
+.remind-tip.bad { background: var(--c-danger-bg); color: var(--c-danger); }
+
+.blk { margin-bottom: 14px; }
+.blk-head { display: flex; align-items: center; gap: 8px; font-size: 13.5px; font-weight: 700; color: var(--c-text); padding: 8px 2px 8px; border-bottom: 2px solid var(--c-border); flex-wrap: wrap; }
+.blk-ico { font-weight: 900; }
+.done-head .blk-ico { color: var(--c-success); }
+.miss-head .blk-ico { color: #e0342b; }
+.blk-n { font-size: 12px; font-weight: 700; padding: 1px 8px; border-radius: 20px; background: var(--c-surface-2); color: var(--c-text-2); }
+.blk-n.bad { background: #fde8e8; color: #c0392b; }
+.blk-hint { font-size: 11.5px; font-weight: 400; color: var(--c-text-3); margin-left: auto; }
+
+.miss-list { padding-top: 8px; }
+.mg { margin-bottom: 10px; }
+.mg-cat { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 700; color: var(--c-blue-700); padding: 4px 0; }
+.mg-gate { font-size: 11px; font-weight: 700; color: #c0392b; background: #fde8e8; padding: 1px 7px; border-radius: 20px; }
+.miss-row { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: var(--r-sm); background: #f6f8fb; margin-bottom: 5px; font-size: 13px; }
+.miss-row.gate { background: #fff4f3; border-left: 3px solid #e0342b; }
+.mr-name { color: var(--c-text); flex: 1; min-width: 0; }
+.miss-row.gate .mr-name { font-weight: 700; color: #b02a22; }
+.mr-tags { display: flex; gap: 5px; flex-shrink: 0; }
+.tag { font-size: 11px; padding: 2px 7px; border-radius: 20px; font-weight: 600; }
+.tag-freq { background: #e9eef5; color: var(--c-text-2); }
+.tag-gate { background: #fde8e8; color: #c0392b; }
+.tag-dyn { background: #e8f1fd; color: #2563eb; }
+
+.modal-actions.space { justify-content: space-between; }
+.btn-remind { background: #e8890c; color: #fff; }
+.btn-remind:hover:not(:disabled) { background: #cf7a09; }
+.btn-remind:disabled { background: var(--c-surface-2); color: var(--c-text-3); }
 .spin { animation: spin .9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg) } }
 </style>

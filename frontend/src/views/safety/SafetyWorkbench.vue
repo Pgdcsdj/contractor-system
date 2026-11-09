@@ -38,6 +38,20 @@
           <p>录入整改完成资料与照片</p>
         </div>
       </div>
+      <div class="card entry-card" @click="$router.push('/safety/doc-reminders')">
+        <div class="entry-icon remind-icon">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 01-3.4 0"/>
+          </svg>
+        </div>
+        <div class="entry-text">
+          <h3>
+            开工资料补录提醒
+            <span v-if="pendingReminders > 0" class="entry-badge">{{ pendingReminders }}</span>
+          </h3>
+          <p>{{ pendingReminders > 0 ? `有 ${pendingReminders} 个项目开工资料缺项待跟进` : '管理端发起的资料补录待办' }}</p>
+        </div>
+      </div>
     </div>
 
     <!-- 我的隐患列表 -->
@@ -396,6 +410,7 @@
 <script setup>
 import { ref, reactive, computed, watch, onMounted } from 'vue'
 import { useAdminStore } from '@/stores/admin'
+import { request } from '@/utils/request'
 import {
   getHazards,
   deleteHazard,
@@ -877,10 +892,22 @@ async function submitNewItem() {
 
 watch(page, fetchList)
 
+// 开工资料补录提醒待办数（管理端在「承包商开工资料」台账一键提醒后产生）
+const pendingReminders = ref(0)
+async function loadReminderCount() {
+  try {
+    const res = await request.get('/api/contractor-docs/reminders/count')
+    pendingReminders.value = Number(res.data?.data?.pending) || 0
+  } catch {
+    pendingReminders.value = 0
+  }
+}
+
 onMounted(() => {
   fetchList()
   loadEditOptions()
   loadUnitOptions()
+  loadReminderCount()
 })
 </script>
 
@@ -905,7 +932,7 @@ onMounted(() => {
 .stat-label { font-size: 12px; color: rgba(255,255,255,.65); }
 
 .quick-entries {
-  display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;
   margin: 16px 12px 20px;
 }
 .entry-card {
@@ -919,6 +946,13 @@ onMounted(() => {
 }
 .hazard-icon { background: linear-gradient(135deg, var(--c-blue-500), var(--c-blue-700)); box-shadow: 0 6px 16px rgba(29,111,184,.3); }
 .rectify-icon { background: linear-gradient(135deg, var(--c-teal-600), #0b6b61); box-shadow: 0 6px 16px rgba(14,140,127,.3); }
+.remind-icon { background: linear-gradient(135deg, #f59e0b, #d97706); box-shadow: 0 6px 16px rgba(217,119,6,.3); }
+.entry-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 20px; height: 20px; padding: 0 6px; margin-left: 6px;
+  border-radius: 10px; background: #e0342b; color: #fff;
+  font-size: 11.5px; font-weight: 800; vertical-align: middle;
+}
 .entry-text h3 { font-size: 17px; font-weight: 700; color: var(--c-text); }
 .entry-text p { font-size: 13px; color: var(--c-text-2); margin-top: 3px; }
 
