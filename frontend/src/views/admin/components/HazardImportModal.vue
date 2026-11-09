@@ -43,7 +43,7 @@
           style="display: none"
           @change="handleFileChange"
         />
-        <p v-if="parseError && !missingCols.length" class="parse-error">{{ parseError }}</p>
+        <p v-if="parseError && !missingCols.length && !unitMismatches.length" class="parse-error">{{ parseError }}</p>
 
         <!-- 缺少必填列（目前为「场所」）：整份文件被拒绝，给出模板下载与重传指引 -->
         <div v-if="missingCols.length" class="missing-box">
@@ -56,6 +56,28 @@
           <p class="missing-hint">
             请按模板补齐「<b>{{ missingCols.join('、') }}</b>」列（每行填具体场所/点位，如「马10脱水井场」），保存后重新上传。
           </p>
+        </div>
+
+        <!-- 责任单位与网格化管理库不一致：整份文件被拒绝，逐行给出改正建议 -->
+        <div v-if="unitMismatches.length" class="unit-box">
+          <div class="unit-title">❌ 导入失败：{{ unitMismatches.length }} 行责任单位与网格化管理库不一致</div>
+          <p class="unit-text">请按下列建议修改表格中的「责任单位」列，保存后重新上传。也可到「承包商准入 → 网格化管理」查看全部在册单位全称。</p>
+          <ul class="unit-list">
+            <li v-for="(m, i) in unitMismatches" :key="i">
+              <span class="unit-row-no">{{ m.sheetName || '' }}{{ m.rowNo ? ' 第 ' + m.rowNo + ' 行' : '' }}</span>
+              责任单位「<b>{{ m.raw }}</b>」
+              <template v-if="m.suggests && m.suggests.length">
+                → 建议改为 <b>{{ m.suggests.join(' / ') }}</b>
+              </template>
+              <template v-else>
+                → 网格库无相似单位，请人工确认
+              </template>
+            </li>
+          </ul>
+          <div class="missing-actions">
+            <button class="btn btn-primary" type="button" @click="downloadTemplate">⬇️ 下载最新标准模板</button>
+            <button class="btn btn-ghost" type="button" @click="triggerFile">重新选择文件</button>
+          </div>
         </div>
 
         <!-- .xls（Excel 97-2003）自动转换提示：明确告知截图不会进系统 -->
@@ -286,6 +308,8 @@ const confirming = ref(false)
 const parseError = ref('')
 // 缺少的必填列（后端 400 返回 code=MISSING_LOCATION 时填充）
 const missingCols = ref([])
+// 责任单位与网格化管理库不一致的明细（后端 400 code=UNIT_UNMATCH 时填充）
+const unitMismatches = ref([])
 const previewData = ref(null)
 const reportData = ref(null)
 const filterTab = ref('all')
@@ -492,6 +516,7 @@ async function handleParse() {
   importing.value = true
   parseError.value = ''
   missingCols.value = []
+  unitMismatches.value = []
   try {
     // 视频督查 .xlsx：先压缩再上传；压缩后结果缓存到 compressedFileRef（两次上传同一字节）
     const file = await ensureCompressed()
@@ -506,9 +531,16 @@ async function handleParse() {
   } catch (e) {
     const resp = e.response?.data || {}
     parseError.value = resp.error || '解析失败，请检查文件格式'
-    missingCols.value = Array.isArray(resp.data?.missing)
-      ? resp.data.missing
-      : (resp.code === 'MISSING_LOCATION' ? ['场所'] : [])
+    if (resp.code === 'UNIT_UNMATCH') {
+      // 责任单位与网格化管理库不一致：逐行给出改正建议
+      unitMismatches.value = Array.isArray(resp.data?.mismatches) ? resp.data.mismatches : []
+      missingCols.value = []
+    } else {
+      unitMismatches.value = []
+      missingCols.value = Array.isArray(resp.data?.missing)
+        ? resp.data.missing
+        : (resp.code === 'MISSING_LOCATION' ? ['场所'] : [])
+    }
   } finally {
     importing.value = false
   }
@@ -534,6 +566,14 @@ async function handleConfirm() {
     if (resp.code === 'MISSING_LOCATION') {
       parseError.value = resp.error || '导入失败：文件缺少「场所」列'
       missingCols.value = Array.isArray(inner.missing) ? inner.missing : ['场所']
+      unitMismatches.value = []
+      step.value = 'upload'
+      return
+    }
+    if (resp.code === 'UNIT_UNMATCH') {
+      parseError.value = resp.error || '导入失败：责任单位与网格化管理库不一致'
+      unitMismatches.value = Array.isArray(inner.mismatches) ? inner.mismatches : []
+      missingCols.value = []
       step.value = 'upload'
       return
     }
@@ -594,6 +634,14 @@ async function downloadTemplate() {
 .missing-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
 .missing-actions .btn { width: auto; flex: 0 0 auto; padding-left: 16px; padding-right: 16px; }
 .missing-hint { font-size: 12.5px; line-height: 1.7; margin: 0; color: #a33; }
+
+/* 责任单位与网格化管理库不一致（整份文件被拒绝） */
+.unit-box { margin: 4px 0 16px; padding: 14px 16px; border-radius: 10px; background: #fff7ed; border: 1px solid #fed7aa; color: #7c2d12; }
+.unit-title { font-size: 14px; font-weight: 700; margin-bottom: 6px; }
+.unit-text { font-size: 13px; line-height: 1.7; margin: 0 0 10px; color: #9a3412; }
+.unit-list { margin: 0 0 12px; padding-left: 18px; max-height: 240px; overflow-y: auto; font-size: 12.5px; line-height: 1.9; color: #7c2d12; }
+.unit-list b { color: #c2410c; }
+.unit-row-no { display: inline-block; min-width: 96px; color: #9a3412; }
 .parse-error { color: var(--danger); font-size: 13px; margin: 8px 0; }
 
 /* 导入类型选择 */

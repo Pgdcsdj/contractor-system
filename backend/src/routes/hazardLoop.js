@@ -258,6 +258,15 @@ router.post('/import', requireAdminOrSafety, importUpload.single('file'), async 
         data: { missing: err.missing || ['场所'], templateUrl: err.templateUrl || '/api/hazards/import/template' },
       })
     }
+    // 责任单位比对门禁：与网格化管理库不一致，整份文件拒绝，回传逐行明细
+    if (err && err.code === 'UNIT_UNMATCH') {
+      return res.status(400).json({
+        success: false,
+        code: 'UNIT_UNMATCH',
+        error: err.message,
+        data: { mismatches: err.mismatches || [], templateUrl: err.templateUrl || '/api/hazards/import/template' },
+      })
+    }
     res.status(500).json({ success: false, error: '导入预览失败：' + (err && err.message ? err.message : '未知错误') })
   }
 })
@@ -298,6 +307,16 @@ router.post('/import/confirm', requireAdminOrSafety, importUpload.single('file')
         code: 'MISSING_LOCATION',
         error: err.message,
         data: { rollback: true, missing: err.missing || ['场所'], templateUrl: err.templateUrl || '/api/hazards/import/template' },
+      })
+    }
+    // 责任单位比对门禁：与网格化管理库不一致，整份文件拒绝（未开启事务，无回退动作），回传逐行明细
+    if (err && err.code === 'UNIT_UNMATCH') {
+      console.error('[hazard import commit] 责任单位与网格化管理库不一致，整批拒绝')
+      return res.status(400).json({
+        success: false,
+        code: 'UNIT_UNMATCH',
+        error: err.message,
+        data: { rollback: true, mismatches: err.mismatches || [], templateUrl: err.templateUrl || '/api/hazards/import/template' },
       })
     }
     console.error('[hazard import commit]', err && err.message ? err.message : err)

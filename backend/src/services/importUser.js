@@ -66,6 +66,68 @@ function mapHeaders(headers) {
   return mapping
 }
 
+// ─── 承包商单位归一化与匹配（与网格化管理库比对）─────────────────────────────
+/**
+ * 单位名称归一化：消除全半角、括号内容、空白、集团前缀、常见异写与末尾标点
+ */
+function normUnit(s) {
+  return String(s || '')
+    .normalize('NFKC')
+    .replace(/[（(【\[〔][^）)】\]〕]*[）)】\]〕]/g, '')
+    .replace(/\s+/g, '')
+    .replace(/^(中石化|中国石化|石化)/, '')
+    .replace(/技术监测/g, '技术检测')
+    .replace(/石油气保障/g, '试油气保障')
+    .replace(/[。．.，,、；;：:·]+$/, '')
+    .toUpperCase()
+}
+
+/**
+ * 将原始单位名称匹配到白名单，返回 { id, unit_name } 或 null
+ * @param {string} raw   Excel 中的原始值
+ * @param {Array<{id:number, unit_name:string}>} list  白名单
+ */
+function matchUnit(raw, list) {
+  const rawStr = String(raw || '').trim()
+  if (!rawStr || !Array.isArray(list) || !list.length) return null
+
+  // 1. 精确相等
+  const exact = list.find(u => u.unit_name === rawStr)
+  if (exact) return { id: exact.id, unit_name: exact.unit_name }
+
+  const nr = normUnit(rawStr)
+
+  // 2. 归一化后相等且唯一
+  const normEq = list.filter(u => normUnit(u.unit_name) === nr)
+  if (normEq.length === 1) return { id: normEq[0].id, unit_name: normEq[0].unit_name }
+
+  // 3. 队号唯一匹配（连续 3 位以上数字）
+  const nums = rawStr.match(/\d{3,}/g) || []
+  for (const n of nums) {
+    const byNum = list.filter(u => normUnit(u.unit_name).includes(n))
+    if (byNum.length === 1) return { id: byNum[0].id, unit_name: byNum[0].unit_name }
+  }
+
+  // 4. 名称包含且候选唯一
+  const sub1 = list.filter(u => {
+    const nu = normUnit(u.unit_name)
+    return nu.length >= nr.length * 0.6 && nr.includes(nu)   // 标准名是原值子串
+  })
+  const sub2 = list.filter(u => {
+    const nu = normUnit(u.unit_name)
+    return nr.length >= 2 && nu.includes(nr)                // 原值是标准名子串
+  })
+  const seen = new Set()
+  const combined = []
+  for (const u of [...sub1, ...sub2]) {
+    if (!seen.has(u.id)) { seen.add(u.id); combined.push(u) }
+  }
+  if (combined.length === 1) return { id: combined[0].id, unit_name: combined[0].unit_name }
+
+  // 5. 无法唯一确定
+  return null
+}
+
 /**
  * 验证单行数据
  * @returns {{ valid: boolean, error?: string, data?: object }}
@@ -114,6 +176,12 @@ async function importUsers(buffer, adminId = 0, filename = '') {
   const warnings = []
   const failList = []
 
+  // 预加载承包商单位白名单（网格化管理库：三级/四级 在册单位）
+  const [unitRows] = await pool.execute(
+    "SELECT id, unit_name FROM t_contractor_unit WHERE grid_level IN ('三级','四级') AND is_active = 1"
+  )
+  const unitList = unitRows
+
   for (let i = 0; i < dataRows.length; i++) {
     const row = dataRows[i]
     const rowNum = i + 2  // Excel 行号（含表头）
@@ -127,10 +195,37 @@ async function importUsers(buffer, adminId = 0, filename = '') {
       continue
     }
 
+    // ── 承包商单位：必须与网格化管理库在册单位一致 ──
+    if (data.unit) {
+      const rawUnit = data.unit
+      const hit = matchUnit(rawUnit, unitList)
+      if (!hit) {
+        failList.push({ row: rowNum, data: row, error: `第${rowNum}行 承包商单位「${rawUnit}」不在网格化管理库在册名单，请到「承包商准入→网格化管理」核对后改为标准全称` })
+        continue
+      }
+      data.unit = hit.unit_name
+      data.contractor_unit_id = hit.id
+      if (rawUnit !== hit.unit_name) {
+        warnings.push(`第${rowNum}行 承包商单位「${rawUnit}」已规范为「${hit.unit_name}」`)
+      }
+    } else {
+      warnings.push(`第${rowNum}行 未填承包商单位`)
+    }
+
+    // ── 主管单位：固定白名单，仅允许「通南巴项目部」──
+    if (!data.supervising_unit) {
+      data.supervising_unit = '通南巴项目部'
+      warnings.push(`第${rowNum}行 未填主管单位，已自动补为「通南巴项目部」`)
+    } else if (data.supervising_unit !== '通南巴项目部') {
+      failList.push({ row: rowNum, data: row, error: `第${rowNum}行 主管单位「${data.supervising_unit}」不在允许范围，请改为「通南巴项目部」` })
+      continue
+    }
+
     // 生成二维码 Token
     data.qr_token = genQrToken(data.id_card)
     if (!data.unit)             data.unit             = ''
     if (!data.supervising_unit) data.supervising_unit = ''
+    if (data.contractor_unit_id === undefined) data.contractor_unit_id = null
     if (!data.phone)            data.phone            = null
     if (!data.position)         data.position         = ''
 
@@ -145,10 +240,10 @@ async function importUsers(buffer, adminId = 0, filename = '') {
         // 身份证号相同 → 视为同一人，以最新导入信息覆盖原记录
         await pool.execute(
           `UPDATE t_user
-              SET name = ?, unit = ?, supervising_unit = ?, phone = ?, position = ?,
+              SET name = ?, unit = ?, supervising_unit = ?, contractor_unit_id = ?, phone = ?, position = ?,
                   qr_token = ?, status = 1, updated_at = CURRENT_TIMESTAMP
             WHERE id = ?`,
-          [data.name, data.unit, data.supervising_unit, data.phone, data.position, data.qr_token, existing[0].id]
+          [data.name, data.unit, data.supervising_unit, data.contractor_unit_id, data.phone, data.position, data.qr_token, existing[0].id]
         )
         updatedList.push({ row: rowNum, name: data.name, id_card: data.id_card })
       } else {
@@ -161,9 +256,9 @@ async function importUsers(buffer, adminId = 0, filename = '') {
           warnings.push({ row: rowNum, name: data.name, id_card: data.id_card, existing_id_card: nameHit[0].id_card })
         }
         await pool.execute(
-          `INSERT INTO t_user (name, id_card, qr_token, unit, supervising_unit, phone, position)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          [data.name, data.id_card, data.qr_token, data.unit, data.supervising_unit, data.phone, data.position]
+          `INSERT INTO t_user (name, id_card, qr_token, unit, supervising_unit, contractor_unit_id, phone, position)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          [data.name, data.id_card, data.qr_token, data.unit, data.supervising_unit, data.contractor_unit_id, data.phone, data.position]
         )
         insertedList.push({ row: rowNum, name: data.name, id_card: data.id_card })
       }

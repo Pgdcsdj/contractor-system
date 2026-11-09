@@ -380,9 +380,34 @@ function readWorkbook(buffer, originalname = '') {
   return xlsx.read(buffer, { type: 'buffer', cellDates: true })
 }
 
+// ─── 责任单位归一化（仅用于比对，不用于落库展示）───────────────────────────
+// 抹平「括号后缀 / 空白换行 / 集团前缀 / 常见异写 / 末尾标点」差异：
+//   「中原建工（普光项目部）」与「中原建工」→ 归一后同为「中原建工」
+function normUnit(s) {
+  let t = String(s == null ? '' : s).normalize('NFKC')
+  // 去括号及括号内容
+  t = t.replace(/[（(【\[〔][^）)】\]〕]*[）)】\]〕]/g, '')
+  // 去所有空白（含换行）
+  t = t.replace(/\s+/g, '')
+  // 去集团前缀
+  t = t.replace(/^(中石化|中国石化|石化)/, '')
+  // 常见异写归一
+  t = t.replace(/技术监测/g, '技术检测').replace(/石油气保障/g, '试油气保障')
+  // 去末尾标点
+  t = t.replace(/[。．.、,，;；:：!！?？~～—_-]+$/, '')
+  return t.toUpperCase()
+}
+
+// 归一化后的标准单位名（缓存到 unitList 元素上，避免逐行重复计算）
+function unitNorm(u) {
+  if (!u) return ''
+  if (!u.norm) u.norm = normUnit(u.unit_name)
+  return u.norm
+}
+
 // 责任单位智能匹配：原始值（简称/别名/包含全称的子串/近似写法）→ 解析出 t_contractor_unit 全称与 id
-// unitList 元素：{ id, full, short, unit_name }（full/short 已归一化小写去空格）
-// 返回 { matched, id, unit_name, method? }，method ∈ 'exact'|'short'|'contains'|'edit'
+// unitList 元素：{ id, full, short, unit_name, norm? }（full/short 已归一化小写去空格）
+// 返回 { matched, id, unit_name, method? }，method ∈ 'exact'|'norm'|'num'|'short'|'contains'|'edit'
 function resolveUnit(raw, unitList) {
   const norm = String(raw ?? '').trim().replace(/\s/g, '').toLowerCase()
   if (!norm || !Array.isArray(unitList) || !unitList.length) {
@@ -392,24 +417,58 @@ function resolveUnit(raw, unitList) {
   for (const u of unitList) {
     if (u.full && u.full === norm) return { matched: true, id: u.id, unit_name: u.unit_name, method: 'exact' }
   }
-  // 2) 精确简称
+  // 2) 归一化后相等且唯一（抹平括号后缀 / 空白 / 集团前缀 / 异写）
+  //    例：中原建工 → 中原建工（普光项目部）；中原井下 → 中原井下（普光项目部）
+  const nRaw = normUnit(raw)
+  if (nRaw) {
+    const eq = unitList.filter((u) => unitNorm(u) === nRaw)
+    if (eq.length === 1) return { matched: true, id: eq[0].id, unit_name: eq[0].unit_name, method: 'norm' }
+    // 3) 队号唯一匹配：取原值中的 3 位以上数字，标准名归一后包含该队号且仅 1 家
+    //    例：中原井下\nSY810队 / SY810 → 中原井下810队
+    const nums = String(raw).match(/\d{3,}/g) || []
+    if (nums.length) {
+      const numHits = unitList.filter((u) => {
+        const n = unitNorm(u)
+        return n && nums.some((d) => n.includes(d))
+      })
+      if (numHits.length === 1) {
+        return { matched: true, id: numHits[0].id, unit_name: numHits[0].unit_name, method: 'num' }
+      }
+      if (numHits.length > 1) {
+        // 队号命中多家（如 812 → ZY-812队 / 试气812队）判为歧义，直接返回未匹配，
+        // 禁止继续走「名称包含 / 编辑距离」兜底，否则会被误配到相近队号（如 810队）
+        return { matched: false, id: null, unit_name: String(raw ?? '').trim() }
+      }
+    }
+  }
+  // 4) 精确简称
   for (const u of unitList) {
     if (u.short && u.short === norm) return { matched: true, id: u.id, unit_name: u.unit_name, method: 'short' }
   }
-  // 3) 包含（双向）：取 full 最长者（最具体），避免「钻井」泛匹配误中
-  let containsHit = null
+  // 5) 名称包含：候选必须唯一，且长度比例合理（避免「钻井」「产销厂」类泛匹配误中）
+  const containsHits = []
+  const containsIds = new Set()
   for (const u of unitList) {
-    const hit =
-      (u.full && (u.full.includes(norm) || norm.includes(u.full))) ||
-      (u.short && (u.short.includes(norm) || norm.includes(u.short)))
-    if (hit) {
-      if (!containsHit || u.unit_name.length > containsHit.unit_name.length) containsHit = u
+    let hit = false
+    for (const cand of [u.full, u.short]) {
+      if (!cand || cand === norm) continue
+      if (cand.includes(norm)) {
+        // 原值是标准名的子串：1 个字太容易误中
+        if (norm.length >= 2) hit = true
+      } else if (norm.includes(cand)) {
+        // 标准名是原值的子串：要求覆盖度 ≥ 60%
+        if (cand.length >= norm.length * 0.6) hit = true
+      }
+    }
+    if (hit && !containsIds.has(u.id)) {
+      containsIds.add(u.id)
+      containsHits.push(u)
     }
   }
-  if (containsHit) {
-    return { matched: true, id: containsHit.id, unit_name: containsHit.unit_name, method: 'contains' }
+  if (containsHits.length === 1) {
+    return { matched: true, id: containsHits[0].id, unit_name: containsHits[0].unit_name, method: 'contains' }
   }
-  // 4) 编辑距离兜底（仅短串，阈值 2，避免长全称被误匹配）
+  // 6) 编辑距离兜底（仅短串，阈值 2，避免长全称被误匹配）
   if (norm.length <= 8) {
     let best = null
     let bestDist = 3
@@ -426,6 +485,40 @@ function resolveUnit(raw, unitList) {
     if (best) return { matched: true, id: best.id, unit_name: best.unit_name, method: 'edit' }
   }
   return { matched: false, id: null, unit_name: String(raw ?? '').trim() }
+}
+
+// 近似候选建议：按「归一化相等 > 双向包含 > 编辑距离」打分，返回最相近的 limit 个标准全称。
+// 用于「责任单位不在在册名单」时的改正建议（前端/错误提示展示）。
+function suggestUnits(raw, unitList, limit = 3) {
+  const base = normUnit(raw)
+  if (!base || !Array.isArray(unitList) || !unitList.length) return []
+  const scored = []
+  for (const u of unitList) {
+    const n = unitNorm(u)
+    if (!n) continue
+    let score = Infinity
+    if (n === base) {
+      score = 0
+    } else if (n.includes(base) || base.includes(n)) {
+      // 包含关系：长度差越小越像
+      score = 1 + Math.abs(n.length - base.length) / Math.max(n.length, base.length)
+    } else {
+      const d = editDistance(base, n)
+      const tol = Math.max(2, Math.ceil(base.length * 0.34))
+      if (d <= tol) score = 2 + d
+    }
+    if (score < Infinity) scored.push({ u, score })
+  }
+  scored.sort((a, b) => a.score - b.score || a.u.unit_name.length - b.u.unit_name.length)
+  const out = []
+  const seen = new Set()
+  for (const s of scored) {
+    if (seen.has(s.u.id)) continue
+    seen.add(s.u.id)
+    out.push(s.u.unit_name)
+    if (out.length >= limit) break
+  }
+  return out
 }
 
 // ─── 单行清洗 + 校验（异步：含责任人电话自动匹配）────────────────────────────
@@ -470,20 +563,27 @@ async function cleanRow(row, mapping, ctx) {
   if (!rawPerson) errors.push('缺少整改责任人')
   if (!rawUnit) warnings.push('缺少责任单位，已置空待人工补')
 
-  // 单位解析（智能匹配：简称/别名/包含/近似 → 全称 id）
+  // 单位解析（智能匹配：全称/归一化/队号/简称/包含/近似 → 全称 + id）
   let contractor_unit_id = null
   let unit_name = rawUnit
+  let unitMismatch = null
   if (rawUnit) {
     const m = resolveUnit(rawUnit, unitList)
     if (m.matched) {
       contractor_unit_id = m.id
       unit_name = m.unit_name
       if (m.method !== 'exact') {
-        const tag = m.method === 'short' ? '简称匹配' : m.method === 'contains' ? '包含匹配' : '近似匹配'
-        warnings.push(`责任单位智能匹配：「${rawUnit}」→「${m.unit_name}」（${tag}）`)
+        warnings.push(`责任单位已自动规范：「${rawUnit}」→「${m.unit_name}」`)
       }
     } else {
-      warnings.push(`单位未匹配：${rawUnit}`)
+      // 软提示 + 硬错误：既给候选建议，也登记为整表门禁（UNIT_UNMATCH）的依据
+      const sug = suggestUnits(rawUnit, unitList)
+      errors.push(
+        `责任单位「${rawUnit}」不在网格化管理库在册名单` +
+          (sug.length ? `，建议改为：${sug.map((s) => '「' + s + '」').join(' 或 ')}` : '，且无可参考的相似单位') +
+          '（可在「承包商准入→网格化管理」查看在册单位全称）'
+      )
+      unitMismatch = { raw: rawUnit, suggests: sug }
     }
   }
 
@@ -581,7 +681,7 @@ async function cleanRow(row, mapping, ctx) {
   rec.unit_name = unit_name
   rec.contractor_unit_id = contractor_unit_id
 
-  return { rec, errors, warnings }
+  return { rec, errors, warnings, unitMismatch }
 }
 
 /**
@@ -594,14 +694,17 @@ async function parseWorkbook(buffer, originalname = '', opts = {}) {
   const wb = readWorkbook(buffer, originalname)
   const sheetNames = wb.SheetNames || []
 
-  // 预加载：承包商单位（单位匹配，含 short_name 用于智能匹配）、业务部门 / 负责人字典（智能匹配）
-  const [unitRows] = await pool.execute('SELECT id, unit_name, short_name FROM t_contractor_unit')
+  // 预加载：承包商单位（仅「在册三/四级」，排除退场与历史脏数据）、业务部门 / 负责人字典（智能匹配）
+  const [unitRows] = await pool.execute(
+    "SELECT id, unit_name, short_name FROM t_contractor_unit WHERE grid_level IN ('三级','四级') AND is_active = 1"
+  )
   const unitMap = new Map()
   const unitList = unitRows.map((u) => ({
     id: u.id,
     full: String(u.unit_name ?? '').replace(/\s/g, '').toLowerCase(),
     short: String(u.short_name ?? '').replace(/\s/g, '').toLowerCase(),
     unit_name: u.unit_name,
+    norm: normUnit(u.unit_name),
   }))
   unitList.forEach((u) => {
     if (u.full) unitMap.set(u.full, { id: u.id, unit_name: u.unit_name })
@@ -662,7 +765,7 @@ async function parseWorkbook(buffer, originalname = '', opts = {}) {
 
       const rowNo = headerIdx + i + 2 // 1-based 绝对行号
       if (mapping.location >= 0 && String(row[mapping.location] ?? '').trim()) locationFilled++
-      const { rec, errors, warnings: rowWarnings } = await cleanRow(row, mapping, {
+      const { rec, errors, warnings: rowWarnings, unitMismatch } = await cleanRow(row, mapping, {
         unitMap, unitList, bdRows, bhRows, sheetName, sheetNames, importType, basisLib,
       })
 
@@ -698,6 +801,7 @@ async function parseWorkbook(buffer, originalname = '', opts = {}) {
         data: {
           hazard_investigation_item: rec.hazard_investigation_item,
           unit_name: rec.unit_name,
+          contractor_unit_id: rec.contractor_unit_id || null,
           location: rec.location,
           hazard_level: rec.hazard_level,
           description: rec.description,
@@ -715,6 +819,8 @@ async function parseWorkbook(buffer, originalname = '', opts = {}) {
         },
         errors,
         warnings: rowWarnings,
+        // 责任单位与网格化管理库不一致的明细（整表门禁 UNIT_UNMATCH 用；无差异为 null）
+        unitMismatch: unitMismatch || null,
       })
     }
 
@@ -739,6 +845,26 @@ async function parseWorkbook(buffer, originalname = '', opts = {}) {
     )
     err.code = 'MISSING_LOCATION'
     err.missing = ['场所']
+    err.templateUrl = '/api/hazards/import/template'
+    throw err
+  }
+
+  // ─── 责任单位比对门禁（2026-11-09 业务要求）─────────────────────────────
+  // 责任单位必须与「网格化管理」在册单位一致：能唯一匹配的已在 cleanRow 中自动规范化并放行，
+  // 此处汇总匹配不上的行，整份文件拒绝导入，并回传明细供前端逐行给出改正建议。
+  // 注意：场所门禁（MISSING_LOCATION）优先判定，保持在上方。
+  const unitMiss = rows.filter((r) => r.unitMismatch)
+  if (unitMiss.length > 0) {
+    const err = new Error(
+      `导入失败：${unitMiss.length} 行责任单位与网格化管理库不一致，请改正后重新上传（明细见下表）`
+    )
+    err.code = 'UNIT_UNMATCH'
+    err.mismatches = unitMiss.slice(0, 30).map((r) => ({
+      sheetName: r.sheetName,
+      rowNo: r.rowNo,
+      raw: r.unitMismatch.raw,
+      suggests: r.unitMismatch.suggests || [],
+    }))
     err.templateUrl = '/api/hazards/import/template'
     throw err
   }
@@ -1016,7 +1142,7 @@ function generateTemplate() {
     '业务部门负责人', '是否否决项', '扣分', '初始状态', '标准依据',
   ]
   const sample = [
-    '主题交流会问题', '产销厂', '马10脱水井场', '设备', '一般',
+    '主题交流会问题', '天然气产销厂通南巴项目组', '马10脱水井场', '设备', '一般',
     '示例：阀门法兰渗漏，需更换密封垫', '更换密封垫，紧固螺栓', '田海川',
     '13800000000', '2026-07-20', '生产服务中心', '', '否', '', '整改中',
     '（可选：留空则按「隐患排查项目」自动匹配依据库）',
@@ -1035,7 +1161,7 @@ function generateTemplate() {
     ['问题描述', '必填（★）', '隐患的具体表现，一行一条，不要合并单元格。'],
     ['整改责任人', '必填（★）', '可多人，用「、」分隔。'],
     ['隐患排查项目', '建议填', '决定标准依据自动匹配；留空时依据库不匹配。'],
-    ['责任单位', '建议填', '支持简称智能匹配到承包商单位；留空则该行为空单位，需人工补。'],
+    ['责任单位', '必填（★）', '须与「网格化管理」在册单位一致；简称会自动匹配为全称（如「中原建工」→「中原建工（普光项目部）」），匹配不上的会拒绝导入并给出建议。'],
     ['计划完成时间', '建议填', '支持 2026-07-20 / 2026年7月20日 等写法；无法解析时置空并提示。'],
     ['隐患等级', '选填', '一般 / 较大 / 重大；留空按「一般」处理。'],
     ['业务归口 / 业务部门负责人', '选填', '按系统字典智能匹配，未命中保留原值。'],
@@ -1063,6 +1189,8 @@ module.exports = {
   matchDictOption,
   mapProgressToStatus,
   resolveUnit,
+  normUnit,
+  suggestUnits,
   buildMapping,
   editDistance,
 }

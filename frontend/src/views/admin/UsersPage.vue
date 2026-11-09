@@ -101,7 +101,8 @@
         <p class="modal-hint">
           请上传 Excel 文件，表头列名需包含：<strong>姓名、身份证号</strong>（必填），
           <strong>所属单位（承包商）、主管单位（甲方）、岗位、手机号</strong>（选填，自动识别列名）。<br />
-          导入将<strong>按身份证号自动去重</strong>：相同身份证号视为同一人，以最新导入信息覆盖原记录。
+          导入将<strong>按身份证号自动去重</strong>：相同身份证号视为同一人，以最新导入信息覆盖原记录。<br />
+          <strong>承包商单位需与「承包商准入→网格化管理」在册单位一致；主管单位固定为「通南巴项目部」。不一致的行会被拒绝，并列出原因。</strong>
         </p>
         <div class="file-upload" @click="triggerFile" :class="{ dragover: isDragover }"
           @dragover.prevent="isDragover = true"
@@ -125,10 +126,22 @@
           <template v-else>
             <p>✅ 新增 {{ importResult.inserted ?? 0 }} 条 / 覆盖更新 {{ importResult.updated ?? 0 }} 条</p>
             <p v-if="importResult.fail > 0">❌ 失败 {{ importResult.fail }} 条</p>
-            <p v-if="importResult.warnings && importResult.warnings.length" class="warn-text">
-              ⚠️ {{ importResult.warnings.length }} 条「姓名」与既有记录重复但身份证不同，已作为新记录保留
+            <p v-if="dupNameWarnings.length" class="warn-text">
+              ⚠️ {{ dupNameWarnings.length }} 条「姓名」与既有记录重复但身份证不同，已作为新记录保留
             </p>
+            <p v-if="otherWarnings.length" class="warn-text">
+              ⚠️ {{ otherWarnings.length }} 条数据已自动规范化或需留意（见下方明细）
+            </p>
+            <ul v-if="otherWarnings.length" class="warn-list">
+              <li v-for="(w, i) in otherWarnings.slice(0, 10)" :key="i">{{ w }}</li>
+            </ul>
           </template>
+          <ul v-if="importResult.failPreview && importResult.failPreview.length" class="fail-list">
+            <li v-for="(f, i) in importResult.failPreview" :key="i">{{ f.error }}</li>
+          </ul>
+          <p v-if="importResult.fail" class="fail-tip">
+            以上为前 10 条失败明细，请按提示修改后重新上传；完整清单可点「下载失败报告」。
+          </p>
           <button v-if="importResult.logId && importResult.fail > 0" class="btn btn-outline" style="margin-top:8px;font-size:13px" @click="downloadFail(importResult.logId)">
             📥 下载失败报告
           </button>
@@ -259,6 +272,14 @@ const selectedFile = ref(null)
 const isDragover = ref(false)
 const importing = ref(false)
 const importResult = ref(null)
+
+// warnings 是混合数组：对象 = 姓名重复提示；字符串 = 单位规范化 / 未填单位等提示
+const dupNameWarnings = computed(() =>
+  (importResult.value?.warnings || []).filter((w) => w && typeof w === 'object')
+)
+const otherWarnings = computed(() =>
+  (importResult.value?.warnings || []).filter((w) => typeof w === 'string')
+)
 
 // 编辑
 const showEdit = ref(false)
@@ -639,6 +660,9 @@ watch(page, fetchUsers)
 .import-result p { margin: 2px 0; }
 .import-result .warn-text { font-size: 12.5px; opacity: 0.85; }
 .import-result .err-text { font-weight: 600; }
+.fail-list { margin: 10px 0 0; padding-left: 18px; color: #c2410c; font-size: 12.5px; line-height: 1.9; }
+.fail-tip { margin: 8px 0 0; font-size: 12.5px; color: #9a3412; }
+.warn-list { margin: 6px 0 0; padding-left: 18px; color: #92400e; font-size: 12px; line-height: 1.85; }
 
 .action-link { background: none; border: none; color: var(--primary); cursor: pointer; font-size: 13px; padding: 4px 8px; border-radius: 6px; }
 .action-link:hover { background: #e8f0fe; }

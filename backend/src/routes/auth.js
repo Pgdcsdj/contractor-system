@@ -13,6 +13,9 @@ const { pool } = require('../db/db')
 
 const router = express.Router()
 
+// 主管单位值域（当前业务只允许通南巴项目部；如需扩展在此追加）
+const ALLOWED_SUPERVISING_UNITS = ['通南巴项目部']
+
 // ─── JWT 鉴权中间件 ───────────────────────────────────────────────────────────
 function authMiddleware(req, res, next) {
   const authHeader = req.headers['authorization']
@@ -75,6 +78,14 @@ router.post('/register', async (req, res) => {
     position = '', contractor_unit_id = null, last4 = '',
   } = req.body
 
+  const su = String(supervising_unit || '').trim()
+  if (!su) {
+    return res.status(400).json({ error: '请选择主管单位' })
+  }
+  if (!ALLOWED_SUPERVISING_UNITS.includes(su)) {
+    return res.status(400).json({ error: '主管单位不在允许范围：' + su })
+  }
+
   if (!name || !name.trim())   return res.status(400).json({ error: '请输入姓名' })
   if (!id_card || !id_card.trim()) return res.status(400).json({ error: '请输入身份证号' })
 
@@ -119,7 +130,7 @@ router.post('/register', async (req, res) => {
   const [result] = await pool.execute(
     `INSERT INTO t_user (name, id_card, unit, supervising_unit, phone, position, contractor_unit_id, qr_token, status, self_registered)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1)`,
-    [trimmedName, trimmedId, unit || '', supervising_unit, phone || '', position || '', cid, qrToken]
+    [trimmedName, trimmedId, unit || '', su, phone || '', position || '', cid, qrToken]
   )
 
   const token = signToken({ id: result.insertId, name: trimmedName, unit: unit || '' })

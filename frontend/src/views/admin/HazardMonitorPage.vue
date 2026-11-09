@@ -59,7 +59,19 @@
 
     <!-- 行2：各单位隐患数排名 -->
     <div class="card">
-      <h3 class="card-title">各单位隐患数（按数量降序）</h3>
+      <div class="card-head-row">
+        <h3 class="card-title">
+          各单位隐患数（按数量降序）
+          <span class="sub-count">（共 {{ unitListAll.length }} 家单位）</span>
+        </h3>
+        <button
+          v-if="unitListAll.length > 5"
+          class="btn btn-ghost btn-sm"
+          @click="showAllUnits = !showAllUnits"
+        >
+          {{ showAllUnits ? '收起（只看前 5）' : `展开全部 ${unitListAll.length} 家` }}
+        </button>
+      </div>
       <div class="unit-bars">
         <div class="unit-item" v-for="u in unitList" :key="u.unitName">
           <span class="unit-name" :title="u.unitName">{{ u.unitName }}</span>
@@ -87,6 +99,9 @@
           </tr>
         </tbody>
       </table>
+      <p v-if="!showAllUnits && unitListAll.length > 5" class="collapse-hint">
+        当前仅显示隐患数前 5 名，其余 {{ unitListAll.length - 5 }} 家已折叠。
+      </p>
     </div>
 
     <!-- 行3：四中心站隐患排名（考核） -->
@@ -285,6 +300,7 @@ const data = ref({
 })
 const loading = ref(false)
 const granularity = ref('week') // 默认按周（P1-2 可按天切换，此处后端已支持）
+const showAllUnits = ref(false) // 「各单位隐患数」卡片：默认只展示前 5 名，可展开全部
 
 // ── 超期预警清单 ──
 const overdueList = ref([])
@@ -344,9 +360,12 @@ const levelList = computed(() => {
 })
 const levelMax = computed(() => maxOf(levelList.value, 'count') || 1)
 
-// ── 单位排名 ──
-const unitList = computed(() => sortUnits(data.value.byUnit || []))
-const unitMax = computed(() => maxOf(unitList.value, 'count') || 1)
+// ── 单位排名（默认只展示前 5 名，可展开全部）──
+const unitListAll = computed(() => sortUnits(data.value.byUnit || []))
+const unitList = computed(() =>
+  showAllUnits.value ? unitListAll.value : unitListAll.value.slice(0, 5)
+)
+const unitMax = computed(() => maxOf(unitListAll.value, 'count') || 1)
 
 // ── 趋势 SVG（自绘，无 ECharts）──
 const SVG_W = 640
@@ -546,6 +565,10 @@ onMounted(load)
 .unit-count { width: 34px; font-size: 13px; font-weight: 600; color: var(--c-text); text-align: right; flex-shrink: 0; }
 .unit-table { margin-top: 4px; }
 .muted { color: var(--c-text-3); }
+.collapse-hint { margin: 12px 0 0; font-size: 12px; color: var(--c-text-3); text-align: center; }
+
+/* 本页缺失的按钮小号（四中心站卡片与「各单位隐患数」卡片共用） */
+.btn-sm { width: auto; height: 32px; padding: 0 14px; font-size: 13px; }
 
 /* 四中心站排名（考核） */
 .station-rank-card { margin-bottom: 20px; }

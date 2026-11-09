@@ -40,7 +40,10 @@
         </select>
       </div>
       <div class="form-group">
-        <input v-model="compSupervisingUnit" class="form-input" placeholder="主管单位（甲方）" type="text" />
+        <div class="form-label">主管单位（甲方）<span style="color:#e5484d">*</span></div>
+        <select v-model="compSupervisingUnit" class="form-input">
+          <option value="通南巴项目部">通南巴项目部</option>
+        </select>
       </div>
       <div class="form-group">
         <input v-model="compPhone" class="form-input" placeholder="手机号" type="text" />
@@ -48,7 +51,7 @@
       <div class="form-group">
         <input v-model="compPosition" class="form-input" placeholder="岗位" type="text" />
       </div>
-      <button class="btn btn-primary full-btn" @click="handleComplete" :disabled="loading || !compIdCard">
+      <button class="btn btn-primary full-btn" @click="handleComplete" :disabled="loading || !compIdCard || !compSupervisingUnit">
         {{ loading ? '提交中…' : '补全并进入' }}
       </button>
       <p class="toggle-link" @click="backToLogin">返回登录</p>
@@ -68,12 +71,15 @@
         <input v-model="regUnit" class="form-input" placeholder="所属承包商单位 *" type="text" />
       </div>
       <div class="form-group">
-        <input v-model="regSupervisingUnit" class="form-input" placeholder="主管单位（甲方）" type="text" />
+        <div class="form-label">主管单位（甲方）<span style="color:#e5484d">*</span></div>
+        <select v-model="regSupervisingUnit" class="form-input">
+          <option value="通南巴项目部">通南巴项目部</option>
+        </select>
       </div>
       <div class="form-group">
         <input v-model="regPhone" class="form-input" placeholder="手机号 *" type="text" maxlength="11" />
       </div>
-      <button class="btn btn-primary full-btn" @click="handleRegister" :disabled="loading || !regName || !regIdCard || !regUnit || !regPhone || !/^1\d{10}$/.test(regPhone)">
+      <button class="btn btn-primary full-btn" @click="handleRegister" :disabled="loading || !regName || !regIdCard || !regUnit || !regPhone || !/^1\d{10}$/.test(regPhone) || !regSupervisingUnit">
         {{ loading ? '提交中…' : '注册并开始答题' }}
       </button>
       <p class="toggle-link" @click="showRegister = false">已有账号？点击登录</p>
@@ -111,7 +117,7 @@ const completeLast4 = ref('')
 const compIdCard = ref('')
 const compUnitId = ref('')
 const compUnitName = ref('')
-const compSupervisingUnit = ref('')
+const compSupervisingUnit = ref('通南巴项目部')
 const compPhone = ref('')
 const compPosition = ref('')
 const units = ref([])
@@ -119,7 +125,7 @@ const units = ref([])
 const regName = ref('')
 const regIdCard = ref('')
 const regUnit = ref('')
-const regSupervisingUnit = ref('')
+const regSupervisingUnit = ref('通南巴项目部')
 const regPhone = ref('')
 const loading = ref(false)
 const errorMsg = ref('')
@@ -186,6 +192,7 @@ async function handleManualLogin() {
 }
 
 async function handleComplete() {
+  if (!compSupervisingUnit.value) { errorMsg.value = '请选择主管单位'; return }
   if (!compIdCard.value) return
   const trimmed = compIdCard.value.trim().toUpperCase()
   if (!/^\d{17}[\dX]$/.test(trimmed)) {
@@ -218,6 +225,7 @@ async function handleComplete() {
 }
 
 async function handleRegister() {
+  if (!regSupervisingUnit.value) { errorMsg.value = '请选择主管单位'; return }
   if (!regName.value || !regIdCard.value) return
   if (!regUnit.value) { errorMsg.value = '请填写所属承包商单位'; return }
   if (!/^1\d{10}$/.test(regPhone.value || '')) { errorMsg.value = '请填写正确的 11 位手机号'; return }
@@ -274,6 +282,7 @@ function backToLogin() {
 .complete-hint b { color: #1a73e8; }
 
 .form-group { margin-bottom: 10px; }
+.form-label { font-size: 13px; color: var(--text-secondary); margin-bottom: 6px; }
 .form-input {
   width: 100%;
   padding: 12px 14px;
@@ -284,6 +293,18 @@ function backToLogin() {
   box-sizing: border-box;
 }
 .form-input:focus { outline: none; border-color: var(--primary); }
+
+/* 下拉框：本页 scoped .form-input 的 background/padding 简写会覆盖全局 select.form-input，
+   导致右侧箭头丢失、与普通输入框无法区分，这里按同等特异性补回 */
+select.form-input {
+  appearance: none;
+  cursor: pointer;
+  padding-right: 38px;
+  background-color: #fff;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%2394A3B8' stroke-width='2' viewBox='0 0 24 24'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+}
 
 .full-btn { width: 100%; margin-top: 4px; }
 
