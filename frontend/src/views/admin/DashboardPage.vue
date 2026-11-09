@@ -7,6 +7,7 @@
         <div class="stat-info">
           <div class="stat-value">{{ stats.totalUsers }}</div>
           <div class="stat-label">培训人员</div>
+          <div class="stat-scope">主管单位：{{ stats.scope?.supervising_unit || '通南巴项目部' }}</div>
         </div>
       </div>
       <div class="stat-card">
@@ -28,6 +29,7 @@
         <div class="stat-info">
           <div class="stat-value">{{ stats.todayIncomplete }}</div>
           <div class="stat-label">今日未完成</div>
+          <div class="stat-scope">主管单位：{{ stats.scope?.supervising_unit || '通南巴项目部' }}</div>
         </div>
       </div>
     </div>
@@ -171,6 +173,7 @@ onMounted(async () => {
 .icon-red { background: var(--c-danger-bg); color: var(--c-danger); }
 .stat-value { font-size: 27px; font-weight: 700; color: var(--c-text); line-height: 1.1; }
 .stat-label { font-size: 13px; color: var(--c-text-2); margin-top: 3px; }
+.stat-scope { font-size: 11px; color: var(--c-text-3); margin-top: 2px; line-height: 1.2; }
 
 .row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
 .chart-card { text-align: center; }

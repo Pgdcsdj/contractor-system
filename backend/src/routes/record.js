@@ -16,6 +16,11 @@ const { signRecord }         = require('../utils/hashHelper')
 
 const router = express.Router()
 
+// 培训看板统计口径：只统计「主管单位 = 通南巴项目部」的人员。
+// t_user 是公司大库（约 6214 人），含大量普光及跨区域施工人员，
+// 按全库做分母会让完成率严重失真，故统一限定主管单位。
+const SCOPE_SUPERVISING_UNIT = '通南巴项目部'
+
 // 本路由全部为管理端统计/导出接口，统一鉴权（此前 summary/incomplete/list/export 裸奔，
 // 未登录即可拉取全员姓名+手机，属数据泄露风险）
 router.use(adminAuth)
@@ -81,12 +86,16 @@ router.get('/summary', async (req, res) => {
 
   // 系统总人数（活跃）
   const [[{ totalUsers }]] = await pool.execute(
-    'SELECT COUNT(*) AS totalUsers FROM t_user WHERE status = 1'
+    'SELECT COUNT(*) AS totalUsers FROM t_user WHERE status = 1 AND supervising_unit = ?',
+    [SCOPE_SUPERVISING_UNIT]
   )
 
   // 累计答题次数（不去重，代表"已完成答题"总次数）
   const [[{ totalCompleted }]] = await pool.execute(
-    'SELECT COUNT(*) AS totalCompleted FROM t_record'
+    `SELECT COUNT(*) AS totalCompleted
+       FROM t_record r JOIN t_user u ON u.id = r.user_id
+      WHERE u.supervising_unit = ?`,
+    [SCOPE_SUPERVISING_UNIT]
   )
 
   // 累计已发布培训数
@@ -96,14 +105,18 @@ router.get('/summary', async (req, res) => {
 
   // 今日已答人数（去重）
   const [[{ todayCompleted }]] = await pool.execute(
-    `SELECT COUNT(DISTINCT user_id) AS todayCompleted
-     FROM t_record WHERE DATE(submitted_at) = CURDATE()`
+    `SELECT COUNT(DISTINCT r.user_id) AS todayCompleted
+       FROM t_record r JOIN t_user u ON u.id = r.user_id
+      WHERE DATE(r.submitted_at) = CURDATE() AND u.supervising_unit = ?`,
+    [SCOPE_SUPERVISING_UNIT]
   )
 
   // 今日通过人数（score >= 60 视为通过）
   const [[{ todayPassed }]] = await pool.execute(
-    `SELECT COUNT(DISTINCT user_id) AS todayPassed
-     FROM t_record WHERE DATE(submitted_at) = CURDATE() AND score >= 60`
+    `SELECT COUNT(DISTINCT r.user_id) AS todayPassed
+       FROM t_record r JOIN t_user u ON u.id = r.user_id
+      WHERE DATE(r.submitted_at) = CURDATE() AND r.score >= 60 AND u.supervising_unit = ?`,
+    [SCOPE_SUPERVISING_UNIT]
   )
 
   // 今日应答总人数（有今日活跃培训的人员，简化为系统总人数）
@@ -113,6 +126,7 @@ router.get('/summary', async (req, res) => {
   res.json({
     success: true,
     data: {
+      scope: { supervising_unit: SCOPE_SUPERVISING_UNIT },
       totalUsers,
       totalCompleted,
       totalTrainings,
@@ -142,25 +156,26 @@ router.get('/incomplete', async (req, res) => {
     ;[rows] = await pool.execute(
       `SELECT u.id, u.name, u.unit, u.phone
        FROM t_user u
-       WHERE u.status = 1
+       WHERE u.status = 1 AND u.supervising_unit = ?
          AND NOT EXISTS (
            SELECT 1 FROM t_record r
            WHERE r.user_id = u.id AND r.material_id = ?
          )
        ORDER BY u.unit, u.name`,
-      [materialId]
+      [SCOPE_SUPERVISING_UNIT, materialId]
     )
   } else {
     // 不指定：查今日未答任何题的活跃用户（CURDATE() = DB 北京日期）
     ;[rows] = await pool.execute(
       `SELECT u.id, u.name, u.unit, u.phone
        FROM t_user u
-       WHERE u.status = 1
+       WHERE u.status = 1 AND u.supervising_unit = ?
          AND NOT EXISTS (
            SELECT 1 FROM t_record r
            WHERE r.user_id = u.id AND DATE(r.submitted_at) = CURDATE()
          )
-       ORDER BY u.unit, u.name`
+       ORDER BY u.unit, u.name`,
+      [SCOPE_SUPERVISING_UNIT]
     )
   }
 
@@ -177,9 +192,10 @@ router.get('/completed', async (req, res) => {
               MAX(r.submitted_at) AS last_submit
          FROM t_record r
          JOIN t_user u ON u.id = r.user_id
-        WHERE DATE(r.submitted_at) = CURDATE()
+        WHERE DATE(r.submitted_at) = CURDATE() AND u.supervising_unit = ?
         GROUP BY u.id, u.name, u.unit, u.phone
-        ORDER BY last_submit DESC`
+        ORDER BY last_submit DESC`,
+      [SCOPE_SUPERVISING_UNIT]
     )
     res.json({ success: true, data: { total: rows.length, list: rows } })
   } catch (err) {
