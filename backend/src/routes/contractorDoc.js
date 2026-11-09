@@ -188,12 +188,26 @@ router.post('/packages', async (req, res) => {
     )
     if (!u.length) return res.status(400).json({ success: false, error: '承包商不存在或未在册' })
 
+    // 幂等防重：同一承包商 + 同一项目名称视为同一个包，重复"创建/进入"直接返回已有包，
+    // 避免承包商重复点击导致台账里出现多个同名空包（2026-11-09 母家梁 id33 空包即此原因）。
+    const pname = String(project_name).trim()
+    const [dup] = await pool.execute(
+      'SELECT id FROM t_doc_package WHERE unit_id = ? AND TRIM(project_name) = ? ORDER BY id LIMIT 1',
+      [unit_id, pname]
+    )
+    if (dup.length) {
+      return res.json({
+        success: true,
+        data: { id: dup[0].id, project_name: pname, unit_name: u[0].unit_name, existed: true },
+      })
+    }
+
     const [r] = await pool.execute(
       `INSERT INTO t_doc_package (unit_id, unit_name, unit_short, project_name, reporter_name, reporter_phone, status)
        VALUES (?, ?, ?, ?, ?, ?, 0)`,
-      [unit_id, u[0].unit_name, u[0].short_name, project_name, reporter_name, reporter_phone]
+      [unit_id, u[0].unit_name, u[0].short_name, pname, reporter_name, reporter_phone]
     )
-    res.json({ success: true, data: { id: r.insertId, project_name, unit_name: u[0].unit_name } })
+    res.json({ success: true, data: { id: r.insertId, project_name: pname, unit_name: u[0].unit_name, existed: false } })
   } catch (e) {
     console.error('[contractorDoc] create package', e.message)
     res.status(500).json({ success: false, error: '建包失败' })
@@ -208,10 +222,13 @@ router.get('/packages', async (req, res) => {
     const params = []
     if (unit_id) { where.push('p.unit_id = ?'); params.push(unit_id) }
     if (keyword) { where.push('p.project_name LIKE ?'); params.push(`%${keyword}%`) }
-    const sql = `SELECT p.id, p.project_name, p.unit_name, p.unit_short, p.reporter_name,
-                        p.status, p.updated_at,
+    const sql = `SELECT p.id, p.project_name,
+                        COALESCE(NULLIF(u.unit_name, ''), p.unit_name) AS unit_name,
+                        COALESCE(NULLIF(u.short_name, ''), p.unit_short, p.unit_name) AS unit_short,
+                        p.reporter_name, p.status, p.updated_at,
                         (SELECT COUNT(*) FROM t_doc_file f WHERE f.package_id = p.id) AS file_count
                  FROM t_doc_package p
+                 LEFT JOIN t_contractor_unit u ON u.id = p.unit_id
                  ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
                  ORDER BY p.updated_at DESC LIMIT 50`
     const [rows] = await pool.execute(sql, params)
@@ -374,17 +391,31 @@ router.get('/admin/packages', requireRole('admin', 'superadmin'), async (req, re
     const { unit_id = '', keyword = '', status = '' } = req.query
     const where = [], params = []
     if (unit_id) { where.push('p.unit_id = ?'); params.push(unit_id) }
-    if (keyword) { where.push('(p.project_name LIKE ? OR p.unit_name LIKE ?)'); params.push(`%${keyword}%`, `%${keyword}%`) }
+    // keyword 覆盖：项目名称 / 承包商单位（含当前名称与建包时快照）/ 上报人姓名 / 上报人电话
+    // —— 用户反馈"搜林建洪搜不到""搜油建找不到"，是因为原来只匹配 project_name 与 unit_name 两个字段。
+    if (keyword) {
+      where.push(`(p.project_name LIKE ?
+                OR p.unit_name LIKE ?
+                OR u.unit_name LIKE ?
+                OR p.reporter_name LIKE ?
+                OR p.reporter_phone LIKE ?)`)
+      const like = `%${keyword}%`
+      params.push(like, like, like, like, like)
+    }
     if (status !== '') { where.push('p.status = ?'); params.push(status === '1' ? 1 : 0) }
 
     const [rows] = await pool.execute(
-      `SELECT p.id, p.unit_id, p.unit_name, p.unit_short, p.project_name, p.reporter_name,
+      `SELECT p.id, p.unit_id,
+              COALESCE(NULLIF(u.unit_name, ''), p.unit_name) AS unit_name,
+              p.unit_short, p.project_name, p.reporter_name,
               p.reporter_phone, p.status, p.created_at, p.updated_at,
+              (SELECT COUNT(*) FROM t_doc_file f WHERE f.package_id=p.id) AS file_total,
               (SELECT COUNT(*) FROM t_doc_file f JOIN t_doc_catalog c ON f.catalog_id=c.id
                WHERE f.package_id=p.id AND c.required_type='gate' AND c.is_active=1) AS gate_done,
               (SELECT COUNT(*) FROM t_doc_file f JOIN t_doc_catalog c ON f.catalog_id=c.id
                WHERE f.package_id=p.id AND c.required_type='dynamic' AND c.is_active=1) AS dyn_done
        FROM t_doc_package p
+       LEFT JOIN t_contractor_unit u ON u.id = p.unit_id
        ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
        ORDER BY p.updated_at DESC LIMIT 200`,
       params
@@ -404,6 +435,65 @@ router.get('/admin/packages', requireRole('admin', 'superadmin'), async (req, re
   } catch (e) {
     console.error('[contractorDoc] admin packages', e.message)
     res.status(500).json({ success: false, error: '查询台账失败' })
+  }
+})
+
+// 管理端编辑项目（改承包商单位 / 项目名称 / 上报人 / 联系电话 / 状态）
+// 公开端 PATCH /packages/:id 是给填报人自己改状态的，管理员用不上；此前管理页干脆没有编辑入口，
+// 用户反馈"找不到可以修改的地方"即因此。
+router.patch('/admin/packages/:id', requireRole('admin', 'superadmin'), async (req, res) => {
+  try {
+    const id = Number(req.params.id)
+    const { unit_id, project_name, reporter_name, reporter_phone, status } = req.body || {}
+    const [pkgs] = await pool.execute('SELECT id FROM t_doc_package WHERE id = ?', [id])
+    if (!pkgs.length) return res.status(404).json({ success: false, error: '项目不存在' })
+
+    const sets = []
+    const params = []
+    const newUnitId = (unit_id !== undefined && unit_id !== '' && unit_id !== null) ? Number(unit_id) : null
+
+    if (newUnitId) {
+      const [u] = await pool.execute(
+        `SELECT id, unit_name,
+                CASE WHEN short_name IS NULL OR short_name = '' THEN unit_name ELSE short_name END AS short_name
+         FROM t_contractor_unit WHERE id = ? AND is_active = 1`,
+        [newUnitId]
+      )
+      if (!u.length) return res.status(400).json({ success: false, error: '承包商不存在或未在册' })
+      sets.push('unit_id = ?', 'unit_name = ?', 'unit_short = ?')
+      params.push(u[0].id, u[0].unit_name, u[0].short_name)
+    }
+    if (project_name !== undefined) {
+      const pn = String(project_name).trim()
+      if (!pn) return res.status(400).json({ success: false, error: '项目名称不能为空' })
+      // 改名后不能与同单位下其他包重名，否则台账里又会出现两条一模一样的记录
+      const [dup] = await pool.execute(
+        'SELECT id FROM t_doc_package WHERE unit_id = COALESCE(?, unit_id) AND TRIM(project_name) = ? AND id <> ? LIMIT 1',
+        [newUnitId, pn, id]
+      )
+      if (dup.length) return res.status(400).json({ success: false, error: '该承包商下已存在同名项目，请勿重复创建' })
+      sets.push('project_name = ?')
+      params.push(pn)
+    }
+    if (reporter_name !== undefined) { sets.push('reporter_name = ?'); params.push(String(reporter_name).trim()) }
+    if (reporter_phone !== undefined) { sets.push('reporter_phone = ?'); params.push(String(reporter_phone).trim()) }
+    if (status !== undefined) { sets.push('status = ?'); params.push(status ? 1 : 0) }
+
+    if (!sets.length) return res.status(400).json({ success: false, error: '无可更新字段' })
+    params.push(id)
+    await pool.execute(`UPDATE t_doc_package SET ${sets.join(', ')} WHERE id = ?`, params)
+
+    const [after] = await pool.execute(
+      `SELECT p.id, p.unit_id,
+              COALESCE(NULLIF(u.unit_name, ''), p.unit_name) AS unit_name,
+              p.unit_short, p.project_name, p.reporter_name, p.reporter_phone, p.status, p.updated_at
+       FROM t_doc_package p LEFT JOIN t_contractor_unit u ON u.id = p.unit_id
+       WHERE p.id = ?`, [id]
+    )
+    res.json({ success: true, data: after[0] || null })
+  } catch (e) {
+    console.error('[contractorDoc] admin patch package', e.message)
+    res.status(500).json({ success: false, error: '保存失败' })
   }
 })
 
@@ -521,17 +611,24 @@ router.get('/admin/export', requireRole('admin', 'superadmin'), async (req, res)
     const { unit_id = '', keyword = '', status = '' } = req.query
     const where = [], params = []
     if (unit_id) { where.push('p.unit_id = ?'); params.push(unit_id) }
-    if (keyword) { where.push('(p.project_name LIKE ? OR p.unit_name LIKE ?)'); params.push(`%${keyword}%`, `%${keyword}%`) }
+    if (keyword) {
+      where.push(`(p.project_name LIKE ? OR p.unit_name LIKE ? OR u.unit_name LIKE ?
+                OR p.reporter_name LIKE ? OR p.reporter_phone LIKE ?)`)
+      const like = `%${keyword}%`
+      params.push(like, like, like, like, like)
+    }
     if (status !== '') { where.push('p.status = ?'); params.push(status === '1' ? 1 : 0) }
 
     const [pkgs] = await pool.execute(
-      `SELECT p.id, p.unit_name, p.unit_short, p.project_name, p.reporter_name, p.reporter_phone,
+      `SELECT p.id, COALESCE(NULLIF(u.unit_name, ''), p.unit_name) AS unit_name,
+              p.unit_short, p.project_name, p.reporter_name, p.reporter_phone,
               p.status, p.created_at, p.updated_at,
               (SELECT COUNT(*) FROM t_doc_file f JOIN t_doc_catalog c ON f.catalog_id=c.id
                WHERE f.package_id=p.id AND c.required_type='gate' AND c.is_active=1) AS gate_done,
               (SELECT COUNT(*) FROM t_doc_file f JOIN t_doc_catalog c ON f.catalog_id=c.id
                WHERE f.package_id=p.id AND c.required_type='dynamic' AND c.is_active=1) AS dyn_done
        FROM t_doc_package p
+       LEFT JOIN t_contractor_unit u ON u.id = p.unit_id
        ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
        ORDER BY p.updated_at DESC`,
       params
@@ -556,9 +653,12 @@ router.get('/admin/export', requireRole('admin', 'superadmin'), async (req, res)
     }))
 
     const [files] = await pool.execute(
-      `SELECT p.unit_name, p.unit_short, p.project_name, f.catalog_name, f.category,
+      `SELECT COALESCE(NULLIF(u.unit_name, ''), p.unit_name) AS unit_name, p.unit_short, p.project_name,
+              f.catalog_name, f.category,
               f.original_name, f.sys_name, f.cos_url, f.uploader_name, f.uploaded_at
-       FROM t_doc_file f JOIN t_doc_package p ON f.package_id = p.id
+       FROM t_doc_file f
+       JOIN t_doc_package p ON f.package_id = p.id
+       LEFT JOIN t_contractor_unit u ON u.id = p.unit_id
        ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
        ORDER BY p.unit_name, p.project_name, f.catalog_id`,
       params

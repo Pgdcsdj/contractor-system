@@ -13,7 +13,7 @@
       <div class="toolbar card">
         <div class="search-wrap">
           <span class="search-icon"><Icon name="search" :size="17" /></span>
-          <input v-model="kw" class="search-input" placeholder="搜索单位 / 项目名称…" @input="onSearch" />
+          <input v-model="kw" class="search-input" placeholder="搜索单位 / 项目名称 / 上报人姓名或电话…" @input="onSearch" />
         </div>
         <select v-model="filterUnit" class="form-input" @change="fetchLedger">
           <option value="">全部单位</option>
@@ -40,8 +40,14 @@
             <tr v-else-if="!rows.length"><td colspan="8" class="empty-cell">暂无项目资料</td></tr>
             <tr v-for="r in rows" :key="r.id">
               <td><strong>{{ r.unit_name }}</strong></td>
-              <td>{{ r.project_name }}</td>
-              <td>{{ r.reporter_name || '—' }}</td>
+              <td>
+                {{ r.project_name }}
+                <span v-if="!r.file_total" class="badge badge-warn" style="margin-left:6px">空包·0 文件</span>
+              </td>
+              <td>
+                {{ r.reporter_name || '—' }}
+                <div v-if="r.reporter_phone" class="mono" style="font-size:11.5px">{{ r.reporter_phone }}</div>
+              </td>
               <td>
                 <span :class="['pill', r.gate_done >= totals.gate_total && totals.gate_total ? 'ok' : 'warn']">
                   {{ r.gate_done }}/{{ totals.gate_total }}
@@ -55,9 +61,10 @@
               <td>
                 <span :class="['badge', r.status ? 'badge-success' : 'badge-warn']">{{ r.status ? '已提交' : '进行中' }}</span>
               </td>
-              <td class="mono" style="font-size:12px">{{ r.updated_at ? fmt(r.updated_at) : '—' }}</td>
-              <td>
-                <button class="action-link" @click="viewFiles(r)"><Icon name="file" :size="14" /> 查看</button>
+              <td class="mono time-cell">{{ r.updated_at ? fmt(r.updated_at) : '—' }}</td>
+              <td class="op-cell">
+                <button class="action-link" @click="viewFiles(r)"><Icon name="file" :size="14" /> 查看资料</button>
+                <button class="action-link" @click="openPkgEdit(r)"><Icon name="pencil" :size="14" /> 编辑</button>
                 <button class="action-link danger" @click="delPackage(r)"><Icon name="x" :size="14" /> 删除</button>
               </td>
             </tr>
@@ -105,7 +112,8 @@
     <!-- 查看文件弹窗 -->
     <div v-if="showFiles" class="modal-overlay" @click.self="showFiles = false">
       <div class="modal modal-lg">
-        <h3>资料明细 · {{ curPkg?.project_name }}</h3>
+        <h3>资料明细 · {{ curPkg?.unit_name }}</h3>
+        <div class="pkg-sub">{{ curPkg?.project_name }}</div>
         <div class="file-list">
           <div v-for="f in fileRows" :key="f.id" class="file-row">
             <span class="fr-cat">{{ f.category }}</span>
@@ -126,6 +134,41 @@
           <button class="mini-btn primary" :disabled="!addFrm.catalog_id" @click="pickFileAdd">＋ 增补文件</button>
         </div>
         <div class="modal-actions"><button class="btn btn-outline" @click="showFiles = false">关闭</button></div>
+      </div>
+    </div>
+
+    <!-- 编辑项目信息弹窗（改承包商单位 / 项目名称 / 上报人 / 电话 / 状态） -->
+    <div v-if="showPkgForm" class="modal-overlay" @click.self="showPkgForm = false">
+      <div class="modal">
+        <h3>编辑项目信息</h3>
+        <div class="edit-form">
+          <div class="form-group">
+            <label>承包商单位 *</label>
+            <select v-model="pkgFrm.unit_id" class="form-input">
+              <option value="">请选择承包商单位</option>
+              <option v-for="u in units" :key="u.id" :value="u.id">{{ u.unit_name }}</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>项目名称 *</label>
+            <textarea v-model="pkgFrm.project_name" class="form-input" rows="3" placeholder="填写工程/项目全称"></textarea>
+          </div>
+          <div class="form-group"><label>上报人</label><input v-model="pkgFrm.reporter_name" class="form-input" /></div>
+          <div class="form-group"><label>上报人电话</label><input v-model="pkgFrm.reporter_phone" class="form-input" /></div>
+          <div class="form-group">
+            <label>状态</label>
+            <select v-model="pkgFrm.status" class="form-input">
+              <option :value="0">进行中</option>
+              <option :value="1">已提交</option>
+            </select>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-outline" @click="showPkgForm = false">取消</button>
+          <button class="btn btn-primary" @click="savePkg" :disabled="savingPkg || !pkgFrm.unit_id || !pkgFrm.project_name">
+            <Icon v-if="savingPkg" name="loop" :size="16" class="spin" /> 保存
+          </button>
+        </div>
       </div>
     </div>
 
@@ -214,6 +257,11 @@ const savingFile = ref(false)
 const fileFrm = ref({ id: null, catalog_id: '', original_name: '' })
 const addFrm = ref({ catalog_id: '' })
 
+// 编辑项目信息（承包商单位 / 项目名称 / 上报人 / 电话 / 状态）
+const showPkgForm = ref(false)
+const savingPkg = ref(false)
+const pkgFrm = ref({ id: null, unit_id: '', project_name: '', reporter_name: '', reporter_phone: '', status: 0 })
+
 const activeCount = computed(() => catalogAll.value.filter(c => c.is_active).length)
 const activeCatalogs = computed(() => catalogAll.value.filter(c => c.is_active))
 
@@ -291,6 +339,37 @@ async function viewFiles(r) {
   addFrm.value = { catalog_id: '' }
   await refreshFiles()
   showFiles.value = true
+}
+
+// 编辑项目信息：台账层唯一的"能改"入口（原来只能删/只能看，用户反馈"找不到修改的地方"）
+function openPkgEdit(r) {
+  pkgFrm.value = {
+    id: r.id,
+    unit_id: r.unit_id || '',
+    project_name: r.project_name || '',
+    reporter_name: r.reporter_name || '',
+    reporter_phone: r.reporter_phone || '',
+    status: r.status ? 1 : 0,
+  }
+  showPkgForm.value = true
+}
+
+async function savePkg() {
+  if (!pkgFrm.value.unit_id) { alert('请选择承包商单位'); return }
+  if (!String(pkgFrm.value.project_name || '').trim()) { alert('请填写项目名称'); return }
+  savingPkg.value = true
+  try {
+    await request.patch(`/api/contractor-docs/admin/packages/${pkgFrm.value.id}`, {
+      unit_id: Number(pkgFrm.value.unit_id),
+      project_name: String(pkgFrm.value.project_name).trim(),
+      reporter_name: pkgFrm.value.reporter_name,
+      reporter_phone: pkgFrm.value.reporter_phone,
+      status: Number(pkgFrm.value.status) ? 1 : 0,
+    })
+    showPkgForm.value = false
+    await fetchLedger()
+  } catch (e) { alert('保存失败：' + (e.response?.data?.error || e.message)) }
+  finally { savingPkg.value = false }
 }
 
 // 关闭文件弹窗时兜底再刷一次台账，避免任何修改路径没触发 refreshLedgerAfterEdit 时的台账旧值
@@ -456,11 +535,16 @@ onMounted(() => { loadUnits(); fetchLedger(); fetchCatalog() })
 
 .card { background: var(--c-surface); border: 1px solid var(--c-border); border-radius: var(--r-lg); }
 .toolbar { display: flex; align-items: center; gap: 12px; padding: 14px 16px; margin-bottom: 14px; flex-wrap: wrap; }
-.search-wrap { position: relative; flex: 1; min-width: 220px; }
+/* 全局 .form-input 带 width:100%，会把两个筛选下拉撑成整行，导致工具栏堆成 3 行；这里收回自适应宽度 */
+.toolbar .form-input { width: auto; min-width: 150px; flex: 0 0 auto; }
+.search-wrap { position: relative; flex: 1 1 260px; min-width: 220px; }
 .search-icon { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--c-text-3); pointer-events: none; }
 .search-input { width: 100%; padding: 9px 13px 9px 38px; border: 1px solid var(--c-border-strong); border-radius: var(--r); font-size: 14px; }
 .search-input:focus { outline: none; border-color: var(--c-blue-600); box-shadow: 0 0 0 3px rgba(29,111,184,.15); }
-.form-input { padding: 9px 12px; border: 1px solid var(--c-border-strong); border-radius: var(--r); font-size: 14px; font-family: var(--font-sans); color: var(--c-text); background: var(--c-surface); }
+/* 注意：这里必须用 background-color 而不是 background 简写——
+   简写会把全局 select.form-input 的 data-uri 箭头 background-image 一起清掉，
+   导致下拉框长得和普通输入框一模一样（本页工具栏与弹窗都踩过）。 */
+.form-input { padding: 9px 12px; border: 1px solid var(--c-border-strong); border-radius: var(--r); font-size: 14px; font-family: var(--font-sans); color: var(--c-text); background-color: var(--c-surface); }
 .form-input:focus { outline: none; border-color: var(--c-blue-600); box-shadow: 0 0 0 3px rgba(29,111,184,.15); }
 
 .table-card { padding: 0; overflow: hidden; }
@@ -476,7 +560,9 @@ onMounted(() => { loadUnits(); fetchLedger(); fetchCatalog() })
 .pill.warn { background: #fde8e8; color: #c0392b; }
 .pill.muted { background: var(--c-surface-2); color: var(--c-text-2); }
 
-.badge { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+.badge { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.pill { white-space: nowrap; }
+.time-cell { font-size: 12px; white-space: nowrap; }
 .badge-success { background: var(--c-success-bg); color: var(--c-success); }
 .badge-warn { background: #fef3cd; color: #b7791f; }
 .badge-danger { background: var(--c-danger-bg); color: var(--c-danger); }
@@ -494,6 +580,8 @@ onMounted(() => { loadUnits(); fetchLedger(); fetchCatalog() })
 
 .action-link { display: inline-flex; align-items: center; gap: 4px; background: none; border: none; color: var(--c-blue-600); cursor: pointer; font-size: 13px; font-weight: 500; padding: 5px 8px; border-radius: var(--r-sm); margin-right: 4px; }
 .action-link:hover { background: var(--c-blue-50); }
+.op-cell { white-space: nowrap; }
+.op-cell .action-link { margin-right: 2px; padding: 5px 6px; }
 .action-link.danger { color: var(--c-danger); }
 .action-link.danger:hover { background: var(--c-danger-bg); }
 
@@ -501,6 +589,9 @@ onMounted(() => { loadUnits(); fetchLedger(); fetchCatalog() })
 .modal { background: var(--c-surface); border-radius: var(--r-lg); padding: 26px; width: 100%; max-width: 460px; box-shadow: var(--shadow-lg); }
 .modal-lg { max-width: 640px; }
 .modal h3 { font-size: 17px; font-weight: 700; color: var(--c-text); margin-bottom: 16px; }
+.pkg-sub { font-size: 13px; color: var(--c-text-2); line-height: 1.6; margin: -8px 0 14px; }
+textarea.form-input { resize: vertical; line-height: 1.6; }
+.edit-form select.form-input { width: 100%; }
 .edit-form { display: flex; flex-direction: column; gap: 12px; }
 .form-group { display: flex; flex-direction: column; gap: 5px; }
 .form-group label { font-size: 13px; color: var(--c-text-2); font-weight: 600; }
