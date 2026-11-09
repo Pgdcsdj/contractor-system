@@ -325,7 +325,20 @@ router.get('/periods/:id/export', async (req, res) => {
          FROM t_activity_row w JOIN t_activity_record r ON r.id = w.record_id
          WHERE w.period_id = ? ORDER BY r.unit_name, w.sort_no, w.id`, [p.id]
       )
-      xlsxDownload(res, svc.buildSummaryWorkbook(def, rows, p.title), `${p.title}_类比排查汇总.xlsx`)
+      // 优先「按上传的标准表原版式」导出：直接拿原文件当模板换数据行
+      let buf = null
+      if (p.template_url) {
+        try {
+          const r0 = await fetch(p.template_url)
+          if (!r0.ok) throw new Error(`HTTP ${r0.status}`)
+          const tpl = Buffer.from(await r0.arrayBuffer())
+          buf = svc.buildSummaryFromTemplate(tpl, def, rows)
+        } catch (e) {
+          console.error('[activity] 原表模板导出失败，退回无样式汇总:', e.message)
+        }
+      }
+      if (!buf) buf = svc.buildPlainSummaryWorkbook(def, rows, p.title)
+      xlsxDownload(res, buf, `${p.title}_汇总.xlsx`)
     } else {
       const [records] = await pool.query(
         `SELECT r.*, (SELECT COUNT(*) FROM t_activity_file f WHERE f.record_id = r.id) AS file_count
