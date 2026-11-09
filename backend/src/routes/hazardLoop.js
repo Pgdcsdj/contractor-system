@@ -532,10 +532,10 @@ router.get('/stats', adminAuth, async (req, res) => {
     const byStatus = { reported: 0, assigned: 0, rectifying: 0, verifying: 0, closed: 0 }
     statusRows.forEach((r) => { if (r.status in byStatus) byStatus[r.status] = r.c })
 
-    // 等级分布（确保 3 级齐全，缺省 0）
+    // 等级分布（两级口径：重大隐患 / 一般隐患，确保齐全，缺省 0）
     const [levelRows] = await pool.execute('SELECT hazard_level, COUNT(*) AS c FROM t_hazard WHERE deleted_at IS NULL GROUP BY hazard_level')
     const byLevel = {}
-    ;['重大隐患', '较大隐患', '一般隐患'].forEach((l) => { byLevel[l] = 0 })
+    ;['重大隐患', '一般隐患'].forEach((l) => { byLevel[l] = 0 })
     levelRows.forEach((r) => { if (r.hazard_level in byLevel) byLevel[r.hazard_level] = r.c })
 
     // 单位归集（按 unit_name）

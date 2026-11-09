@@ -419,15 +419,22 @@ async function autoMigrate() {
       console.log('[migrate] ✅ t_rectify_unit_biz.head_phone 字段添加完成')
     }
 
-    // 种子数据（幂等）：等级(level) 仅保留 3 项，code==name，用 upsert 强制写入，
-    // 防止被用户删除后回弹；分类(category)/业务口(business_dept)/中心站(center_station) 不再种子（用户全权拥有）。
+    // 种子数据（幂等）：等级(level) 仅保留 2 项（重大隐患 / 一般隐患），code==name，
+    // 用 upsert 强制写入，防止这两条标准等级被误删。
+    // 注意：这里**只**兜底这两条。「较大隐患」已按用户口径下线（业务上只分重大/一般两级），
+    // 不再种子，否则用户删除后每次重启都会回弹（2026-11-09 修复的就是这个问题）。
+    // 分类(category)/业务口(business_dept)/中心站(center_station) 不种子（用户全权拥有）。
     await pool.execute(`
       INSERT INTO t_hazard_dict (type, code, name, default_level, sort_order, enabled) VALUES
         ('level','重大隐患','重大隐患','',1,1),
-        ('level','较大隐患','较大隐患','',2,1),
-        ('level','一般隐患','一般隐患','',3,1)
+        ('level','一般隐患','一般隐患','',2,1)
       ON DUPLICATE KEY UPDATE name=VALUES(name), default_level=VALUES(default_level), enabled=1
     `)
+    // 清理历史残留：早期版本种子过「较大隐患」，用户已明确删除，这里做一次性幂等清理。
+    // 仅删字典项；存量隐患的 hazard_level 由数据修正脚本处理（改判为一般隐患）。
+    await pool.execute(
+      "DELETE FROM t_hazard_dict WHERE type='level' AND (code='较大隐患' OR name='较大隐患')"
+    )
 
     // 5.6 扩展 t_hazard_dict.type 枚举（支持新字典类型：rectify_unit / business_dept / business_dept_head）
     //     字典后端已放开 type 校验（VALID_TYPES），此处同步扩列 ENUM 保证 seed/insert 不报错。

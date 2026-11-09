@@ -45,8 +45,9 @@
             <div class="form-group"><label>隐患等级</label>
               <select v-model="form.hazard_level" class="form-input">
                 <option value="重大隐患">重大隐患</option>
-                <option value="较大隐患">较大隐患</option>
                 <option value="一般隐患">一般隐患</option>
+                <!-- 历史数据兼容：存量仍为「较大隐患」时保留当前值，避免编辑时被静默改写 -->
+                <option v-if="form.hazard_level === '较大隐患'" value="较大隐患">较大隐患（已停用，建议改为一般隐患）</option>
               </select></div>
 
             <div class="form-group"><label>整改责任人</label>

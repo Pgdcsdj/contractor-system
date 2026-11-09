@@ -89,9 +89,11 @@ function cleanPhone(s) {
     .join('/')
 }
 
-// 隐患等级归一化：返回 { level, defaulted }
-// 等级名称与字典/库保持一致（隐患等级 code==name 约定），共 3 项：
-//   重大隐患 / 较大隐患 / 一般隐患
+// 隐患等级归一化：返回 { level, defaulted, merged? }
+// 等级名称与字典/库保持一致（code==name 约定），业务上只两级：
+//   重大隐患 / 一般隐患
+// 决策 C（2026-11-09 用户口径）：原「较大隐患」下线，「较大 / 二级」统一并入「一般隐患」，
+//   并通过 merged 回传原等级，调用方据此给出可追溯告警（不静默改判）。
 // 决策 B：历史「低」等级并入「一般隐患」，故低/较小/四级/轻微 统一归一为「一般隐患」。
 function normalizeLevel(v) {
   const s = String(v == null ? '' : v).trim()
@@ -101,7 +103,8 @@ function normalizeLevel(v) {
   if (/一般不符合/.test(s)) return { level: '一般隐患', defaulted: false }
   if (/不符合/.test(s)) return { level: '一般隐患', defaulted: false }
   if (/重大|特大|一级/.test(s)) return { level: '重大隐患', defaulted: false }
-  if (/较大|二级/.test(s)) return { level: '较大隐患', defaulted: false }
+  // 「较大隐患」已下线 → 并入一般隐患（保留 merged 供告警追溯）
+  if (/较大|二级/.test(s)) return { level: '一般隐患', defaulted: false, merged: '较大隐患' }
   if (/一般|三级|普通/.test(s)) return { level: '一般隐患', defaulted: false }
   // 决策 B：历史「低」等级并入「一般隐患」
   if (/低|较小|四级|轻微/.test(s)) return { level: '一般隐患', defaulted: false }
@@ -618,8 +621,13 @@ async function cleanRow(row, mapping, ctx) {
   }
 
   // 等级归一化
-  const { level, defaulted } = normalizeLevel(rawLevel)
-  if (defaulted && rawLevel) warnings.push(`等级无法识别，已默认一般：${rawLevel}`)
+  const { level, defaulted, merged } = normalizeLevel(rawLevel)
+  if (merged) {
+    // 「较大隐患」已下线并入一般隐患：显式告警，便于回溯原值
+    warnings.push(`等级「${merged}」已并入「一般隐患」（系统现只保留重大/一般两级）：${rawLevel}`)
+  } else if (defaulted && rawLevel) {
+    warnings.push(`等级无法识别，已默认一般：${rawLevel}`)
+  }
   rec.hazard_level = level
 
   // 责任人与电话

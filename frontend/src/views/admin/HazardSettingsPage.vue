@@ -249,8 +249,9 @@ import {
   backfillHazardStation,
 } from '@/api/hazard'
 
-// 隐患等级枚举（与后端 LEVELS 保持一致：重大隐患 / 较大隐患 / 一般隐患）
-const LEVELS = ['重大隐患', '较大隐患', '一般隐患']
+// 隐患等级枚举（与后端 LEVELS 保持一致：重大隐患 / 一般隐患）
+// 「较大隐患」已于 2026-11-09 下线，存量数据并入一般隐患
+const LEVELS = ['重大隐患', '一般隐患']
 
 // 字典 Tab 配置（数组驱动；原「整改单位」「业务部门」合并为「整改单位·业务口」关联维护区）
 const DICT_TABS = [
