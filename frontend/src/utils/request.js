@@ -17,6 +17,7 @@ const ADMIN_API_PREFIXES = [
   '/api/activity',  // ← 承包商安全活动管理端（公开填报端走 /api/open/activity，不匹配此前缀）
   '/api/quality',   // ← 出题质量量化校验与追踪（admin/superadmin）
   '/api/notify-config', // ← 钉钉通知设置（后台可配，需 admin token；漏登记会误跳 /login）
+  '/api/site-permit',   // ← 直接作业预约报备（admin/superadmin；漏登记会误跳培训端 /login）
 ]
 
 const request = axios.create({

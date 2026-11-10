@@ -92,12 +92,11 @@
           <span v-if="!sidebarCollapsed" class="nav-reserved-tag">预留</span>
         </router-link>
 
-        <!-- 分组四：作业与考核（菜单预留，功能开发中） -->
+        <!-- 分组四：作业与考核 -->
         <div v-if="!sidebarCollapsed" class="nav-group-title">作业与考核</div>
-        <router-link to="/admin/work-appointment" class="nav-item nav-item--reserved">
+        <router-link to="/admin/work-appointment" class="nav-item">
           <Icon name="file" :size="20" class="nav-icon" />
-          <span v-if="!sidebarCollapsed" class="nav-label">作业预约报备</span>
-          <span v-if="!sidebarCollapsed" class="nav-reserved-tag">预留</span>
+          <span v-if="!sidebarCollapsed" class="nav-label">直接作业预约报备</span>
         </router-link>
         <router-link to="/admin/work-permit" class="nav-item nav-item--reserved">
           <Icon name="shield" :size="20" class="nav-icon" />
@@ -244,7 +243,7 @@ const routeMap = {
   ContractorDocs: '承包商开工资料',
   HazardVerify: '排查验证',
   ContractorAccess: '承包商准入与资质管理',
-  WorkAppointment: '作业预约报备',
+  WorkAppointment: '直接作业预约报备',
   WorkPermit: '直接作业许可管理',
   WorkControl: '作业过程管控',
   ContractorAssess: '承包商考核',

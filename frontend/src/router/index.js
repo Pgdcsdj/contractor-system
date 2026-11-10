@@ -242,18 +242,19 @@ const routes = [
         component: () => import('@/views/admin/HazardStandardPage.vue'),
         meta: { title: '隐患排查标准', desc: '日常隐患排查标准库（导入日常隐患排查标准，支撑后期隐患排查验证与考核）。' },
       },
+      // ── 作业与考核 ──────────────────────────────────────────────────
+      {
+        path: 'work-appointment',
+        name: 'WorkAppointment',
+        component: () => import('@/views/admin/SitePermitPage.vue'),
+        meta: { title: '直接作业预约报备', desc: '钉钉在线表格每晚 22:00 自动同步的直接作业预约清单。' },
+      },
       // ── 预留栏目（菜单已挂，功能开发中）──────────────────────────────
       {
         path: 'hazard-verify',
         name: 'HazardVerify',
         component: () => import('@/views/admin/PlaceholderPage.vue'),
         meta: { title: '排查验证', desc: '隐患排查整改闭环中的排查验证栏目，功能开发中，敬请期待。' },
-      },
-      {
-        path: 'work-appointment',
-        name: 'WorkAppointment',
-        component: () => import('@/views/admin/PlaceholderPage.vue'),
-        meta: { title: '作业预约报备', desc: '作业预约报备模块，功能开发中，敬请期待。' },
       },
       {
         path: 'work-control',

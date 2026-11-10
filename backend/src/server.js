@@ -41,6 +41,7 @@ const standardBasisRoutes   = require('./routes/standardBasis')    // 问题依�
 const hazardStandardRoutes   = require('./routes/hazardStandard')  // 隐患排查标准库（底层=t_hazard_check_standard）
 const activityRoutes         = require('./routes/activity')         // 承包商安全活动（管理端：周一周三/类比排查）
 const activityOpenRoutes     = require('./routes/activityOpen')     // 承包商安全活动（公开免登录填报端）
+const sitePermitRoutes       = require('./routes/sitePermit')       // 直接作业预约报备（钉钉表格同步）
 
 // ─── 系统版本常量（与前端 src/version.js 保持一致）─────────────────────
 const { APP_VERSION, BUILD_DATE } = require('./version')
@@ -1030,6 +1031,62 @@ async function autoMigrate() {
     `)
     console.log('[migrate] ✅ 承包商安全活动相关表结构已就绪')
 
+    // ─── 直接作业预约报备（数据源：钉钉群在线表格，每天 22:00 同步）───────────
+    await ensureTable(`
+      CREATE TABLE IF NOT EXISTS t_site_permit (
+        id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        sheet_name      VARCHAR(100) NOT NULL DEFAULT '' COMMENT '来源工作表（钻井试气/地面等）',
+        row_hash        CHAR(32)     NOT NULL COMMENT '业务字段哈希，用于跨行位移去重',
+        seq_no          VARCHAR(20)  NOT NULL DEFAULT '',
+        apply_unit      VARCHAR(100) NOT NULL DEFAULT '' COMMENT '申请单位',
+        work_unit       VARCHAR(150) NOT NULL DEFAULT '' COMMENT '施工单位',
+        content         TEXT COMMENT '施工内容',
+        place           VARCHAR(200) NOT NULL DEFAULT '' COMMENT '施工地点',
+        camera          VARCHAR(200) NOT NULL DEFAULT '' COMMENT '监控设备名称',
+        work_type       VARCHAR(50)  NOT NULL DEFAULT '' COMMENT '施工作业类别',
+        dual_op         VARCHAR(20)  NOT NULL DEFAULT '' COMMENT '是否双边作业',
+        risk_level      VARCHAR(20)  NOT NULL DEFAULT '' COMMENT '风险分级：红/橙/黄/蓝',
+        measures        TEXT COMMENT '风险管控措施',
+        leader          TEXT COMMENT '带班人姓名职务联系方式',
+        supervisor      TEXT COMMENT '监护人姓名及联系方式',
+        plan_time_raw   VARCHAR(60)  NOT NULL DEFAULT '' COMMENT '预计施工时间原文',
+        plan_date       DATE DEFAULT NULL COMMENT '预计施工日期（解析值，用于筛选）',
+        plan_start      DATETIME DEFAULT NULL COMMENT '预计开工时间（解析值）',
+        auditor         VARCHAR(100) NOT NULL DEFAULT '' COMMENT '审核人',
+        reporter        VARCHAR(100) NOT NULL DEFAULT '' COMMENT '上报人',
+        report_date_raw VARCHAR(60)  NOT NULL DEFAULT '' COMMENT '上报日期原文',
+        report_date     DATE DEFAULT NULL,
+        remark          TEXT,
+        is_active       TINYINT      NOT NULL DEFAULT 1 COMMENT '1=当前表格里仍在 0=已从表格消失（留历史）',
+        source          VARCHAR(16)  NOT NULL DEFAULT 'dingtalk' COMMENT 'dingtalk/import',
+        sync_id         INT UNSIGNED DEFAULT NULL,
+        created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uk_row_hash (row_hash),
+        KEY idx_plan_date (plan_date),
+        KEY idx_active (is_active),
+        KEY idx_work_unit (work_unit),
+        KEY idx_risk (risk_level)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='直接作业预约报备（钉钉表格同步）'
+    `)
+    await ensureTable(`
+      CREATE TABLE IF NOT EXISTS t_site_permit_sync (
+        id            INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        triggered_by  VARCHAR(16) NOT NULL DEFAULT 'cron' COMMENT 'cron/manual',
+        status        VARCHAR(16) NOT NULL DEFAULT 'running' COMMENT 'running/ok/fail',
+        message       VARCHAR(1000) NOT NULL DEFAULT '',
+        total_rows    INT NOT NULL DEFAULT 0,
+        new_rows      INT NOT NULL DEFAULT 0,
+        updated_rows  INT NOT NULL DEFAULT 0,
+        inactive_rows INT NOT NULL DEFAULT 0,
+        started_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        finished_at   DATETIME DEFAULT NULL,
+        duration_ms   INT DEFAULT NULL,
+        KEY idx_started (started_at)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='直接作业预约报备-同步批次日志'
+    `)
+    console.log('[migrate] ✅ 直接作业预约报备表结构已就绪')
+
     console.log('[migrate] ✅ 隐患闭环相关表结构已就绪')
   } catch (err) {
     console.error('[migrate] 自动迁移失败:', err.message)
@@ -1076,6 +1133,33 @@ app.use('/api/activity', activityRoutes)                    // 承包商安全�
 app.use('/api/open/activity', activityOpenRoutes)           // 承包商安全活动（公开免登录填报端）
 app.use('/api/quality', qualityRoutes)                      // 出题质量量化校验与追踪
 app.use('/api/notify-config', notifyConfigRoutes)            // 钉钉通知开关配置（后台可设）
+app.use('/api/site-permit', sitePermitRoutes)                // 直接作业预约报备（钉钉表格同步）
+
+// ─── 直接作业预约报备：每天 22:00 从钉钉表格同步 ─────────────────────────────
+// 时区 Asia/Shanghai（容器 ENV 已设）；配置开关在 /api/site-permit/config。
+try {
+  const sitePermitSync = require('./services/sitePermitSync')
+  const job = async () => {
+    try {
+      const cfg = await sitePermitSync.loadConfig()
+      if (!cfg.enabled) { console.log('[site-permit] 同步未启用，跳过'); return }
+      const r = await sitePermitSync.syncNow('cron')
+      console.log(`[site-permit] 定时同步${r.ok ? '成功' : '失败'}：${r.message}`)
+    } catch (e) {
+      console.error('[site-permit] 定时同步异常:', e && e.message ? e.message : e)
+    }
+  }
+  // 每小时整点检查一次，命中配置的 22:xx 才真正执行（配置改了不用重启）
+  cron.schedule('0 * * * *', async () => {
+    const cfg = await sitePermitSync.loadConfig()
+    const h = Number(cfg.cronHour)
+    const now = new Date()
+    if (now.getHours() === h) await job()
+  })
+  console.log('[cron] ✅ 直接作业预约报备同步已注册（每小时检查，默认 22:00 执行）')
+} catch (e) {
+  console.error('[cron] 直接作业预约报备同步注册失败（不影响主服务）:', e.message)
+}
 
 // ─── 定时备份（每周日 23:00）────────────────────────────────────────────────
 // P1：服务进程内 node-cron；失败仅 console.error + 写审计日志（未建），不阻塞主进程。
