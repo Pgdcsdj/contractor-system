@@ -4,8 +4,7 @@
       <div class="brand">
         <img :src="logoUrl" class="brand-mark-img" alt="通南巴气田安全管理" />
         <div class="brand-text">
-          <h1>通南巴承包商系统</h1>
-          <p class="sub">安全隐患整改闭环管理平台</p>
+          <h1>通南巴承包商安全管理系统</h1>
         </div>
       </div>
 
@@ -81,8 +80,7 @@ async function handleLogin() {
   background: #fff;
   box-shadow: 0 6px 18px rgba(29, 111, 184, .45);
 }
-.brand-text h1 { font-size: 19px; font-weight: 700; color: var(--c-text); }
-.sub { font-size: 12.5px; color: var(--c-text-3); margin-top: 3px; }
+.brand-text h1 { font-size: 18px; font-weight: 700; color: var(--c-text); white-space: nowrap; }
 
 .form { text-align: left; }
 .form-group { margin-bottom: 16px; }
