@@ -30,19 +30,44 @@
          Tab 1 · 预约台账
     ═════════════════════════════════════════════════════════════════ -->
     <template v-if="tab === 'list'">
-      <!-- 统计卡 -->
-      <div class="stat-row">
-        <div class="stat-card">
-          <span class="stat-label">当日预约总数</span>
-          <strong class="stat-value">{{ stats.total || 0 }}</strong>
-          <small class="stat-sub">{{ statsDate || '今天' }}</small>
+      <!-- 作业预约统计：当日与当月合并为一个对照面板 -->
+      <div class="card stats-panel">
+        <div class="stats-head">
+          <div class="stats-title">
+            <h3>作业预约统计</h3>
+            <span class="stats-note">
+              当日 {{ statsDate || '—' }} ｜ 本月 {{ stats.month || '—' }}（已报 {{ stats.monthDays || 0 }} 天）
+            </span>
+          </div>
+          <div class="stats-high">
+            <span class="high-dot"></span>本月高风险（橙 / 红）<strong>{{ monthHighRisk }}</strong> 项
+          </div>
         </div>
-        <div class="stat-card" v-for="r in riskCards" :key="r.key">
-          <span class="stat-label">
-            <i class="risk-dot" :style="{ background: riskColor(r.key) }"></i>{{ r.key || '未分级' }}
-          </span>
-          <strong class="stat-value" :style="{ color: riskColor(r.key) }">{{ r.cnt }}</strong>
-          <small class="stat-sub">项</small>
+
+        <div class="stats-grid-wrap">
+          <div class="stats-grid">
+            <div class="sg-head sg-label"></div>
+            <div class="sg-head">预约总数</div>
+            <div v-for="lv in DISPLAY_LEVELS" :key="'h-' + lv" class="sg-head" :style="lvStyle(lv)">
+              <i class="lv-dot"></i>{{ lv }}
+            </div>
+
+            <div class="sg-label sg-row-label">
+              <strong>当日</strong><small>{{ statsDate || '—' }}</small>
+            </div>
+            <div class="sg-cell sg-total"><b>{{ stats.total || 0 }}</b><small>项</small></div>
+            <div v-for="lv in DISPLAY_LEVELS" :key="'d-' + lv" class="sg-cell" :style="lvStyle(lv)">
+              <b>{{ dayRiskMap[lv] || 0 }}</b><small>项</small>
+            </div>
+
+            <div class="sg-label sg-row-label">
+              <strong>本月累计</strong><small>{{ stats.month || '—' }}</small>
+            </div>
+            <div class="sg-cell sg-total"><b>{{ stats.monthTotal || 0 }}</b><small>项</small></div>
+            <div v-for="lv in DISPLAY_LEVELS" :key="'m-' + lv" class="sg-cell" :style="lvStyle(lv)">
+              <b>{{ monthRiskMap[lv] || 0 }}</b><small>项</small>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -341,6 +366,8 @@ import {
 } from '@/api/sitePermit'
 
 const RISK_LEVELS = ['红色', '橙色', '黄色', '蓝色']
+// 统计面板按风险由低到高排列（蓝→黄→橙→红），与筛选下拉顺序分开
+const DISPLAY_LEVELS = ['蓝色', '黄色', '橙色', '红色']
 const RISK_COLORS = {
   红色: '#dc2626',
   橙色: '#ea580c',
@@ -390,15 +417,22 @@ const list = ref([])
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(20)
-const stats = reactive({ total: 0, byRisk: [], bySheet: [], dates: [], sheets: [] })
+const stats = reactive({
+  total: 0, byRisk: [], bySheet: [], dates: [], sheets: [],
+  month: '', monthTotal: 0, monthByRisk: [], monthDays: 0,
+})
 const statsDate = ref('')
 
 // ── 计算属性 ──────────────────────────────────────────────────────────────
-const riskCards = computed(() => {
+function toRiskMap(rows) {
   const map = {}
-  for (const r of stats.byRisk || []) map[r.risk_level || '未分级'] = r.cnt
-  return RISK_LEVELS.map((k) => ({ key: k, cnt: map[k] || 0 }))
-})
+  for (const r of rows || []) map[r.risk_level || '未分级'] = Number(r.cnt) || 0
+  return map
+}
+const dayRiskMap = computed(() => toRiskMap(stats.byRisk))
+const monthRiskMap = computed(() => toRiskMap(stats.monthByRisk))
+const monthHighRisk = computed(() =>
+  (monthRiskMap.value['橙色'] || 0) + (monthRiskMap.value['红色'] || 0))
 const sheetOptions = computed(() => stats.sheets || [])
 const syncChipClass = computed(() => {
   if (!cfg.enabled) return 'off'
@@ -415,6 +449,11 @@ const syncText = computed(() => {
 
 // ── 工具 ──────────────────────────────────────────────────────────────────
 function riskColor(k) { return RISK_COLORS[k] || '#94a3b8' }
+/** 统计面板每个风险列的配色（CSS 变量由 Vue 内联样式注入） */
+function lvStyle(k) {
+  const c = riskColor(k)
+  return { '--lv': c, '--lv-bg': c + '0d', '--lv-soft': c + '22' }
+}
 function riskTagStyle(k) {
   const c = riskColor(k)
   return { color: c, borderColor: c + '55', background: c + '12' }
@@ -484,6 +523,10 @@ async function loadStats() {
     stats.bySheet = d.bySheet || []
     stats.dates = d.dates || []
     stats.sheets = d.sheets || []
+    stats.month = d.month || ''
+    stats.monthTotal = d.monthTotal || 0
+    stats.monthByRisk = d.monthByRisk || []
+    stats.monthDays = d.monthDays || 0
     statsDate.value = d.date || ''
   } catch (e) { /* 统计失败不阻断列表 */ }
 }
@@ -627,13 +670,29 @@ onMounted(async () => {
 .tab:hover { color: var(--text-primary, #1e293b); }
 .tab.on { color: var(--primary); border-bottom-color: var(--primary); font-weight: 600; }
 
-/* ── 统计卡 ── */
-.stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; }
-.stat-card { background: #fff; border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 4px; }
-.stat-label { font-size: 12.5px; color: var(--text-secondary); display: flex; align-items: center; gap: 5px; }
-.stat-value { font-size: 24px; line-height: 1.1; }
-.stat-sub { font-size: 11.5px; color: var(--text-secondary); }
-.risk-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+/* ── 作业预约统计面板（当日 + 当月）── */
+.stats-panel { padding: 16px 18px 18px; }
+.stats-head { display: flex; justify-content: space-between; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 14px; }
+.stats-title { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.stats-title h3 { margin: 0; font-size: 15px; font-weight: 700; color: var(--text-primary, #1e293b); }
+.stats-note { font-size: 12px; color: var(--text-secondary); }
+.stats-high { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: #b45309; background: #fff7ed; border: 1px solid #fed7aa; padding: 5px 11px; border-radius: 999px; white-space: nowrap; }
+.stats-high strong { font-size: 15px; color: #c2410c; }
+.high-dot { width: 7px; height: 7px; border-radius: 50%; background: #ea580c; flex: 0 0 auto; }
+
+.stats-grid-wrap { overflow-x: auto; }
+.stats-grid { display: grid; grid-template-columns: 104px repeat(5, minmax(92px, 1fr)); gap: 8px; min-width: 620px; }
+.sg-head { display: flex; align-items: center; justify-content: center; gap: 5px; padding: 0 4px 9px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--text-secondary); white-space: nowrap; }
+.sg-label { text-align: left; }
+.lv-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--lv, #94a3b8); display: inline-block; flex: 0 0 auto; }
+.sg-row-label { display: flex; flex-direction: column; justify-content: center; gap: 3px; padding: 6px 2px; }
+.sg-row-label strong { font-size: 13.5px; color: var(--text-primary, #1e293b); }
+.sg-row-label small { font-size: 11px; color: var(--text-secondary); }
+.sg-cell { display: flex; align-items: baseline; justify-content: center; gap: 4px; min-height: 54px; padding: 10px 8px 9px; background: var(--lv-bg, #f8fafc); border: 1px solid var(--lv-soft, var(--border)); border-top: 3px solid var(--lv, #94a3b8); border-radius: 9px; }
+.sg-cell b { font-size: 23px; line-height: 1.15; font-weight: 700; color: var(--lv, #1e293b); }
+.sg-cell small { font-size: 11px; color: var(--text-secondary); }
+.sg-total { background: #f8fafc; border: 1px solid var(--border); border-top: 3px solid var(--primary); }
+.sg-total b { color: var(--text-primary, #1e293b); }
 
 /* ── 筛选 ── */
 .filter-card { padding: 14px 16px; }

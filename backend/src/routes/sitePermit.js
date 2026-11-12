@@ -180,8 +180,25 @@ router.get('/stats', async (req, res) => {
     const [sheetAll] = await pool.query(
       `SELECT DISTINCT sheet_name FROM t_site_permit WHERE is_active=1 AND sheet_name <> '' ORDER BY sheet_name`
     )
+
+    // 当月口径：当前自然月，按计划日期归属，与「当日」并列展示。
+    // 统一用 DATE_FORMAT 出字符串比较，避免 mysql2 把 DATE 解析成 Date 后跨时区差一天。
+    const [[{ ym }]] = await pool.query(`SELECT DATE_FORMAT(CURDATE(), '%Y-%m') AS ym`)
+    const month = ym || ''
+    const mw = `WHERE is_active = 1 AND DATE_FORMAT(plan_date, '%Y-%m') = ?`
+    const [monthByRisk] = await pool.query(
+      `SELECT risk_level, COUNT(*) AS cnt FROM t_site_permit ${mw} GROUP BY risk_level`, [month]
+    )
+    const [[{ monthTotal }]] = await pool.query(
+      `SELECT COUNT(*) AS monthTotal FROM t_site_permit ${mw}`, [month]
+    )
+    const [[{ monthDays }]] = await pool.query(
+      `SELECT COUNT(DISTINCT plan_date) AS monthDays FROM t_site_permit ${mw}`, [month]
+    )
+
     ok(res, {
       date, total, byRisk, bySheet, dates,
+      month, monthTotal, monthByRisk, monthDays,
       sheets: sheetAll.map((x) => x.sheet_name),
     })
   } catch (e) { fail(res, e) }
