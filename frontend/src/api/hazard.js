@@ -183,6 +183,48 @@ export function getCenterStationRanking(params = {}) {
   return request.get('/api/hazards/center-station-ranking', { params })
 }
 
+/**
+ * 排名数字下钻：按与统计表完全相同的口径返回隐患明细（分页）
+ * params: { start_date, end_date, unit_name, center_station_name, metric, page, pageSize }
+ * center_station_name 可传 '__all_assigned__'（四个中心站）/ '__unassigned__'（未归属）
+ * metric: total | closed | open | overdue
+ */
+export function getStationRankingDetails(params = {}) {
+  return request.get('/api/hazards/center-station-ranking/details', { params })
+}
+
+/** 导出排名涉及的具体问题清单（xlsx，含「隐患明细」「统计口径」双 sheet） */
+export function exportStationRankingDetails(params = {}) {
+  return request
+    .get('/api/hazards/center-station-ranking/export', {
+      params,
+      responseType: 'blob',
+      timeout: 300000,
+    })
+    .then(async (res) => {
+      const data = res.data
+      // responseType=blob 时后端返回的错误 JSON 也会变成 Blob，先拦截避免下出坏文件
+      if (data && data.type && String(data.type).includes('json')) {
+        const text = await data.text()
+        let msg = '导出失败'
+        try { msg = JSON.parse(text).error || msg } catch (_) { /* 保持默认提示 */ }
+        throw new Error(msg)
+      }
+      const blob = new Blob([data], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      })
+      const url = window.URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `四中心站隐患明细_${new Date().toISOString().slice(0, 10)}.xlsx`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      window.URL.revokeObjectURL(url)
+      return res
+    })
+}
+
 /** 按现有归属规则批量回填隐患的中心站/场站；force=true 时全表重算 */
 export function backfillHazardStation(force = false) {
   return request.post('/api/hazard-dict/backfill-hazard-station', { force })

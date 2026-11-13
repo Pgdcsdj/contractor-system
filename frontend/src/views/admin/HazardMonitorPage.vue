@@ -119,6 +119,9 @@
             {{ rankLoading ? '统计中…' : '统计' }}
           </button>
           <button class="btn btn-ghost btn-sm" :disabled="rankLoading" @click="resetRank">重置</button>
+          <button class="btn btn-outline btn-sm" :disabled="rankLoading || rankExporting" @click="exportAllAssigned">
+            <Icon name="download" :size="14" /> {{ rankExporting ? '导出中…' : '导出明细' }}
+          </button>
         </div>
       </div>
 
@@ -129,7 +132,7 @@
           <div class="bar">
             <div class="bar-fill bar-station" :style="{ width: pct(r.total, rankMax) + '%' }"></div>
           </div>
-          <span class="unit-count">{{ r.total }}</span>
+          <a class="unit-count drill-link" href="javascript:void(0)" @click.prevent="openDrill(r, 'total')">{{ r.total }}</a>
         </div>
       </div>
 
@@ -148,15 +151,22 @@
         <tbody>
           <tr v-for="r in rankRows" :key="r.center_station_name">
             <td><span class="rank-no" :class="'rk' + r.rank">{{ r.rank }}</span></td>
-            <td>{{ r.center_station_name }}</td>
-            <td><strong>{{ r.total }}</strong></td>
-            <td>{{ r.closed }}</td>
             <td>
-              <span v-if="r.open" class="badge badge-warning">{{ r.open }}</span>
+              <a class="drill-link drill-name" href="javascript:void(0)" @click.prevent="openDrill(r, 'total')">{{ r.center_station_name }}</a>
+            </td>
+            <td>
+              <strong><a class="drill-link" href="javascript:void(0)" @click.prevent="openDrill(r, 'total')">{{ r.total }}</a></strong>
+            </td>
+            <td>
+              <a v-if="r.closed" class="drill-link" href="javascript:void(0)" @click.prevent="openDrill(r, 'closed')">{{ r.closed }}</a>
               <span v-else class="muted">0</span>
             </td>
             <td>
-              <span v-if="r.overdue" class="badge badge-danger">{{ r.overdue }}</span>
+              <a v-if="r.open" class="badge badge-warning drill-link" href="javascript:void(0)" @click.prevent="openDrill(r, 'open')">{{ r.open }}</a>
+              <span v-else class="muted">0</span>
+            </td>
+            <td>
+              <a v-if="r.overdue" class="badge badge-danger drill-link" href="javascript:void(0)" @click.prevent="openDrill(r, 'overdue')">{{ r.overdue }}</a>
               <span v-else class="muted">0</span>
             </td>
             <td>{{ r.close_rate }}%</td>
@@ -172,9 +182,13 @@
         </span>
         <span v-if="rankUnassigned.total" class="rank-warn">
           <Icon name="bell" :size="14" />
-          另有 <strong>{{ rankUnassigned.total }}</strong> 条隐患的场所不属于四个中心站运维区域（多为产建/钻井作业新井），未计入排名
+          另有
+          <a class="drill-link" href="javascript:void(0)" @click.prevent="openUnassigned"><strong>{{ rankUnassigned.total }}</strong> 条</a>
+          隐患的场所不属于四个中心站运维区域（多为产建/钻井作业新井），未计入排名
         </span>
+        <span class="rank-hint">表格中带下划线的数字、中心站名称均可点击，查看对应的具体问题清单</span>
       </div>
+      <p v-if="rankExportError" class="rank-export-error">{{ rankExportError }}</p>
 
       <div v-if="rankUnassigned.sample.length" class="unassigned-box">
         <div class="unassigned-title">未归属场所 TOP {{ rankUnassigned.sample.length }}</div>
@@ -283,13 +297,85 @@
       <div v-else class="empty-row"><Icon name="trending" :size="18" /> 暂无趋势数据</div>
     </div>
   </div>
+
+  <!-- 四中心站排名：数字下钻明细 -->
+  <div v-if="drill.open" class="drill-mask" @click.self="closeDrill">
+    <div class="drill-panel" role="dialog" aria-modal="true">
+      <div class="drill-head">
+        <div class="drill-head-text">
+          <h3>{{ drill.title }}</h3>
+          <p class="drill-sub">{{ drill.subtitle }} · 共 {{ drill.total }} 条</p>
+        </div>
+        <div class="drill-actions">
+          <button class="btn btn-outline btn-sm" :disabled="drill.exporting" @click="exportDrill">
+            <Icon name="download" :size="14" /> {{ drill.exporting ? '导出中…' : '导出本清单' }}
+          </button>
+          <button class="drill-close" type="button" @click="closeDrill" aria-label="关闭">×</button>
+        </div>
+      </div>
+
+      <div class="drill-body">
+        <div v-if="drill.loading" class="drill-state">正在加载隐患明细…</div>
+        <div v-else-if="drill.error" class="drill-state drill-error">{{ drill.error }}</div>
+        <div v-else-if="!drill.list.length" class="drill-state">该口径下没有隐患记录</div>
+        <table v-else class="data-table drill-table">
+          <thead>
+            <tr>
+              <th style="width:52px">序号</th>
+              <th style="width:150px">隐患编号</th>
+              <th style="width:140px">检查时间</th>
+              <th style="width:120px">中心站</th>
+              <th style="width:160px">场所</th>
+              <th style="width:180px">责任单位</th>
+              <th>隐患描述</th>
+              <th style="width:90px">等级</th>
+              <th style="width:100px">状态</th>
+              <th style="width:140px">计划完成时间</th>
+              <th style="width:80px">超期</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(h, i) in drill.list" :key="h.id">
+              <td>{{ (drill.page - 1) * drill.pageSize + i + 1 }}</td>
+              <td class="drill-code">{{ h.hazard_code || '—' }}</td>
+              <td>{{ h.report_time || '—' }}</td>
+              <td>{{ h.center_station_name || '未归属' }}</td>
+              <td :title="h.location"><span class="drill-ellipsis">{{ h.location || '—' }}</span></td>
+              <td :title="h.unit_name"><span class="drill-ellipsis">{{ h.unit_name || '—' }}</span></td>
+              <td :title="h.description"><span class="drill-ellipsis drill-desc">{{ h.description || '—' }}</span></td>
+              <td>{{ h.hazard_level || '—' }}</td>
+              <td><span class="badge" :class="statusBadge(h.status)">{{ statusLabel(h.status) }}</span></td>
+              <td>{{ h.plan_finish_time || '—' }}</td>
+              <td>
+                <span v-if="Number(h.is_overdue)" class="badge badge-danger">超期</span>
+                <span v-else class="muted">—</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="drill-foot">
+        <span>共 <strong>{{ drill.total }}</strong> 条 · 第 {{ drill.page }} / {{ drill.pages }} 页</span>
+        <div class="drill-pager">
+          <button class="btn btn-ghost btn-sm" :disabled="drill.loading || drill.page <= 1" @click="changePage(-1)">上一页</button>
+          <button class="btn btn-ghost btn-sm" :disabled="drill.loading || drill.page >= drill.pages" @click="changePage(1)">下一页</button>
+        </div>
+      </div>
+    </div>
+  </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import Icon from '@/components/Icon.vue'
 import { getHazardStats, getOverdueHazards } from '@/api/stats'
-import { triggerOverdueNotify, getCenterStationRanking } from '@/api/hazard'
+import {
+  triggerOverdueNotify,
+  getCenterStationRanking,
+  getStationRankingDetails,
+  exportStationRankingDetails,
+} from '@/api/hazard'
 import { statusLabel, statusBadge, levelBadge } from '@/utils/hazardStatus'
 import { pct, maxOf, sortUnits } from '@/utils/statsFormat'
 
@@ -434,6 +520,135 @@ function resetRank() {
   rankStart.value = ''
   rankEnd.value = ''
   loadRanking()
+}
+
+// ── 四中心站排名：数字下钻 / 清单导出 ──
+const DRILL_METRIC_TEXT = { total: '隐患数', closed: '已闭环', open: '未闭环', overdue: '超期' }
+const drill = ref({
+  open: false, loading: false, exporting: false, error: '',
+  title: '', subtitle: '', params: {},
+  list: [], total: 0, page: 1, pageSize: 20, pages: 1,
+})
+const rankExporting = ref(false)
+const rankExportError = ref('')
+
+function rankDateParams() {
+  const p = {}
+  if (rankStart.value) p.start_date = rankStart.value
+  if (rankEnd.value) p.end_date = rankEnd.value
+  return p
+}
+
+function drillTitleText(center, metric) {
+  const c = center === '__unassigned__' ? '未归属中心站的隐患' : center
+  return `${c} · ${DRILL_METRIC_TEXT[metric] || '全部隐患'}`
+}
+
+function drillSubtitleText(p) {
+  const date = (p.start_date || p.end_date)
+    ? `检查时间 ${p.start_date || '不限'} ~ ${p.end_date || '不限'}`
+    : '检查时间：全部'
+  return `${date} · 不含已删除记录 · 与排名统计表同口径`
+}
+
+function startDrill(params, title) {
+  drill.value = {
+    ...drill.value,
+    open: true, loading: true, exporting: false, error: '',
+    title, subtitle: drillSubtitleText(params), params,
+    list: [], total: 0, page: 1, pageSize: 20, pages: 1,
+  }
+  fetchDrill()
+}
+
+function openDrill(row, metric) {
+  const params = {
+    ...rankDateParams(),
+    center_station_name: row.center_station_name,
+    metric,
+    page: 1,
+    pageSize: 20,
+  }
+  startDrill(params, drillTitleText(row.center_station_name, metric))
+}
+
+function openUnassigned() {
+  const params = {
+    ...rankDateParams(),
+    center_station_name: '__unassigned__',
+    metric: 'total',
+    page: 1,
+    pageSize: 20,
+  }
+  startDrill(params, drillTitleText('__unassigned__', 'total'))
+}
+
+async function fetchDrill() {
+  drill.value.loading = true
+  drill.value.error = ''
+  try {
+    const res = await getStationRankingDetails(drill.value.params)
+    const d = res.data?.data
+    if (!d) throw new Error('接口返回为空')
+    drill.value.list = d.list || []
+    drill.value.total = Number(d.total) || 0
+    drill.value.page = Number(d.page) || 1
+    drill.value.pageSize = Number(d.pageSize) || 20
+    drill.value.pages = Math.max(1, Math.ceil(drill.value.total / drill.value.pageSize))
+  } catch (e) {
+    drill.value.error = e?.response?.data?.error || e?.message || '明细加载失败'
+  } finally {
+    drill.value.loading = false
+  }
+}
+
+function changePage(delta) {
+  const next = drill.value.page + delta
+  if (next < 1 || next > drill.value.pages) return
+  drill.value.page = next
+  drill.value.params = { ...drill.value.params, page: next }
+  fetchDrill()
+}
+
+function closeDrill() {
+  drill.value.open = false
+}
+
+function onDrillKeydown(e) {
+  if (e.key === 'Escape' && drill.value.open) closeDrill()
+}
+onMounted(() => window.addEventListener('keydown', onDrillKeydown))
+onUnmounted(() => window.removeEventListener('keydown', onDrillKeydown))
+
+async function exportDrill() {
+  if (drill.value.exporting) return
+  drill.value.exporting = true
+  drill.value.error = ''
+  try {
+    const { page, pageSize, ...params } = drill.value.params
+    await exportStationRankingDetails(params)
+  } catch (e) {
+    drill.value.error = e?.response?.data?.error || e?.message || '导出失败'
+  } finally {
+    drill.value.exporting = false
+  }
+}
+
+async function exportAllAssigned() {
+  if (rankExporting.value) return
+  rankExporting.value = true
+  rankExportError.value = ''
+  try {
+    await exportStationRankingDetails({
+      ...rankDateParams(),
+      center_station_name: '__all_assigned__',
+      metric: 'total',
+    })
+  } catch (e) {
+    rankExportError.value = '导出失败：' + (e?.response?.data?.error || e?.message || '未知错误')
+  } finally {
+    rankExporting.value = false
+  }
 }
 
 // ── 加载 ──
@@ -597,6 +812,40 @@ onMounted(load)
 .u-chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; background: var(--c-surface); border: 1px solid var(--c-border); font-size: 12px; color: var(--c-text-2); }
 .u-chip em { font-style: normal; font-weight: 700; color: var(--c-danger); }
 .unassigned-tip { margin: 10px 0 0; font-size: 12px; color: var(--c-text-3); line-height: 1.6; }
+
+/* 排名数字下钻：可点数字 + 明细弹窗 */
+.drill-link { color: var(--c-primary); text-decoration: none; border-bottom: 1px dashed var(--c-primary); cursor: pointer; }
+.drill-link:hover { color: var(--c-blue-700); border-bottom-style: solid; }
+.drill-name { font-weight: 600; }
+.unit-count.drill-link { border-bottom: 0; }
+.unit-count.drill-link:hover { text-decoration: underline; }
+.badge.drill-link { color: inherit; border-bottom: 0; }
+.badge.drill-link:hover { filter: brightness(0.94); text-decoration: underline; }
+.rank-hint { font-size: 12px; color: var(--c-text-3); }
+.rank-export-error { margin: 8px 0 0; font-size: 12px; color: var(--c-danger); }
+.drill-mask { position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 24px; background: rgba(16, 24, 40, 0.45); }
+.drill-panel { display: flex; flex-direction: column; width: min(1180px, 96vw); max-height: 88vh; overflow: hidden; background: var(--c-surface); border: 1px solid var(--c-border); border-radius: 14px; box-shadow: 0 12px 40px rgba(16, 24, 40, 0.18); }
+.drill-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 18px 20px; border-bottom: 1px solid var(--c-border); }
+.drill-head-text h3 { margin: 0 0 6px; font-size: 16px; font-weight: 600; color: var(--c-text); }
+.drill-sub { margin: 0; font-size: 12px; color: var(--c-text-3); }
+.drill-actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.drill-actions .btn { width: auto; display: inline-flex; align-items: center; gap: 6px; }
+.drill-close { width: 32px; height: 32px; flex-shrink: 0; border: 1px solid var(--c-border); border-radius: 8px; background: var(--c-surface); color: var(--c-text-2); font-size: 20px; line-height: 1; cursor: pointer; }
+.drill-close:hover { background: var(--c-surface-2); color: var(--c-text); }
+.drill-body { flex: 1; min-height: 0; overflow: auto; padding: 0 20px; }
+.drill-state { padding: 48px 0; text-align: center; font-size: 13px; color: var(--c-text-3); }
+.drill-error { color: var(--c-danger); }
+.drill-table { width: 100%; min-width: 1100px; border-collapse: collapse; font-size: 12px; }
+.drill-table th { position: sticky; top: 0; z-index: 1; padding: 10px 8px; border-bottom: 1px solid var(--c-border); background: var(--c-surface-2); color: var(--c-text-2); font-weight: 600; text-align: left; white-space: nowrap; }
+.drill-table td { padding: 9px 8px; border-bottom: 1px solid var(--c-border); color: var(--c-text); vertical-align: middle; }
+.drill-table tbody tr:hover { background: var(--c-surface-2); }
+.drill-code { font-family: monospace; white-space: nowrap; }
+.drill-ellipsis { display: block; max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.drill-desc { max-width: 320px; }
+.drill-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 20px; border-top: 1px solid var(--c-border); font-size: 12px; color: var(--c-text-2); }
+.drill-foot strong { color: var(--c-text); }
+.drill-pager { display: flex; gap: 8px; }
+.drill-pager .btn { width: auto; }
 
 /* 趋势 */
 .trend-hint { font-size: 12px; color: var(--c-text-3); font-weight: 500; }
