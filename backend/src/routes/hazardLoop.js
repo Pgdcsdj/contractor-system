@@ -869,6 +869,233 @@ router.get('/center-station-ranking', requireAdminOrSafety, async (req, res) => 
   }
 })
 
+// ─── 四中心站排名「数字下钻明细 / 清单导出」────────────────────────────────────
+// ⚠ 以下两个 GET 路由必须定义在 router.get('/:id') 之前，否则会被 :id 占位符吞掉。
+// 口径与 /center-station-ranking 严格一致：report_time 为检查时间、恒带 deleted_at IS NULL、
+// closed = status='closed'、open = status<>'closed'、
+// overdue = 未闭环且 plan_finish_time < NOW()。
+// 目的是保证「明细行数 / 导出行数」与排名表上显示的数字完全相等。
+const STATION_DETAIL_COLUMNS = `
+  id, hazard_code,
+  DATE_FORMAT(report_time, '%Y-%m-%d %H:%i') AS report_time,
+  center_station_name, gas_station_name, location, unit_name, business_dept,
+  hazard_investigation_item, description, hazard_level, standard_basis,
+  rectify_measures, responsible_person,
+  DATE_FORMAT(plan_finish_time, '%Y-%m-%d %H:%i') AS plan_finish_time,
+  status, rectify_status, ${OVERDUE_EXPR} AS is_overdue, remark,
+  DATE_FORMAT(closed_at, '%Y-%m-%d %H:%i') AS closed_at
+`
+
+const STATION_STATUS_TEXT = {
+  reported: '已上报', assigned: '已分派', rectifying: '整改中',
+  verifying: '待验收', closed: '已闭环',
+}
+const STATION_METRIC_TEXT = {
+  total: '全部隐患', closed: '已闭环', open: '未闭环', overdue: '超期',
+}
+const STATION_DETAIL_HEADERS = [
+  '序号', '隐患编号', '检查时间', '中心站', '集气站', '场所', '责任单位',
+  '业务主管部门', '隐患排查项目', '隐患描述', '隐患等级', '标准依据',
+  '整改措施', '整改责任人', '计划完成时间', '状态', '整改状态',
+  '是否超期', '备注', '闭环时间',
+]
+
+/**
+ * 构造与 /center-station-ranking 同口径的明细查询条件。
+ * 全部外部输入走参数化占位符，不拼进 SQL。
+ */
+function buildStationDetailWhere(query) {
+  const where = ['deleted_at IS NULL']
+  const params = []
+  const filter = {
+    start_date: '', end_date: '', unit_name: '',
+    center_station_name: '', metric: 'total',
+  }
+  const dateRe = /^\d{4}-\d{2}-\d{2}$/
+
+  const sd = query.start_date ? String(query.start_date).trim() : ''
+  const ed = query.end_date ? String(query.end_date).trim() : ''
+  if (sd) {
+    if (!dateRe.test(sd)) throw new Error('start_date 格式应为 YYYY-MM-DD')
+    where.push('report_time >= ?'); params.push(sd + ' 00:00:00'); filter.start_date = sd
+  }
+  if (ed) {
+    if (!dateRe.test(ed)) throw new Error('end_date 格式应为 YYYY-MM-DD')
+    where.push('report_time <= ?'); params.push(ed + ' 23:59:59'); filter.end_date = ed
+  }
+  const unit = query.unit_name ? String(query.unit_name).trim() : ''
+  if (unit) {
+    where.push('unit_name = ?'); params.push(unit); filter.unit_name = unit
+  }
+
+  const center = query.center_station_name ? String(query.center_station_name).trim() : ''
+  if (center === '__all_assigned__') {
+    where.push(`center_station_name IN (${CENTER_STATIONS.map(() => '?').join(',')})`)
+    params.push(...CENTER_STATIONS)
+    filter.center_station_name = '__all_assigned__'
+  } else if (center === '__unassigned__') {
+    where.push("(center_station_name IS NULL OR center_station_name = '')")
+    filter.center_station_name = '__unassigned__'
+  } else if (center) {
+    if (!CENTER_STATIONS.includes(center)) throw new Error('center_station_name 不是有效的中心站')
+    where.push('center_station_name = ?'); params.push(center)
+    filter.center_station_name = center
+  }
+
+  const rawMetric = String(query.metric || '')
+  const metric = Object.prototype.hasOwnProperty.call(STATION_METRIC_TEXT, rawMetric) ? rawMetric : 'total'
+  filter.metric = metric
+  if (metric === 'closed') where.push("status = 'closed'")
+  if (metric === 'open') where.push("status <> 'closed'")
+  if (metric === 'overdue') {
+    where.push("status <> 'closed' AND plan_finish_time IS NOT NULL AND plan_finish_time < NOW()")
+  }
+  return { whereClause: 'WHERE ' + where.join(' AND '), params, filter }
+}
+
+function stationDetailFilterText(filter) {
+  const center = filter.center_station_name === '__all_assigned__'
+    ? '四个中心站（全部已归属）'
+    : filter.center_station_name === '__unassigned__'
+      ? '未归属到中心站的隐患'
+      : (filter.center_station_name || '全部（含未归属）')
+  return {
+    center,
+    date: (filter.start_date || '不限') + ' ~ ' + (filter.end_date || '不限'),
+    unit: filter.unit_name || '全部单位',
+    metric: STATION_METRIC_TEXT[filter.metric] || '全部隐患',
+  }
+}
+
+/** 生成「隐患明细 + 统计口径」双 sheet 工作簿 */
+function buildStationDetailWorkbook(rows, filter) {
+  const body = rows.map((r, i) => [
+    i + 1,
+    r.hazard_code || '',
+    r.report_time || '',
+    r.center_station_name || '',
+    r.gas_station_name || '',
+    r.location || '',
+    r.unit_name || '',
+    r.business_dept || '',
+    r.hazard_investigation_item || '',
+    r.description || '',
+    r.hazard_level || '',
+    r.standard_basis || '',
+    r.rectify_measures || '',
+    r.responsible_person || '',
+    r.plan_finish_time || '',
+    STATION_STATUS_TEXT[r.status] || r.status || '',
+    r.rectify_status || '',
+    Number(r.is_overdue) ? '是' : '否',
+    r.remark || '',
+    r.closed_at || '',
+  ])
+  const wb = xlsx.utils.book_new()
+  const ws = xlsx.utils.aoa_to_sheet([STATION_DETAIL_HEADERS, ...body])
+  ws['!cols'] = [
+    { wch: 6 }, { wch: 18 }, { wch: 17 }, { wch: 16 }, { wch: 16 }, { wch: 20 },
+    { wch: 24 }, { wch: 18 }, { wch: 20 }, { wch: 48 }, { wch: 12 }, { wch: 30 },
+    { wch: 36 }, { wch: 14 }, { wch: 17 }, { wch: 12 }, { wch: 14 },
+    { wch: 10 }, { wch: 30 }, { wch: 17 },
+  ]
+  xlsx.utils.book_append_sheet(wb, ws, '隐患明细')
+
+  const f = stationDetailFilterText(filter)
+  const now = new Date()
+  const meta = [
+    ['项目', '内容'],
+    ['报表名称', '四中心站隐患排名 · 具体问题清单'],
+    ['生成时间', `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`],
+    ['检查时间区间', f.date],
+    ['中心站范围', f.center],
+    ['隐患单位', f.unit],
+    ['统计指标', f.metric],
+    ['导出条数', rows.length],
+    ['时间口径', "report_time（检查时间）；end_date 含当天 23:59:59"],
+    ['数据范围', "t_hazard 且 deleted_at IS NULL（不含软删除记录）"],
+    ['已闭环', "status = 'closed'"],
+    ['未闭环', "status <> 'closed'"],
+    ['超期', "未闭环 且 plan_finish_time 早于当前时间"],
+    ['闭环率', "已闭环 / 隐患数"],
+    ['说明', '本清单与「四中心站隐患排名（考核）」统计表口径一致，行数应与表上对应数字相等'],
+  ]
+  const ws2 = xlsx.utils.aoa_to_sheet(meta)
+  ws2['!cols'] = [{ wch: 20 }, { wch: 76 }]
+  xlsx.utils.book_append_sheet(wb, ws2, '统计口径')
+  return xlsx.write(wb, { type: 'buffer', bookType: 'xlsx' })
+}
+
+// ─── GET /api/hazards/center-station-ranking/details —— 排名数字下钻明细 ──────
+router.get('/center-station-ranking/details', requireAdminOrSafety, async (req, res) => {
+  let built
+  try {
+    built = buildStationDetailWhere(req.query || {})
+  } catch (e) {
+    return res.status(400).json({ success: false, error: e.message })
+  }
+  const page = Math.max(1, Number(req.query.page) || 1)
+  const pageSize = Math.min(200, Math.max(1, Number(req.query.pageSize) || 20))
+  const offset = (page - 1) * pageSize
+  try {
+    const [[cnt]] = await pool.query(
+      `SELECT COUNT(*) AS total FROM t_hazard ${built.whereClause}`, built.params
+    )
+    const [rows] = await pool.query(
+      `SELECT ${STATION_DETAIL_COLUMNS} FROM t_hazard ${built.whereClause}
+        ORDER BY report_time DESC, id DESC LIMIT ? OFFSET ?`,
+      [...built.params, pageSize, offset]
+    )
+    res.json({
+      success: true,
+      data: {
+        total: Number(cnt.total) || 0,
+        page, pageSize, list: rows, filter: built.filter,
+      },
+    })
+  } catch (err) {
+    console.error('[station-ranking-details]', err.message)
+    res.status(500).json({ success: false, error: '明细查询失败：' + err.message })
+  }
+})
+
+// ─── GET /api/hazards/center-station-ranking/export —— 具体问题清单 Excel ─────
+router.get('/center-station-ranking/export', requireAdminOrSafety, async (req, res) => {
+  let built
+  try {
+    built = buildStationDetailWhere(req.query || {})
+  } catch (e) {
+    return res.status(400).json({ success: false, error: e.message })
+  }
+  try {
+    const [rows] = await pool.query(
+      `SELECT ${STATION_DETAIL_COLUMNS} FROM t_hazard ${built.whereClause}
+        ORDER BY report_time DESC, id DESC LIMIT 5001`, built.params
+    )
+    if (rows.length > 5000) {
+      return res.status(400).json({
+        success: false,
+        error: '本次导出行数超过 5000 条，请缩小日期范围或按中心站分别导出',
+      })
+    }
+    const buffer = buildStationDetailWorkbook(rows, built.filter)
+    const now = new Date()
+    const p2 = (n) => String(n).padStart(2, '0')
+    const fileDate = `${now.getFullYear()}${p2(now.getMonth() + 1)}${p2(now.getDate())}_${p2(now.getHours())}${p2(now.getMinutes())}`
+    const filename = `四中心站隐患明细_${fileDate}.xlsx`
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${encodeURIComponent(filename)}"; filename*=UTF-8''${encodeURIComponent(filename)}`
+    )
+    res.send(buffer)
+  } catch (err) {
+    console.error('[station-ranking-export]', err.message)
+    res.status(500).json({ success: false, error: '隐患明细导出失败：' + err.message })
+  }
+})
+
+
 // ─── GET /api/hazards/:id —— 隐患详情（含照片）───────────────────────────────
 router.get('/:id', adminAuth, async (req, res) => {
   const id = Number(req.params.id)
