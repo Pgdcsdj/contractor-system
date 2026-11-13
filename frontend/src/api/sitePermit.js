@@ -22,6 +22,25 @@ export function testSitePermitConn(payload) {
 export function syncSitePermitNow(dryRun = false) {
   return request.post(`${BASE}/sync${dryRun ? '?dryRun=1' : ''}`, {}, { timeout: 300000 })
 }
+
+/**
+ * 上传群里每日发的《直接作业环节施工风险分级清单XX.XX.xlsx》直接入账。
+ * 走 multipart，必须显式覆盖 axios 全局的 application/json，否则 FormData 会被序列化坏。
+ * dryRun=true 只预演解析、不写库。
+ */
+export function importSitePermitExcel(file, dryRun = false) {
+  const fd = new FormData()
+  fd.append('file', file)
+  if (dryRun) fd.append('dryRun', '1')
+  const token = localStorage.getItem('tnb_admin_token') || ''
+  return request.post(`${BASE}/import-excel${dryRun ? '?dryRun=1' : ''}`, fd, {
+    headers: {
+      'Content-Type': 'multipart/form-data',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    timeout: 300000,
+  })
+}
 export function getSitePermitSyncLogs() {
   return request.get(`${BASE}/sync-logs`)
 }

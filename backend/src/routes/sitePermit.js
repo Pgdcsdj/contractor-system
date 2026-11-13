@@ -7,17 +7,20 @@
  *   PUT    /config            保存配置
  *   POST   /test              连通性测试（真的去钉钉拉一次表头）
  *   POST   /sync              立即同步（?dryRun=1 只解析不写库）
+ *   POST   /import-excel      上传每日 Excel 清单入账（?dryRun=1 只预演）
  *   GET    /sync-logs         同步批次日志
  *   GET    /list              台账（按日期/单位/风险分级/关键词筛选）
  *   GET    /stats             看板统计
  *   GET    /export            导出 xlsx（与原表同列序）
  *   GET    /:id               单条详情
  *
- * 数据来源：每天 22:00 node-cron 调 services/sitePermitSync.syncNow('cron')
+ * 数据来源：① 每日 Excel 清单上传（当前主用，source='excel'，无需钉钉凭证）
+ *           ② 每晚 22:00 node-cron 调 syncNow('cron')（需钉钉应用凭证，当前未启用）
  */
 
 const express = require('express')
 const xlsx = require('xlsx')
+const multer = require('multer')
 const { pool } = require('../db/db')
 const { verifyAdminToken } = require('../services/adminAuth')
 const svc = require('../services/sitePermitSync')
@@ -100,6 +103,46 @@ router.post('/sync', async (req, res) => {
     if (!r.ok) return res.status(400).json({ success: false, error: r.message, data: r })
     ok(res, r)
   } catch (e) { fail(res, e) }
+})
+
+
+// ─── POST /api/site-permit/import-excel —— 上传每日 Excel 清单入账 ────────────
+// 群里每天发的《直接作业环节施工风险分级清单XX.XX.xlsx》是文件附件，不是钉钉在线表格。
+// 直接复用 parseSheet 的 17 列字段映射 + 多分表（钻井/试气/地面）解析，
+// 无需任何钉钉开放平台凭证。dryRun=1 只预演不写库。
+const excelUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 20 * 1024 * 1024, files: 1 },
+})
+
+router.post('/import-excel', excelUpload.single('file'), async (req, res) => {
+  const dryRun = String(req.query.dryRun || '') === '1' || (req.body && String(req.body.dryRun || '') === '1')
+  try {
+    if (!req.file || !req.file.buffer) {
+      return res.status(400).json({ success: false, error: '请选择要上传的 .xlsx / .xls 文件' })
+    }
+    const name = String(req.file.originalname || '')
+    if (!/\.(xlsx|xls)$/i.test(name)) {
+      return res.status(400).json({ success: false, error: '只支持 .xlsx / .xls 文件' })
+    }
+    const wb = xlsx.read(req.file.buffer, { type: 'buffer', cellDates: false })
+    if (!wb.SheetNames || !wb.SheetNames.length) {
+      return res.status(400).json({ success: false, error: '文件里没有读到工作表' })
+    }
+    const rowsBySheet = wb.SheetNames.map((n) => ({
+      name: n,
+      rows: xlsx.utils.sheet_to_json(wb.Sheets[n], {
+        header: 1, raw: true, defval: '', blankrows: false,
+      }),
+    }))
+    const result = await svc.syncNow('manual', { rowsBySheet, dryRun, source: 'excel' })
+    if (!result.ok) {
+      return res.status(400).json({ success: false, error: result.message, data: result })
+    }
+    ok(res, { ...result, fileName: name, sheets: rowsBySheet.map((s) => s.name) })
+  } catch (e) {
+    fail(res, e, 400)
+  }
 })
 
 router.get('/sync-logs', async (req, res) => {

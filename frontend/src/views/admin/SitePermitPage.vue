@@ -5,9 +5,7 @@
       <div class="head-left">
         <h2>直接作业预约报备</h2>
         <p class="sub">
-          数据源：钉钉在线表格 · 每晚 {{ String(cfg.cronHour).padStart(2, '0') }}:{{
-            String(cfg.cronMinute).padStart(2, '0')
-          }} 自动同步
+          数据源：每日《直接作业环节施工风险分级清单》Excel 上传 · 按「钻井 / 试气 / 地面」分表解析入账
         </p>
       </div>
       <div class="head-right">
@@ -17,6 +15,30 @@
         <button class="btn btn-ghost nowrap" :disabled="syncing" @click="doSync(false)">
           {{ syncing ? '同步中…' : '立即同步' }}
         </button>
+      </div>
+    </div>
+
+    <!-- ═══ 每日 Excel 清单入账（无需钉钉凭证） ═══ -->
+    <div class="card upload-bar">
+      <div class="upload-text">
+        <strong>每日清单入账</strong>
+        <span>把群里《直接作业环节施工风险分级清单XX.XX.xlsx》下载后上传，系统自动识别表头与「钻井 / 试气 / 地面」分表；无需钉钉账号或开发者权限。</span>
+      </div>
+      <div class="upload-actions">
+        <label class="btn btn-outline nowrap upload-pick">
+          {{ uploadFile ? '重新选择文件' : '选择 Excel 文件' }}
+          <input type="file" accept=".xlsx,.xls" @change="onUploadFile" />
+        </label>
+        <button class="btn btn-ghost nowrap" :disabled="!uploadFile || uploading" @click="doUpload(true)">
+          预演解析
+        </button>
+        <button class="btn btn-primary nowrap" :disabled="!uploadFile || uploading" @click="doUpload(false)">
+          {{ uploading ? '入账中…' : '上传并入账' }}
+        </button>
+      </div>
+      <div v-if="uploadFile" class="upload-meta">已选择：<strong>{{ uploadFile.name }}</strong></div>
+      <div v-if="uploadResult" class="upload-result" :class="{ err: uploadResult.error }">
+        {{ uploadResult.text }}
       </div>
     </div>
 
@@ -362,7 +384,7 @@ import { reactive, ref, computed, onMounted } from 'vue'
 import {
   getSitePermitConfig, saveSitePermitConfig, testSitePermitConn,
   syncSitePermitNow, getSitePermitSyncLogs, getSitePermitList,
-  getSitePermitStats, exportSitePermit,
+  getSitePermitStats, exportSitePermit, importSitePermitExcel,
 } from '@/api/sitePermit'
 
 const RISK_LEVELS = ['红色', '橙色', '黄色', '蓝色']
@@ -627,6 +649,47 @@ async function doSync(dryRun) {
   }
 }
 
+// ── 每日 Excel 清单上传（群里发的 .xlsx 附件，无需钉钉凭证） ──────────────────
+const uploadFile = ref(null)
+const uploading = ref(false)
+const uploadResult = ref(null)
+
+function onUploadFile(e) {
+  uploadFile.value = e.target.files?.[0] || null
+  uploadResult.value = null
+}
+
+async function doUpload(dryRun) {
+  if (!uploadFile.value || uploading.value) return
+  uploading.value = true
+  uploadResult.value = null
+  try {
+    const res = await importSitePermitExcel(uploadFile.value, dryRun)
+    const d = res.data?.data || {}
+    const s = d.stat || {}
+    const sheets = (d.sheets || []).join('、')
+    const head = `${d.fileName || uploadFile.value.name}｜工作表：${sheets || '—'}`
+    const text = dryRun
+      ? `预演完成：${head}｜解析到 ${s.total ?? 0} 行（未写库，可放心核对）`
+      : `入账完成：${head}｜新增 ${s.inserted ?? 0}，更新 ${s.updated ?? 0}，失效 ${s.inactive ?? 0}`
+    uploadResult.value = { text, error: false }
+    if (!dryRun) {
+      await loadConfig()
+      await loadStats()
+      await reload(1)
+      await loadLogs()
+    }
+  } catch (e) {
+    const d = e.response?.data
+    uploadResult.value = {
+      text: '失败：' + (d?.error || d?.data?.message || e?.message || '上传失败'),
+      error: true,
+    }
+  } finally {
+    uploading.value = false
+  }
+}
+
 async function doExport() {
   exporting.value = true
   try {
@@ -705,6 +768,19 @@ onMounted(async () => {
 .form-input:focus { outline: none; border-color: var(--primary); }
 select.form-input { cursor: pointer; }
 .nowrap { white-space: nowrap; flex: 0 0 auto; width: auto; }
+
+/* 每日 Excel 清单上传 */
+.upload-bar { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; }
+.upload-text { display: flex; flex-direction: column; gap: 4px; flex: 1 1 320px; }
+.upload-text strong { font-size: 14px; color: var(--text-primary); }
+.upload-text span { font-size: 12px; color: var(--text-secondary); line-height: 1.6; }
+.upload-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.upload-pick { position: relative; overflow: hidden; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+.upload-pick input[type=file] { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+.upload-meta { flex: 1 1 100%; font-size: 12px; color: var(--text-secondary); }
+.upload-meta strong { color: var(--text-primary); }
+.upload-result { flex: 1 1 100%; padding: 8px 12px; border-radius: 8px; font-size: 12px; line-height: 1.6; background: #e8f5ee; color: #137a4d; }
+.upload-result.err { background: #fdecec; color: #c0392b; }
 
 /* ── 表格 ── */
 .table-card { padding: 0; overflow: hidden; }

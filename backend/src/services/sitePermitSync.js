@@ -282,7 +282,7 @@ async function finishLog(id, status, message, stat) {
 }
 
 /** 把一批记录写入 t_site_permit（insert / update / 失效旧行） */
-async function persist(records, syncId, stat) {
+async function persist(records, syncId, stat, source = 'dingtalk') {
   const empty = { total: records.length, inserted: 0, updated: 0, inactive: 0, ...(stat || {}) }
   // 用「本批出现的 sheet 名」定位旧行范围，做全表镜像。
   // 注意：必须在写入**之前**快照旧的在用行，否则刚 INSERT 的新行会被误判成"本次没出现的旧行"。
@@ -291,7 +291,7 @@ async function persist(records, syncId, stat) {
   if (sheets.length) {
     const ph = sheets.map(() => '?').join(',')
     const [rows] = await pool.execute(
-      `SELECT id FROM t_site_permit WHERE source='dingtalk' AND is_active=1 AND sheet_name IN (${ph})`,
+      `SELECT id FROM t_site_permit WHERE is_active=1 AND sheet_name IN (${ph})`,
       sheets
     )
     oldActive = rows.map((r) => r.id)
@@ -312,7 +312,7 @@ async function persist(records, syncId, stat) {
       rec.sheet_name, rec.row_hash, rec.seq_no, rec.apply_unit, rec.work_unit, rec.content, rec.place, rec.camera,
       rec.work_type, rec.dual_op, rec.risk_level, rec.measures, rec.leader, rec.supervisor,
       rec.plan_time_raw, rec.plan_date, rec.plan_start, rec.auditor, rec.reporter,
-      rec.report_date_raw, rec.report_date, rec.remark, 1, 'dingtalk', syncId,
+      rec.report_date_raw, rec.report_date, rec.remark, 1, source, syncId,
     ]
     if (exist.length) {
       touched.add(exist[0].id)
@@ -344,7 +344,7 @@ async function persist(records, syncId, stat) {
 /**
  * 执行一次同步
  * @param {'cron'|'manual'} triggeredBy
- * @param {object} opt { dryRun:boolean, rowsBySheet?:[{name,rows}] 用于免凭证自测 }
+ * @param {object} opt { dryRun:boolean, rowsBySheet?:[{name,rows}] 免凭证自测/Excel上传, source?:string }
  */
 async function syncNow(triggeredBy, opt) {
   const options = opt || {}
@@ -384,7 +384,7 @@ async function syncNow(triggeredBy, opt) {
       return { ok: true, dryRun: true, message: `预演：解析到 ${records.length} 行`, stat, warnings, skipped, sample: records.slice(0, 5) }
     }
 
-    const res = await persist(records, logId, stat)
+    const res = await persist(records, logId, stat, options.source || 'dingtalk')
     const msg = `解析 ${res.total} 行：新增 ${res.inserted}，更新 ${res.updated}，失效 ${res.inactive}`
       + (skipped.length ? `；跳过无表头工作表：${skipped.join('、')}` : '')
       + (warnings.length ? `；注意：${warnings.join('；')}` : '')
