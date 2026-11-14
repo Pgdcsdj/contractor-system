@@ -9,20 +9,18 @@
         </p>
       </div>
       <div class="head-right">
-        <span class="sync-chip" :class="syncChipClass">
-          <span class="dot"></span>{{ syncText }}
+        <span class="sync-chip ok">
+          <span class="dot"></span>每日 18:00 自动入账 · Excel 清单
         </span>
-        <button class="btn btn-ghost nowrap" :disabled="syncing" @click="doSync(false)">
-          {{ syncing ? '同步中…' : '立即同步' }}
-        </button>
+        <button class="btn btn-ghost nowrap" @click="goUpload">去上传清单</button>
       </div>
     </div>
 
     <!-- ═══ 每日 Excel 清单入账（无需钉钉凭证） ═══ -->
-    <div class="card upload-bar">
+    <div ref="uploadCard" class="card upload-bar" :class="{ flash: uploadFlash }">
       <div class="upload-text">
         <strong>每日清单入账</strong>
-        <span>把群里《直接作业环节施工风险分级清单XX.XX.xlsx》下载后上传，系统自动识别表头与「钻井 / 试气 / 地面」分表；无需钉钉账号或开发者权限。</span>
+        <span>把群里《直接作业环节施工风险分级清单XX.XX.xlsx》下载后上传，系统自动识别表头与「钻井 / 试气 / 地面」分表；已另存到本机的清单，每天 18:00 也会自动归档入账。无需钉钉账号或开发者权限。</span>
       </div>
       <div class="upload-actions">
         <label class="btn btn-outline nowrap upload-pick">
@@ -45,7 +43,7 @@
     <!-- ═══ Tab 切换 ═══ -->
     <div class="tabs">
       <button class="tab" :class="{ on: tab === 'list' }" @click="tab = 'list'">预约台账</button>
-      <button class="tab" :class="{ on: tab === 'config' }" @click="tab = 'config'">同步设置</button>
+      <button class="tab" :class="{ on: tab === 'config' }" @click="tab = 'config'">同步记录</button>
     </div>
 
     <!-- ════════════════════════════════════════════════════════════════
@@ -142,7 +140,7 @@
       <div class="card table-card">
         <div v-if="loading" class="empty-box">加载中…</div>
         <div v-else-if="!list.length" class="empty-box">
-          暂无预约记录。{{ cfg.enabled ? '等待今晚自动同步，或点上「立即同步」。' : '请先到「同步设置」配置钉钉表格。' }}
+          暂无预约记录。请在页首「每日清单入账」上传当天 Excel 清单。
         </div>
         <div v-else class="table-wrap">
           <table class="data-table">
@@ -202,16 +200,16 @@
     ═════════════════════════════════════════════════════════════════ -->
     <template v-else>
       <div class="card">
+        <div class="retired-banner">
+          <strong>钉钉在线表格同步已停用</strong>
+          <span>群里每天发的是 .xlsx 文件附件，不是钉钉在线协作表格。当前数据源为每日 Excel 清单：请到页首「每日清单入账」上传，或把清单另存到本机由每天 18:00 自动归档入账。下方为历史遗留配置，已不再生效，无需填写。</span>
+          <button class="btn btn-primary nowrap" @click="goUpload">去上传清单</button>
+        </div>
         <div class="cfg-head">
           <div>
-            <h3>钉钉表格接入</h3>
-            <p class="sub">填好下面四项后点「测试连通」，通了再保存。凭据仅存本系统数据库。</p>
+            <h3>历史配置（已停用）</h3>
+            <p class="sub">以下为早期钉钉表格接入尝试留下的配置，仅供查阅，修改与保存均已下线。</p>
           </div>
-          <label class="master-switch">
-            <span class="master-label">{{ form.enabled ? '自动同步已开启' : '自动同步已暂停' }}</span>
-            <input type="checkbox" v-model="form.enabled" />
-            <span class="track" :class="{ on: form.enabled }"><span class="thumb"></span></span>
-          </label>
         </div>
 
         <section class="group">
@@ -300,21 +298,7 @@
         </section>
 
         <div class="footer-actions">
-          <p v-if="msg" class="msg" :class="msgType">{{ msg }}</p>
-          <div class="footer-btns">
-            <button class="btn btn-ghost nowrap" :disabled="testing" @click="doTest">
-              {{ testing ? '测试中…' : '测试连通' }}
-            </button>
-            <button class="btn btn-ghost nowrap" :disabled="syncing" @click="doSync(true)">
-              {{ syncing ? '解析中…' : '预演（不写库）' }}
-            </button>
-            <button class="btn btn-ghost nowrap" :disabled="syncing" @click="doSync(false)">
-              {{ syncing ? '同步中…' : '立即同步' }}
-            </button>
-            <button class="btn btn-primary nowrap" :disabled="saving" @click="save">
-              {{ saving ? '保存中…' : '保存配置' }}
-            </button>
-          </div>
+          <p class="group-hint dim">「测试连通 / 预演 / 立即同步 / 保存配置」均已下线，点这些按钮不会再有数据进来。请到页首「每日清单入账」上传 Excel 清单。</p>
         </div>
       </div>
 
@@ -380,7 +364,7 @@
 </template>
 
 <script setup>
-import { reactive, ref, computed, onMounted } from 'vue'
+import { reactive, ref, computed, onMounted, nextTick } from 'vue'
 import {
   getSitePermitConfig, saveSitePermitConfig, testSitePermitConn,
   syncSitePermitNow, getSitePermitSyncLogs, getSitePermitList,
@@ -417,6 +401,19 @@ const DETAIL_FIELDS = [
 
 const tab = ref('list')
 const loading = ref(false)
+// ── 页首「去上传清单」锚点：回到台账 Tab、滚动到入账卡片并短暂高亮 ──────────
+const uploadCard = ref(null)
+const uploadFlash = ref(false)
+function goUpload() {
+  tab.value = 'list'
+  nextTick(() => {
+    const el = uploadCard.value
+    if (!el) return
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    uploadFlash.value = true
+    setTimeout(() => { uploadFlash.value = false }, 1600)
+  })
+}
 const syncing = ref(false)
 const saving = ref(false)
 const testing = ref(false)
@@ -456,18 +453,7 @@ const monthRiskMap = computed(() => toRiskMap(stats.monthByRisk))
 const monthHighRisk = computed(() =>
   (monthRiskMap.value['橙色'] || 0) + (monthRiskMap.value['红色'] || 0))
 const sheetOptions = computed(() => stats.sheets || [])
-const syncChipClass = computed(() => {
-  if (!cfg.enabled) return 'off'
-  if (cfg.lastSyncStatus === 'ok') return 'ok'
-  if (cfg.lastSyncStatus === 'fail') return 'fail'
-  return 'idle'
-})
-const syncText = computed(() => {
-  if (!cfg.enabled) return '自动同步已暂停'
-  if (!cfg.lastSyncAt) return '尚未同步过'
-  const t = fmtTime(cfg.lastSyncAt)
-  return cfg.lastSyncStatus === 'ok' ? `上次同步 ${t} 成功` : `上次同步 ${t} 失败`
-})
+// v2026.11.15.1：钉钉同步状态标签已下线，页首改为静态「每日 18:00 自动入账」提示。
 
 // ── 工具 ──────────────────────────────────────────────────────────────────
 function riskColor(k) { return RISK_COLORS[k] || '#94a3b8' }
@@ -627,6 +613,8 @@ async function doTest() {
   }
 }
 
+// 旧钉钉同步入口已随 v2026.11.15.1 下线，页面不再提供调用按钮；
+// 函数保留仅为兼容历史代码与将来可能的回滚，正常链路不会走到这里。
 async function doSync(dryRun) {
   syncing.value = true
   msg.value = ''
@@ -781,6 +769,16 @@ select.form-input { cursor: pointer; }
 .upload-meta strong { color: var(--text-primary); }
 .upload-result { flex: 1 1 100%; padding: 8px 12px; border-radius: 8px; font-size: 12px; line-height: 1.6; background: #e8f5ee; color: #137a4d; }
 .upload-result.err { background: #fdecec; color: #c0392b; }
+.upload-bar.flash { animation: uploadFlash 1.6s ease; }
+@keyframes uploadFlash {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(37, 99, 235, 0); }
+  30% { box-shadow: 0 0 0 4px rgba(37, 99, 235, .35); }
+}
+
+/* 已停用的钉钉接入提示 */
+.retired-banner { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px 14px; margin-bottom: 18px; border: 1px solid #f3d59b; border-radius: 10px; background: #fff8e8; color: #8a5a00; }
+.retired-banner strong { font-size: 13.5px; }
+.retired-banner span { flex: 1 1 320px; font-size: 12px; line-height: 1.6; }
 
 /* ── 表格 ── */
 .table-card { padding: 0; overflow: hidden; }
