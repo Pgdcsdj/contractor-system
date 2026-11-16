@@ -73,6 +73,7 @@
             <col class="c-desc" />
             <col class="c-level" />
             <col class="c-person" />
+            <col class="c-recorder" />
             <col class="c-plan" />
             <col class="c-status" />
             <col class="c-action" />
@@ -90,6 +91,7 @@
               <th>问题描述</th>
               <th>等级</th>
               <th>责任人</th>
+              <th>录入人</th>
               <th>计划完成</th>
               <th>状态</th>
               <th>操作</th>
@@ -97,10 +99,10 @@
           </thead>
           <tbody>
             <tr v-if="loading">
-              <td colspan="12" class="empty-cell"><div class="spinner" style="margin:0 auto"></div></td>
+              <td colspan="13" class="empty-cell"><div class="spinner" style="margin:0 auto"></div></td>
             </tr>
             <tr v-else-if="list.length === 0">
-              <td colspan="12" class="empty-cell">暂无隐患数据</td>
+              <td colspan="13" class="empty-cell">暂无隐患数据</td>
             </tr>
             <tr
               v-for="h in list"
@@ -119,6 +121,7 @@
               <td class="desc-cell" :title="h.description">{{ h.description || '-' }}</td>
               <td><span :class="['badge', levelBadge(h.hazard_level)]">{{ h.hazard_level || '-' }}</span></td>
               <td>{{ h.responsible_person || '-' }}</td>
+              <td :title="h.recorder_name">{{ h.recorder_name || '-' }}</td>
               <td class="mono sm">{{ fmtDay(h.plan_finish_time) }}</td>
               <td>
                 <span :class="['badge', statusBadge(h.status)]">{{ statusLabel(h.status) }}</span>
@@ -509,6 +512,7 @@ onUnmounted(() => {
 .data-table colgroup col.c-loc     { width: 96px; }
 .data-table colgroup col.c-level   { width: 84px; }
 .data-table colgroup col.c-person  { width: 72px; }
+.data-table colgroup col.c-recorder{ width: 84px; }
 .data-table colgroup col.c-plan    { width: 106px; }
 .data-table colgroup col.c-status  { width: 108px; }
 .data-table colgroup col.c-action  { width: 100px; }

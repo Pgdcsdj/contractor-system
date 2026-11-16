@@ -7,8 +7,9 @@
  *
  * 同步策略：
  *   - 每天 22:00 由 node-cron 触发（也可在后台点「立即同步」）
- *   - **全表镜像**：以 (sheet_name + row_hash) 为键 upsert，
- *     本次没再出现的旧行置 is_active=0（保留历史，列表默认只看在用行）
+ *   - **按作业日镜像**：以 (sheet_name + row_hash) 为键 upsert，
+ *     失效范围限定在「本批出现的 sheet_name + plan_date」组合内：
+ *     同一作业日重传会刷新该日清单，不同作业日互不覆盖（历史可长期回看）。
  *   - 行哈希取「施工单位 + 施工内容 + 预计施工时间 + 上报人」等业务字段，
  *     与行在表格中的位置无关，别人插行/调序不会造成重复
  *
@@ -284,15 +285,20 @@ async function finishLog(id, status, message, stat) {
 /** 把一批记录写入 t_site_permit（insert / update / 失效旧行） */
 async function persist(records, syncId, stat, source = 'dingtalk') {
   const empty = { total: records.length, inserted: 0, updated: 0, inactive: 0, ...(stat || {}) }
-  // 用「本批出现的 sheet 名」定位旧行范围，做全表镜像。
-  // 注意：必须在写入**之前**快照旧的在用行，否则刚 INSERT 的新行会被误判成"本次没出现的旧行"。
-  const sheets = [...new Set(records.map((r) => r.sheet_name))]
+  // 按「作业日期」分域镜像：只失效与本批 (sheet_name, plan_date) 相同、且本次未再出现的旧行。
+  // 不同作业日的预约互不覆盖，可长期回看历史每一天的清单。
+  //   - 用 NULL 安全等值 <=> 兼容 plan_date 解析不出来（NULL）的行；
+  //   - 必须在写入**之前**快照旧的在用行，否则刚 INSERT 的新行会被误判成"本次没出现的旧行"。
+  const scopes = [...new Map(
+    records.map((r) => [`${r.sheet_name}\u0000${r.plan_date || ''}`, [r.sheet_name, r.plan_date]])
+  ).values()]
   let oldActive = []
-  if (sheets.length) {
-    const ph = sheets.map(() => '?').join(',')
+  if (scopes.length) {
+    const cond = scopes.map(() => '(sheet_name = ? AND plan_date <=> ?)').join(' OR ')
+    const params = scopes.flatMap(([sheet, date]) => [sheet, date])
     const [rows] = await pool.execute(
-      `SELECT id FROM t_site_permit WHERE is_active=1 AND sheet_name IN (${ph})`,
-      sheets
+      `SELECT id FROM t_site_permit WHERE is_active=1 AND (${cond})`,
+      params
     )
     oldActive = rows.map((r) => r.id)
   }
@@ -331,7 +337,7 @@ async function persist(records, syncId, stat, source = 'dingtalk') {
     }
   }
 
-  // 写入前在用的、本次却没再出现的行 → 失效（保留历史）
+  // 同一作业日内、写入前在用但本次没再出现的行 → 失效（保留历史）；其它作业日不受影响
   const toOff = oldActive.filter((id) => !touched.has(id))
   if (toOff.length) {
     const ph2 = toOff.map(() => '?').join(',')
