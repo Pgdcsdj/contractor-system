@@ -8,6 +8,14 @@
 
       <!-- 步骤 1：上传 -->
       <template v-if="step === 'upload'">
+        <div class="template-tip">
+          <div class="template-tip-title">📥 请先下载最新版标准模板</div>
+          <p>
+            最新版模板已为「隐患排查项目、责任单位、场所站点、隐患等级」设置<b>单元格下拉</b>，从下拉选择即可，避免字段填写不规范。
+            场所站点请从「生产场站 / 施工点」中选，责任单位请从「网格化管理」在册单位中选。
+          </p>
+          <button class="btn btn-primary" type="button" @click="downloadTemplate">⬇️ 下载最新标准模板（含下拉 v2026.11.16.3）</button>
+        </div>
         <p class="modal-hint">
           支持 .xlsx / .xls / .csv。系统会自动识别列，遍历每个工作表（sheet）：每行「隐患排查项目」取该 sheet 标题；
           进度文本映射初始状态；已闭环（D3）项跳过不导；计划完成时间无法解析则置空待补。
@@ -116,7 +124,7 @@
         </div>
 
         <div class="modal-actions">
-          <button class="btn btn-ghost" type="button" @click="downloadTemplate">下载标准模板</button>
+          <button class="btn btn-ghost" type="button" @click="downloadTemplate">下载最新模板</button>
           <button class="btn btn-primary" type="button" @click="handleParse" :disabled="!fileRef || importing || converting">
             {{ converting ? '转换中…' : importing ? '解析中…' : '解析并预览' }}
           </button>
@@ -620,6 +628,16 @@ async function downloadTemplate() {
 }
 .modal-close:hover { background: rgba(0, 0, 0, 0.05); }
 .modal-hint { font-size: 13px; color: var(--text-secondary); margin-bottom: 16px; line-height: 1.7; }
+
+/* 最新模板下载提示（含字典下拉） */
+.template-tip {
+  margin-bottom: 14px; padding: 12px 14px; border-radius: 10px;
+  background: #eef6ff; border: 1px solid #b6d8ff; color: #0b4f9c;
+}
+.template-tip-title { font-size: 14px; font-weight: 700; margin-bottom: 5px; }
+.template-tip p { font-size: 12.5px; line-height: 1.7; margin: 0 0 10px; color: #1a5da8; }
+.template-tip p b { color: #0b4f9c; }
+.template-tip .btn { width: auto; padding: 7px 16px; font-size: 13px; }
 
 .file-upload {
   border: 2px dashed var(--border); border-radius: 12px; padding: 28px; text-align: center;

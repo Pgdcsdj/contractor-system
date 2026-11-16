@@ -19,6 +19,7 @@
  */
 
 const xlsx = require('xlsx')
+const AdmZip = require('adm-zip')
 const path = require('path')
 const { pool } = require('../db/db')
 const { resolveRecorderContext } = require('./permission')
@@ -407,6 +408,37 @@ function normUnit(s) {
 // 注：normUnit 是函数声明（hoisted），此处可安全调用
 const INTERNAL_ORG_NORMS = new Set(INTERNAL_ORG_NAMES.map((n) => normUnit(n)))
 
+// ═══ 导入下拉选项：模板下拉与导入校验共用同一数据源，保证口径一致 ═══
+// 场所站点 = 生产场站(center_station) + 施工点(well_site)；责任单位 = 网格化三/四级在册单位
+async function loadDropdownOptions() {
+  const [stationRows] = await pool.execute(
+    "SELECT name FROM t_hazard_dict WHERE type IN ('center_station','well_site') AND enabled=1 ORDER BY type, sort_order, id"
+  )
+  const [itemRows] = await pool.execute(
+    "SELECT name FROM t_hazard_dict WHERE type='hazard_investigation_item' AND enabled=1 ORDER BY sort_order, id"
+  )
+  const [unitRows] = await pool.execute(
+    "SELECT unit_name FROM t_contractor_unit WHERE grid_level IN ('三级','四级') AND is_active=1 ORDER BY unit_name"
+  )
+  const [levelRows] = await pool.execute(
+    "SELECT name FROM t_hazard_dict WHERE type='level' AND enabled=1 ORDER BY sort_order, id"
+  )
+  const uniq = (arr) => [...new Set(arr.map((v) => String(v == null ? '' : v).trim()).filter(Boolean))]
+  return {
+    location: uniq(stationRows.map((r) => r.name)),
+    item: uniq(itemRows.map((r) => r.name)),
+    unit: uniq(unitRows.map((r) => r.unit_name)),
+    level: uniq(levelRows.map((r) => r.name)),
+  }
+}
+
+function xmlEscape(v) {
+  return String(v == null ? '' : v)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&apos;')
+}
+function colLetter(n) { return String.fromCharCode(64 + n) }
+
 // 归一化后的标准单位名（缓存到 unitList 元素上，避免逐行重复计算）
 function unitNorm(u) {
   if (!u) return ''
@@ -648,7 +680,20 @@ async function cleanRow(row, mapping, ctx) {
   }
   rec.plan_finish_time = planTime
 
-  rec.location = getVal('location')
+  // 场所站点：与「生产场站 / 施工点」字典智能比对，近似值自动归一并提示；
+  // 完全不匹配时保留原值 + 明确警告（不硬拦截，兼容历史台账自由文本写法）。
+  let rawLocation = getVal('location')
+  if (rawLocation && ctx.dd) {
+    const locOpts = ctx.dd.location.map((name) => ({ name }))
+    const mLoc = matchDictOption(rawLocation, locOpts)
+    if (mLoc.matched && mLoc.value !== rawLocation) {
+      warnings.push(`场所已按字典规范：「${rawLocation}」→「${mLoc.value}」`)
+      rawLocation = mLoc.value
+    } else if (!mLoc.matched) {
+      warnings.push(`场所「${rawLocation}」不在「生产场站/施工点」字典内，请下载最新模板从下拉选择（已保留原值，可能影响中心站归属）`)
+    }
+  }
+  rec.location = rawLocation
   rec.rectify_measures = getVal('rectify_measures')
 
   // 场所为硬必填（2026-11-07 业务要求：隐患必须能定位到具体场所/点位）
@@ -699,6 +744,17 @@ async function cleanRow(row, mapping, ctx) {
   } else {
     // 多 sheet：直接取 sheet 名
     invItem = sheetName
+  }
+  // 隐患排查项目：与设置项字典智能比对，近似值自动归一并提示；不在字典内给出明确警告。
+  if (invItem && ctx.dd) {
+    const itemOpts = ctx.dd.item.map((name) => ({ name }))
+    const mItem = matchDictOption(invItem, itemOpts)
+    if (mItem.matched && mItem.value !== invItem) {
+      warnings.push(`隐患排查项目已按字典规范：「${invItem}」→「${mItem.value}」`)
+      invItem = mItem.value
+    } else if (!mItem.matched) {
+      warnings.push(`隐患排查项目「${invItem}」不在设置项字典内，请下载最新模板从下拉选择（已保留原值）`)
+    }
   }
   rec.hazard_investigation_item = invItem
 
@@ -751,6 +807,8 @@ async function parseWorkbook(buffer, originalname = '', opts = {}) {
   const [bhRows] = await pool.execute("SELECT code,name FROM t_hazard_dict WHERE type='business_dept_head' AND enabled=1")
   // 预载问题依据库（标准依据自动匹配，按排查项目 category 相等）
   const basisLib = await loadBasisLibrary(pool)
+  // 预载下拉字典（场所 / 排查项目 / 单位 / 等级），供行级智能归一校验
+  const dd = await loadDropdownOptions()
 
   const sheets = []
   const rows = []
@@ -769,7 +827,7 @@ async function parseWorkbook(buffer, originalname = '', opts = {}) {
     const ws = wb.Sheets[sheetName]
     if (!ws) continue
     // 模板自带的「填写说明」页不参与解析（其正文含列名，会被误判为数据行）
-    if (/^(填写说明|填表说明|说明|导入说明)$/.test(String(sheetName).trim())) {
+    if (/^(填写说明|填表说明|说明|导入说明|_选项字典)$/.test(String(sheetName).trim())) {
       sheets.push({ sheetName, rowCount: 0, valid: 0, error: 0, skippedClosed: 0, skipped: true })
       continue
     }
@@ -804,7 +862,7 @@ async function parseWorkbook(buffer, originalname = '', opts = {}) {
       const rowNo = headerIdx + i + 2 // 1-based 绝对行号
       if (mapping.location >= 0 && String(row[mapping.location] ?? '').trim()) locationFilled++
       const { rec, errors, warnings: rowWarnings, unitMismatch } = await cleanRow(row, mapping, {
-        unitMap, unitList, bdRows, bhRows, sheetName, sheetNames, importType, basisLib,
+        unitMap, unitList, bdRows, bhRows, sheetName, sheetNames, importType, basisLib, dd,
       })
 
       let rowStatus
@@ -1171,56 +1229,108 @@ async function commitImport(buffer, admin, filename = '', opts = {}) {
 }
 
 /**
- * 生成标准导入模板（双 sheet：隐患导入模板 + 填写说明）。
- * 2026-11-07：场所改为硬必填，模板内同步标注必填列，避免用户再次上传缺列文件。
- * @returns {Buffer} xlsx buffer
+ * 生成标准导入模板（三 sheet：隐患导入模板 + 填写说明 + 隐藏字典表 _选项字典）。
+ * 2026-11-16：场所站点 / 责任单位 / 隐患排查项目 / 隐患等级 四列改为 Excel 单元格下拉，
+ * 选项取自系统设置（生产场站、施工点、隐患排查项目、网格化在册单位、隐患等级），
+ * 与导入校验共用 loadDropdownOptions，保证模板下拉与校验口径一致。
+ * SheetJS 社区版不支持写 dataValidations，故生成后用 adm-zip 注入 XML。
+ * @param {object} options 可选：已加载的下拉选项（省略则内部查询）
+ * @returns {Promise<Buffer>} xlsx buffer
  */
-function generateTemplate() {
+async function generateTemplate(options = null) {
+  const dd = options || await loadDropdownOptions()
   const headers = [
     '隐患排查项目', '责任单位', '场所站点', '隐患分类', '隐患等级', '问题描述',
     '整改措施', '整改责任人', '责任人电话', '计划完成时间', '业务归口',
     '业务部门负责人', '是否否决项', '扣分', '初始状态', '标准依据',
   ]
   const sample = [
-    '主题交流会问题', '天然气产销厂通南巴项目组', '马10脱水井场', '设备', '一般',
+    dd.item[0] || '现场检查', dd.unit[0] || '', dd.location[0] || '', '设备',
+    dd.level.find((x) => /一般/.test(x)) || '一般隐患',
     '示例：阀门法兰渗漏，需更换密封垫', '更换密封垫，紧固螺栓', '田海川',
-    '13800000000', '2026-07-20', '生产服务中心', '', '否', '', '整改中',
+    '13800000000', '2026-07-20', '', '', '否', '', '整改中',
     '（可选：留空则按「隐患排查项目」自动匹配依据库）',
   ]
   const ws = xlsx.utils.aoa_to_sheet([headers, sample])
   ws['!cols'] = headers.map((h) => ({ wch: h === '问题描述' || h === '整改措施' ? 34 : Math.max(12, h.length * 2 + 4) }))
 
   const wb = xlsx.utils.book_new()
-  wb.SheetNames.push('隐患导入模板')
-  wb.Sheets['隐患导入模板'] = ws
+  xlsx.utils.book_append_sheet(wb, ws, '隐患导入模板')
 
-  // 填写说明页：明确必填列，减少因缺列导致的整批导入失败
+  // 填写说明页：明确必填列与下拉用法
   const guide = [
     ['列名', '是否必填', '填写说明'],
-    ['场所站点', '必填（★）', '隐患所在的具体场所/点位，如「马10脱水井场」「3#阀室」。缺列或整列为空时整份文件会被拒绝导入。'],
+    ['场所站点', '必填（★）', '必须从单元格下拉选择「生产场站 / 施工点」之一，如「马101TNB」「马305-2HTNB」。缺列或整列为空时整份文件会被拒绝导入。'],
     ['问题描述', '必填（★）', '隐患的具体表现，一行一条，不要合并单元格。'],
     ['整改责任人', '必填（★）', '可多人，用「、」分隔。'],
-    ['隐患排查项目', '建议填', '决定标准依据自动匹配；留空时依据库不匹配。'],
-    ['责任单位', '必填（★）', '须与「网格化管理」在册单位一致；简称会自动匹配为全称（如「中原建工」→「中原建工（普光项目部）」），匹配不上的会拒绝导入并给出建议。'],
+    ['隐患排查项目', '建议填', '必须从单元格下拉选择设置项中的规范名称；决定标准依据自动匹配。'],
+    ['责任单位', '必填（★）', '必须从单元格下拉选择「网格化管理」在册三/四级单位全称；填写其它值会被拒绝导入并给出建议。'],
+    ['隐患等级', '选填', '必须从单元格下拉选择，当前仅「重大隐患 / 一般隐患」两级；留空按「一般隐患」处理。'],
     ['计划完成时间', '建议填', '支持 2026-07-20 / 2026年7月20日 等写法；无法解析时置空并提示。'],
-    ['隐患等级', '选填', '一般 / 较大 / 重大；留空按「一般」处理。'],
     ['业务归口 / 业务部门负责人', '选填', '按系统字典智能匹配，未命中保留原值。'],
     ['整改进度 / 初始状态', '选填', '填写「已整改/已闭环」的行视为历史闭环，导入时自动跳过。'],
     ['标准依据', '选填', '留空则按「隐患排查项目」自动匹配依据库。'],
     ['', '', ''],
+    ['重要', '', '表内下拉选项来自系统设置；若下拉为空或需更新，请到对应设置页维护后，重新下载本模板。'],
     ['说明', '', '每个 sheet 的第一行须为表头；sheet 名视为「隐患排查项目」时以表内该列为准。'],
-    ['说明', '', '本模板由系统「隐患闭环 → 隐患录入 → 批量导入 → 下载模板」生成，请勿增删列名。'],
+    ['说明', '', '本模板由系统「隐患闭环 → 隐患录入 → 批量导入 → 下载标准模板」生成，请勿增删列名。'],
   ]
   const ws2 = xlsx.utils.aoa_to_sheet(guide)
   ws2['!cols'] = [{ wch: 26 }, { wch: 12 }, { wch: 78 }]
-  wb.SheetNames.push('填写说明')
-  wb.Sheets['填写说明'] = ws2
+  xlsx.utils.book_append_sheet(wb, ws2, '填写说明')
 
-  return xlsx.write(wb, { type: 'buffer', bookType: 'xlsx' })
+  // 隐藏字典 sheet：A=隐患排查项目 B=责任单位 C=场所站点 D=隐患等级
+  const cols = [dd.item, dd.unit, dd.location, dd.level]
+  const dictAoa = [['隐患排查项目', '责任单位', '场所站点', '隐患等级']]
+  const maxLen = Math.max(...cols.map((c) => c.length), 1)
+  for (let i = 0; i < maxLen; i++) dictAoa.push(cols.map((c) => c[i] || ''))
+  const ws3 = xlsx.utils.aoa_to_sheet(dictAoa)
+  ws3['!cols'] = [{ wch: 26 }, { wch: 38 }, { wch: 24 }, { wch: 14 }]
+  xlsx.utils.book_append_sheet(wb, ws3, '_选项字典')
+
+  const raw = xlsx.write(wb, { type: 'buffer', bookType: 'xlsx' })
+  const zip = new AdmZip(raw)
+
+  // definedNames：指向隐藏字典表各列数据区（第2行起）
+  const dnDefs = [
+    ['DD_ITEM', 1, dd.item.length],
+    ['DD_UNIT', 2, dd.unit.length],
+    ['DD_LOCATION', 3, dd.location.length],
+    ['DD_LEVEL', 4, dd.level.length],
+  ]
+  const definedNamesXml = '<definedNames>' + dnDefs
+    .map(([nm, col, n]) => `<definedName name="${nm}">'_选项字典'!$${colLetter(col)}$2:$${colLetter(col)}$${Math.max(2, n + 1)}</definedName>`)
+    .join('') + '</definedNames>'
+
+  let workbookXml = zip.readAsText('xl/workbook.xml')
+  if (!/<\/sheets>/.test(workbookXml)) throw new Error('workbook.xml 缺少 </sheets>')
+  workbookXml = workbookXml.replace('</sheets>', '</sheets>' + definedNamesXml)
+  // 隐藏字典 sheet
+  if (!/<sheet name="_选项字典"/.test(workbookXml)) throw new Error('workbook.xml 缺少 _选项字典 sheet')
+  workbookXml = workbookXml.replace(/(<sheet name="_选项字典"[^>]*?)(\/>)/, '$1 state="hidden"$2')
+  zip.updateFile('xl/workbook.xml', Buffer.from(workbookXml, 'utf8'))
+
+  // dataValidations：A/B/C/E 四列，第 2~1200 行
+  const rules = [
+    ['A', 'DD_ITEM', '请从下拉选择「隐患排查项目」'],
+    ['B', 'DD_UNIT', '请从下拉选择「责任单位」（网格化在册单位）'],
+    ['C', 'DD_LOCATION', '请从下拉选择「场所站点」（生产场站/施工点）'],
+    ['E', 'DD_LEVEL', '请从下拉选择「隐患等级」'],
+  ]
+  const dvXml = '<dataValidations count="' + rules.length + '">' + rules
+    .map(([col, nm, tip]) => `<dataValidation type="list" allowBlank="1" showInputMessage="1" showErrorMessage="1" errorTitle="取值不在字典内" error="${xmlEscape(tip)}" promptTitle="规范录入" prompt="${xmlEscape(tip)}" sqref="${col}2:${col}1200"><formula1>${nm}</formula1></dataValidation>`)
+    .join('') + '</dataValidations>'
+  let sheet1 = zip.readAsText('xl/worksheets/sheet1.xml')
+  if (!/<\/sheetData>/.test(sheet1)) throw new Error('sheet1.xml 缺少 </sheetData>')
+  sheet1 = sheet1.replace('</sheetData>', '</sheetData>' + dvXml)
+  zip.updateFile('xl/worksheets/sheet1.xml', Buffer.from(sheet1, 'utf8'))
+
+  return zip.toBuffer()
 }
 
 module.exports = {
   generateTemplate,
+  loadDropdownOptions,
   previewImport,
   commitImport,
   // 导出纯函数便于单元测试 / 复用

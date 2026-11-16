@@ -327,7 +327,7 @@ router.post('/import/confirm', requireAdminOrSafety, importUpload.single('file')
 // ─── GET /api/hazards/import/template —— 下载标准导入模板 ───────────────────
 router.get('/import/template', requireAdminOrSafety, async (req, res) => {
   try {
-    const buffer = importService.generateTemplate()
+    const buffer = await importService.generateTemplate()
     // RFC 5987 编码：filename 用 ASCII 兜底，filename* 用 UTF-8 百分号编码携带中文名，避免 Node 拒绝非 ASCII 头值
     res.setHeader(
       'Content-Disposition',
