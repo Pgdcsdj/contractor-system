@@ -37,6 +37,9 @@
         </div>
         <div class="toolbar-right">
           <span class="total-count">共 {{ total }} 条</span>
+          <button class="btn btn-primary" :disabled="exporting || total === 0" @click="handleExport" :title="`导出当前筛选结果（共 ${total} 条）`">
+            <Icon name="download" :size="16" /> {{ exporting ? '导出中…' : '导出筛选结果' }}
+          </button>
           <button class="btn btn-danger" :disabled="!selectedIds.length || deleting" @click="handleBatchDelete">
             <Icon name="trash" :size="16" /> 批量删除
           </button>
@@ -175,6 +178,7 @@ import HazardDetailDrawer from '@/views/admin/components/HazardDetailDrawer.vue'
 import { statusLabel, statusBadge, levelBadge } from '@/utils/hazardStatus'
 import {
   getHazards,
+  exportHazards,
   getHazardDetail,
   getHazardDict,
   getContractorUnits,
@@ -212,6 +216,7 @@ const investigationSelectRef = ref(null)
 const selectedIds = ref([])
 const notifying = ref(false)
 const deleting = ref(false)
+const exporting = ref(false)
 
 const showDetail = ref(false)
 const detail = ref(null)
@@ -256,6 +261,22 @@ function buildParams() {
   if (activeTab.value === 'overdue') p.is_overdue = '1'
   else if (activeTab.value !== 'all') p.status = activeTab.value
   return p
+}
+
+async function handleExport() {
+  if (exporting.value) return
+  exporting.value = true
+  try {
+    const p = buildParams()
+    delete p.page
+    delete p.pageSize
+    await exportHazards(p)
+    showToast(`已导出当前筛选结果（共 ${total.value} 条）`, 'success')
+  } catch (e) {
+    showToast('导出失败：' + (e?.message || '未知错误'), 'error')
+  } finally {
+    exporting.value = false
+  }
 }
 
 const investigationSelectedText = computed(() => {

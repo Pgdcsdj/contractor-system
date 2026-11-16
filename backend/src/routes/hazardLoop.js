@@ -370,45 +370,29 @@ router.get('/import/logs', requireAdminOrSafety, async (req, res) => {
   }
 })
 
-// ─── GET /api/hazards —— 闭环看板列表 ────────────────────────────────────────
-router.get('/', adminAuth, async (req, res) => {
+// ─── 闭环看板筛选条件（列表 / 导出共用，保证「导出 = 当前筛选结果」）──────────
+// ⚠ 修改筛选逻辑必须只改这里，列表 GET / 与导出 GET /export 同时生效。
+function buildHazardListFilter(req) {
   const {
-    status = '',
-    contractor_unit_id = '',
-    unit_name = '',
-    level = '',
-    keyword = '',
-    is_overdue = '',
-    hazard_investigation_item = '',
-    page = 1,
-    pageSize = 20,
-  } = req.query
-
-  const safePage = Math.max(1, Number(page) || 1)
-  const safePageSize = Math.min(100, Math.max(1, Number(pageSize) || 20))
-  const offset = (safePage - 1) * safePageSize
-
-  // 隐患排查项目多选筛选：支持「a,b,c」逗号串或重复 query 参数数组
+    status = '', contractor_unit_id = '', unit_name = '', level = '',
+    keyword = '', is_overdue = '', hazard_investigation_item = '',
+  } = req.query || {}
   let investigationItems = []
   if (hazard_investigation_item) {
     const raw = Array.isArray(hazard_investigation_item)
       ? hazard_investigation_item
-      : String(hazard_investigation_item).split(',').map((s) => s.trim())
+      : String(hazard_investigation_item).split(',').map((x) => x.trim())
     investigationItems = raw.filter(Boolean)
   }
-
-  // 列表筛选（含 status / is_overdue 切换）
   const where = []
   const params = []
   if (contractor_unit_id) { where.push('contractor_unit_id = ?'); params.push(Number(contractor_unit_id)) }
   if (unit_name) { where.push('unit_name = ?'); params.push(unit_name) }
   if (level) { where.push('hazard_level = ?'); params.push(level) }
   if (investigationItems.length) {
-    const inPh = investigationItems.map(() => '?').join(', ')
-    where.push(`hazard_investigation_item IN (${inPh})`)
+    where.push(`hazard_investigation_item IN (${investigationItems.map(() => '?').join(', ')})`)
     params.push(...investigationItems)
   }
-
   if (keyword) {
     where.push('(unit_name LIKE ? OR description LIKE ? OR responsible_person LIKE ?)')
     params.push(`%${keyword}%`, `%${keyword}%`, `%${keyword}%`)
@@ -417,24 +401,20 @@ router.get('/', adminAuth, async (req, res) => {
   if (is_overdue === '1') {
     where.push("(status <> 'closed' AND plan_finish_time IS NOT NULL AND plan_finish_time < NOW())")
   }
-  // 软删除 + 安全员录入人作用域隔离（设计 §3.4(c) / §8.3）
   where.push('deleted_at IS NULL')
   const sc = applyRecorderScope(req.admin.role, req.admin.id)
   if (sc.clause) {
-    where.push(sc.clause.replace(/^AND\s*/i, '')) // applyRecorderScope 返回带 AND 前缀，此处只需条件本身
+    where.push(sc.clause.replace(/^AND\s*/i, ''))
     params.push(...sc.params)
   }
-  const whereClause = where.length ? 'WHERE ' + where.join(' AND ') : ''
-
-  // 汇总筛选（忽略 status / is_overdue，用于 Tab 计数）
+  // 汇总条件（忽略 status / is_overdue，用于列表 Tab 计数），与列表原逻辑一致
   const sumWhere = []
   const sumParams = []
   if (contractor_unit_id) { sumWhere.push('contractor_unit_id = ?'); sumParams.push(Number(contractor_unit_id)) }
   if (unit_name) { sumWhere.push('unit_name = ?'); sumParams.push(unit_name) }
   if (level) { sumWhere.push('hazard_level = ?'); sumParams.push(level) }
   if (investigationItems.length) {
-    const inPh = investigationItems.map(() => '?').join(', ')
-    sumWhere.push(`hazard_investigation_item IN (${inPh})`)
+    sumWhere.push(`hazard_investigation_item IN (${investigationItems.map(() => '?').join(', ')})`)
     sumParams.push(...investigationItems)
   }
   if (keyword) {
@@ -446,7 +426,33 @@ router.get('/', adminAuth, async (req, res) => {
     sumWhere.push(sc.clause.replace(/^AND\s*/i, ''))
     sumParams.push(...sc.params)
   }
-  const sumWhereClause = sumWhere.length ? 'WHERE ' + sumWhere.join(' AND ') : ''
+  return {
+    whereClause: where.length ? 'WHERE ' + where.join(' AND ') : '',
+    params,
+    sumWhereClause: sumWhere.length ? 'WHERE ' + sumWhere.join(' AND ') : '',
+    sumParams,
+    // 给「统计口径」sheet 用的可读筛选描述
+    text: {
+      keyword: keyword || '不限',
+      unit_name: unit_name || '全部单位',
+      level: level || '全部等级',
+      items: investigationItems.length ? investigationItems.join('、') : '全部隐患项目',
+      status: status ? (STATION_STATUS_TEXT[status] || status) : '全部状态',
+      overdue: is_overdue === '1' ? '仅超期' : '不限',
+    },
+  }
+}
+
+// ─── GET /api/hazards —— 闭环看板列表 ────────────────────────────────────────
+router.get('/', adminAuth, async (req, res) => {
+  const { page = 1, pageSize = 20 } = req.query
+  const safePage = Math.max(1, Number(page) || 1)
+  const safePageSize = Math.min(100, Math.max(1, Number(pageSize) || 20))
+  const offset = (safePage - 1) * safePageSize
+
+  // 筛选条件与导出共用同一构建函数，保证「导出 = 当前筛选结果」
+  const built = buildHazardListFilter(req)
+  const { whereClause, params, sumWhereClause, sumParams } = built
 
   try {
     const [[{ total }]] = await pool.execute(`SELECT COUNT(*) AS total FROM t_hazard ${whereClause}`, params)
@@ -1095,6 +1101,93 @@ router.get('/center-station-ranking/export', requireAdminOrSafety, async (req, r
   }
 })
 
+
+// ─── GET /api/hazards/export —— 隐患闭环列表「筛选后导出」Excel ───────────────
+// ⚠ 必须定义在 router.get('/:id') 之前，否则会被 :id 占位符吞掉。
+// 筛选条件复用 buildHazardListFilter(req)，与列表 GET / 完全一致。
+const HAZARD_EXPORT_HEADERS = [
+  '序号', '隐患编号', '隐患排查项目', '责任单位', '检查时间', '场所',
+  '问题描述', '等级', '责任人', '录入人', '计划完成时间', '状态',
+  '是否超期', '整改措施', '标准依据', '备注', '闭环时间',
+]
+router.get('/export', adminAuth, async (req, res) => {
+  try {
+    const built = buildHazardListFilter(req)
+    const [rows] = await pool.query(
+      `SELECT ${HAZARD_COLUMNS}, ${OVERDUE_EXPR} AS is_overdue
+         FROM t_hazard ${built.whereClause}
+        ORDER BY report_time DESC, id DESC LIMIT 5001`,
+      built.params
+    )
+    if (rows.length > 5000) {
+      return res.status(400).json({
+        success: false,
+        error: '筛选结果超过 5000 条，请缩小筛选范围后再导出',
+      })
+    }
+    const body = rows.map((r, i) => [
+      i + 1,
+      r.hazard_code || '',
+      r.hazard_investigation_item || '',
+      r.unit_name || '',
+      r.report_time || '',
+      r.location || '',
+      r.description || '',
+      r.hazard_level || '',
+      r.responsible_person || '',
+      r.recorder_name || '',
+      r.plan_finish_time || '',
+      STATION_STATUS_TEXT[r.status] || r.status || '',
+      Number(r.is_overdue) ? '是' : '否',
+      r.rectify_measures || '',
+      r.standard_basis || '',
+      r.remark || '',
+      r.closed_at || '',
+    ])
+    const wb = xlsx.utils.book_new()
+    const ws = xlsx.utils.aoa_to_sheet([HAZARD_EXPORT_HEADERS, ...body])
+    ws['!cols'] = [
+      { wch: 6 }, { wch: 18 }, { wch: 22 }, { wch: 24 }, { wch: 17 }, { wch: 20 },
+      { wch: 46 }, { wch: 12 }, { wch: 14 }, { wch: 14 }, { wch: 17 }, { wch: 12 },
+      { wch: 10 }, { wch: 36 }, { wch: 30 }, { wch: 28 }, { wch: 17 },
+    ]
+    xlsx.utils.book_append_sheet(wb, ws, '隐患明细')
+
+    const f = built.text
+    const now = new Date()
+    const p2 = (n) => String(n).padStart(2, '0')
+    const meta = [
+      ['项目', '内容'],
+      ['报表名称', '隐患闭环列表 · 筛选结果'],
+      ['生成时间', `${now.getFullYear()}-${p2(now.getMonth() + 1)}-${p2(now.getDate())} ${p2(now.getHours())}:${p2(now.getMinutes())}`],
+      ['关键词', f.keyword],
+      ['责任单位', f.unit_name],
+      ['隐患等级', f.level],
+      ['隐患排查项目', f.items],
+      ['状态', f.status],
+      ['超期筛选', f.overdue],
+      ['导出条数', rows.length],
+      ['数据范围', 't_hazard 且 deleted_at IS NULL（不含软删除记录）'],
+      ['口径说明', '本清单与隐患闭环页面当前筛选条件、排序（检查时间倒序）完全一致'],
+    ]
+    const ws2 = xlsx.utils.aoa_to_sheet(meta)
+    ws2['!cols'] = [{ wch: 18 }, { wch: 72 }]
+    xlsx.utils.book_append_sheet(wb, ws2, '筛选条件')
+    const buffer = xlsx.write(wb, { type: 'buffer', bookType: 'xlsx' })
+
+    const fileDate = `${now.getFullYear()}${p2(now.getMonth() + 1)}${p2(now.getDate())}_${p2(now.getHours())}${p2(now.getMinutes())}`
+    const filename = `隐患闭环清单_${fileDate}.xlsx`
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${encodeURIComponent(filename)}"; filename*=UTF-8''${encodeURIComponent(filename)}`
+    )
+    res.send(buffer)
+  } catch (err) {
+    console.error('[hazard-list-export]', err.message)
+    res.status(500).json({ success: false, error: '隐患清单导出失败：' + err.message })
+  }
+})
 
 // ─── GET /api/hazards/:id —— 隐患详情（含照片）───────────────────────────────
 router.get('/:id', adminAuth, async (req, res) => {

@@ -40,6 +40,40 @@ export function getHazards(params = {}) {
   return request.get('/api/hazards', { params })
 }
 
+/** 隐患看板列表：按当前筛选条件导出 Excel（xlsx） */
+export function exportHazards(params = {}) {
+  return request
+    .get('/api/hazards/export', { params, responseType: 'blob', timeout: 300000 })
+    .then(async (res) => {
+      const data = res.data
+      // responseType=blob 时后端错误 JSON 也会变成 Blob，先拦截避免下出坏文件
+      if (data && data.type && String(data.type).includes('json')) {
+        const text = await data.text()
+        let msg = '导出失败'
+        try { msg = JSON.parse(text).error || msg } catch (_) { /* 保持默认提示 */ }
+        throw new Error(msg)
+      }
+      const blob = new Blob([data], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      })
+      const url = window.URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      const cd = res.headers && res.headers['content-disposition']
+      let name = ''
+      if (cd) {
+        const m = /(?:filename\*=UTF-8''|filename=)"?([^";]+)"?/i.exec(cd)
+        if (m) { try { name = decodeURIComponent(m[1]) } catch (_) { name = m[1] } }
+      }
+      a.download = name || `隐患闭环清单_${new Date().toISOString().slice(0, 10)}.xlsx`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      window.URL.revokeObjectURL(url)
+      return res
+    })
+}
+
 /** 隐患详情（含照片） */
 export function getHazardDetail(id) {
   return request.get(`/api/hazards/${id}`)
