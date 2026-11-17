@@ -181,6 +181,37 @@ function matchDictOption(rawValue, options) {
   return { value: raw, matched: false, note: 'none' }
 }
 
+/**
+ * 严格字典匹配（硬拦截用）：只接受「规范值」的精确命中。
+ * 归一规则：NFKC（全角→半角）+ 去除所有空白 + 小写；不去掉括号、不做别名/简称/包含/编辑距离。
+ * 即用户必须从下拉选择数据库里的规范全称，写简称/旧名/自由文本一律判为不匹配。
+ * @returns {{matched:boolean, value:string}} matched 时 value 为规范值原文
+ */
+function strictMatch(rawValue, names) {
+  const strictKey = (v) => String(v == null ? '' : v).normalize('NFKC').replace(/\s+/g, '').toLowerCase()
+  const raw = String(rawValue == null ? '' : rawValue)
+  const key = strictKey(raw)
+  if (!key || !Array.isArray(names)) return { matched: false, value: raw.trim() }
+  for (const n of names) {
+    if (strictKey(n) === key) return { matched: true, value: String(n) }
+  }
+  return { matched: false, value: raw.trim() }
+}
+
+// 硬拦截改正建议：宽松比对给出最接近的规范值候选（仅用于提示，不用于放行）
+function strictSuggest(rawValue, names, limit = 3) {
+  const opts = (names || []).map((name) => ({ name }))
+  const loose = matchDictOption(rawValue, opts)
+  if (loose.matched) return [loose.value]
+  // 包含关系兜底候选
+  const key = String(rawValue == null ? '' : rawValue).normalize('NFKC').replace(/\s+/g, '').toLowerCase()
+  if (!key) return []
+  return opts.map((o) => o.name).filter((n) => {
+    const nk = String(n).normalize('NFKC').replace(/\s+/g, '').toLowerCase()
+    return nk.includes(key) || key.includes(nk)
+  }).slice(0, limit)
+}
+
 // 责任人手机号自动匹配（responsible_phone 为空时，从 t_user 按姓名/单位匹配）
 async function autoMatchPhone(pool, personName, unitName) {
   if (!personName) return ''
@@ -592,6 +623,8 @@ async function cleanRow(row, mapping, ctx) {
 
   const errors = []
   const warnings = []
+  // 三列硬拦截（责任单位/场所/隐患排查项目）：不合规登记到此，整表门禁统一拒绝
+  const dictMismatches = []
   const rec = {}
 
   const rawDesc = getVal('description')
@@ -620,34 +653,37 @@ async function cleanRow(row, mapping, ctx) {
   if (!rawPerson) errors.push('缺少整改责任人')
   if (!rawUnit) warnings.push('缺少责任单位，已置空待人工补')
 
-  // 单位解析（智能匹配：全称/归一化/队号/简称/包含/近似 → 全称 + id）
+  // 单位解析（硬拦截 v2026.11.16.4：必须精确等于网格化在册单位全称，不再自动归一简称/别名/模糊值）
   let contractor_unit_id = null
   let unit_name = rawUnit
   let unitMismatch = null
   if (rawUnit) {
-    const m = resolveUnit(rawUnit, unitList)
-    if (m.matched) {
-      contractor_unit_id = m.id
-      unit_name = m.unit_name
-      if (m.method !== 'exact') {
-        warnings.push(`责任单位已自动规范：「${rawUnit}」→「${m.unit_name}」`)
-      }
+    const unitNames = unitList.map((u) => u.unit_name)
+    const exact = strictMatch(rawUnit, unitNames)
+    if (exact.matched) {
+      const hit = unitList.find((u) => u.unit_name === exact.value)
+      contractor_unit_id = hit ? hit.id : null
+      unit_name = exact.value
     } else {
-      // 软提示 + 硬错误：既给候选建议，也登记为整表门禁（UNIT_UNMATCH）的依据
-      if (m.internal) {
-        // 内部机构（项目部/组室）不是承包商单位，给专门提示而非候选建议
+      // 内部机构（项目部/组室）不是承包商单位，给专门提示
+      const mInternal = resolveUnit(rawUnit, unitList)
+      if (mInternal.matched && mInternal.internal) {
         errors.push(
           `责任单位「${rawUnit}」是项目部内部机构（甲方），不是承包商单位，请填写具体施工单位全称（可在「承包商准入→网格化管理」查看）`
         )
-        unitMismatch = { raw: rawUnit, suggests: [], reason: 'internal' }
+        const rec0 = { raw: rawUnit, suggests: [], reason: 'internal' }
+        unitMismatch = rec0
+        dictMismatches.push({ field: '责任单位', ...rec0 })
       } else {
-        const sug = suggestUnits(rawUnit, unitList)
+        const sug = strictSuggest(rawUnit, unitNames)
         errors.push(
-          `责任单位「${rawUnit}」不在网格化管理库在册名单` +
-            (sug.length ? `，建议改为：${sug.map((s) => '「' + s + '」').join(' 或 ')}` : '，且无可参考的相似单位') +
-            '（可在「承包商准入→网格化管理」查看在册单位全称）'
+          `责任单位「${rawUnit}」不是网格化管理库在册单位的规范全称（必须从下拉选择）` +
+            (sug.length ? `，规范值可能是：${sug.map((s) => '「' + s + '」').join(' 或 ')}` : '') +
+            '（可在「承包商准入→网格化管理」查看在册单位全称，或下载最新模板从下拉选择）'
         )
-        unitMismatch = { raw: rawUnit, suggests: sug }
+        const rec0 = { raw: rawUnit, suggests: sug, reason: 'unmatched' }
+        unitMismatch = rec0
+        dictMismatches.push({ field: '责任单位', ...rec0 })
       }
     }
   }
@@ -680,17 +716,25 @@ async function cleanRow(row, mapping, ctx) {
   }
   rec.plan_finish_time = planTime
 
-  // 场所站点：与「生产场站 / 施工点」字典智能比对，近似值自动归一并提示；
-  // 完全不匹配时保留原值 + 明确警告（不硬拦截，兼容历史台账自由文本写法）。
+  // 场所站点（硬拦截 v2026.11.16.4）：必须精确等于「生产场站 / 施工点」字典规范值（下拉选项），
+  // 自由文本 / 简称 / 旧写法一律判为不匹配并整表拒绝。
   let rawLocation = getVal('location')
-  if (rawLocation && ctx.dd) {
-    const locOpts = ctx.dd.location.map((name) => ({ name }))
-    const mLoc = matchDictOption(rawLocation, locOpts)
-    if (mLoc.matched && mLoc.value !== rawLocation) {
-      warnings.push(`场所已按字典规范：「${rawLocation}」→「${mLoc.value}」`)
-      rawLocation = mLoc.value
-    } else if (!mLoc.matched) {
-      warnings.push(`场所「${rawLocation}」不在「生产场站/施工点」字典内，请下载最新模板从下拉选择（已保留原值，可能影响中心站归属）`)
+  if (ctx.dd) {
+    if (!rawLocation) {
+      errors.push('场所站点为空：必须从下拉选择「生产场站/施工点」的规范值')
+      dictMismatches.push({ field: '场所站点', raw: '', suggests: [], reason: 'empty' })
+    } else {
+      const mLoc = strictMatch(rawLocation, ctx.dd.location)
+      if (mLoc.matched) {
+        rawLocation = mLoc.value
+      } else {
+        const sug = strictSuggest(rawLocation, ctx.dd.location)
+        errors.push(
+          `场所「${rawLocation}」不在「生产场站/施工点」字典规范值内（必须从下拉选择）` +
+            (sug.length ? `，规范值可能是：${sug.map((s) => '「' + s + '」').join(' 或 ')}` : '')
+        )
+        dictMismatches.push({ field: '场所站点', raw: rawLocation, suggests: sug, reason: 'unmatched' })
+      }
     }
   }
   rec.location = rawLocation
@@ -745,15 +789,23 @@ async function cleanRow(row, mapping, ctx) {
     // 多 sheet：直接取 sheet 名
     invItem = sheetName
   }
-  // 隐患排查项目：与设置项字典智能比对，近似值自动归一并提示；不在字典内给出明确警告。
-  if (invItem && ctx.dd) {
-    const itemOpts = ctx.dd.item.map((name) => ({ name }))
-    const mItem = matchDictOption(invItem, itemOpts)
-    if (mItem.matched && mItem.value !== invItem) {
-      warnings.push(`隐患排查项目已按字典规范：「${invItem}」→「${mItem.value}」`)
-      invItem = mItem.value
-    } else if (!mItem.matched) {
-      warnings.push(`隐患排查项目「${invItem}」不在设置项字典内，请下载最新模板从下拉选择（已保留原值）`)
+  // 隐患排查项目（硬拦截 v2026.11.16.4）：必须精确等于设置项字典规范值（下拉选项）。
+  if (ctx.dd) {
+    if (!invItem) {
+      errors.push('隐患排查项目为空：必须从下拉选择设置项中的规范名称')
+      dictMismatches.push({ field: '隐患排查项目', raw: '', suggests: [], reason: 'empty' })
+    } else {
+      const mItem = strictMatch(invItem, ctx.dd.item)
+      if (mItem.matched) {
+        invItem = mItem.value
+      } else {
+        const sug = strictSuggest(invItem, ctx.dd.item)
+        errors.push(
+          `隐患排查项目「${invItem}」不在设置项字典规范值内（必须从下拉选择）` +
+            (sug.length ? `，规范值可能是：${sug.map((s) => '「' + s + '」').join(' 或 ')}` : '')
+        )
+        dictMismatches.push({ field: '隐患排查项目', raw: invItem, suggests: sug, reason: 'unmatched' })
+      }
     }
   }
   rec.hazard_investigation_item = invItem
@@ -775,7 +827,7 @@ async function cleanRow(row, mapping, ctx) {
   rec.unit_name = unit_name
   rec.contractor_unit_id = contractor_unit_id
 
-  return { rec, errors, warnings, unitMismatch }
+  return { rec, errors, warnings, unitMismatch, dictMismatches }
 }
 
 /**
@@ -861,7 +913,7 @@ async function parseWorkbook(buffer, originalname = '', opts = {}) {
 
       const rowNo = headerIdx + i + 2 // 1-based 绝对行号
       if (mapping.location >= 0 && String(row[mapping.location] ?? '').trim()) locationFilled++
-      const { rec, errors, warnings: rowWarnings, unitMismatch } = await cleanRow(row, mapping, {
+      const { rec, errors, warnings: rowWarnings, unitMismatch, dictMismatches } = await cleanRow(row, mapping, {
         unitMap, unitList, bdRows, bhRows, sheetName, sheetNames, importType, basisLib, dd,
       })
 
@@ -917,6 +969,8 @@ async function parseWorkbook(buffer, originalname = '', opts = {}) {
         warnings: rowWarnings,
         // 责任单位与网格化管理库不一致的明细（整表门禁 UNIT_UNMATCH 用；无差异为 null）
         unitMismatch: unitMismatch || null,
+        // 三列硬拦截明细（责任单位/场所/隐患排查项目）
+        dictMismatches: dictMismatches || [],
       })
     }
 
@@ -949,20 +1003,27 @@ async function parseWorkbook(buffer, originalname = '', opts = {}) {
   // 责任单位必须与「网格化管理」在册单位一致：能唯一匹配的已在 cleanRow 中自动规范化并放行，
   // 此处汇总匹配不上的行，整份文件拒绝导入，并回传明细供前端逐行给出改正建议。
   // 注意：场所门禁（MISSING_LOCATION）优先判定，保持在上方。
-  const unitMiss = rows.filter((r) => r.unitMismatch)
-  if (unitMiss.length > 0) {
+  // 逐行收集三列硬拦截明细（责任单位 / 场所站点 / 隐患排查项目）
+  const dictMiss = []
+  for (const r of rows) {
+    for (const m of (r.dictMismatches || [])) {
+      dictMiss.push({
+        sheetName: r.sheetName,
+        rowNo: r.rowNo,
+        field: m.field,
+        raw: m.raw,
+        suggests: m.suggests || [],
+        reason: m.reason || 'unmatched',
+      })
+    }
+  }
+  if (dictMiss.length > 0) {
     const err = new Error(
-      `导入失败：${unitMiss.length} 行责任单位与网格化管理库不一致，请改正后重新上传（明细见下表）`
+      `导入失败：共 ${dictMiss.length} 处字段值不符合数据库规范（责任单位/场所站点/隐患排查项目必须从下拉选择），请改正后重新上传`
     )
-    err.code = 'UNIT_UNMATCH'
-    err.mismatches = unitMiss.slice(0, 30).map((r) => ({
-      sheetName: r.sheetName,
-      rowNo: r.rowNo,
-      raw: r.unitMismatch.raw,
-      suggests: r.unitMismatch.suggests || [],
-      // reason='internal' 表示填的是项目部内部机构（甲方），不是"名称写错"，前端提示文案要区分
-      reason: r.unitMismatch.reason || 'unmatched',
-    }))
+    err.code = 'DICT_UNMATCH'
+    // 同时保留 UNIT_UNMATCH 别名，兼容旧版前端
+    err.mismatches = dictMiss.slice(0, 40)
     err.templateUrl = '/api/hazards/import/template'
     throw err
   }

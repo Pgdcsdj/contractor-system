@@ -9,12 +9,13 @@
       <!-- 步骤 1：上传 -->
       <template v-if="step === 'upload'">
         <div class="template-tip">
-          <div class="template-tip-title">📥 请先下载最新版标准模板</div>
+          <div class="template-tip-title">📥 请先下载最新版标准模板（v2026.11.16.4）</div>
           <p>
-            最新版模板已为「隐患排查项目、责任单位、场所站点、隐患等级」设置<b>单元格下拉</b>，从下拉选择即可，避免字段填写不规范。
-            场所站点请从「生产场站 / 施工点」中选，责任单位请从「网格化管理」在册单位中选。
+            最新版模板已为「隐患排查项目、责任单位、场所站点、隐患等级」设置<b>单元格下拉</b>。<b>三列实行硬拦截：</b>
+            「责任单位」必须从「网格化管理」在册单位中选、「场所站点」必须从「生产场站/施工点」中选、「隐患排查项目」必须从设置项中选，
+            <b>填简称、旧名或自由文本将整份文件拒绝导入</b>，请务必从下拉选择规范值。
           </p>
-          <button class="btn btn-primary" type="button" @click="downloadTemplate">⬇️ 下载最新标准模板（含下拉 v2026.11.16.3）</button>
+          <button class="btn btn-primary" type="button" @click="downloadTemplate">⬇️ 下载最新标准模板（含下拉 v2026.11.16.4）</button>
         </div>
         <p class="modal-hint">
           支持 .xlsx / .xls / .csv。系统会自动识别列，遍历每个工作表（sheet）：每行「隐患排查项目」取该 sheet 标题；
@@ -66,22 +67,29 @@
           </p>
         </div>
 
-        <!-- 责任单位与网格化管理库不一致：整份文件被拒绝，逐行给出改正建议 -->
+        <!-- 三列硬拦截（责任单位/场所/隐患排查项目）：字段值不符合数据库规范，整份文件被拒绝，逐行给出改正建议 -->
         <div v-if="unitMismatches.length" class="unit-box">
-          <div class="unit-title">❌ 导入失败：{{ unitMismatches.length }} 行责任单位与网格化管理库不一致</div>
-          <p class="unit-text">请按下列建议修改表格中的「责任单位」列，保存后重新上传。也可到「承包商准入 → 网格化管理」查看全部在册单位全称。</p>
+          <div class="unit-title">❌ 导入失败：{{ unitMismatches.length }} 处字段值不符合数据库规范</div>
+          <p class="unit-text">
+            「责任单位 / 场所站点 / 隐患排查项目」必须从下拉选择数据库里的规范值，简写或自由文本一律不予导入。
+            请按下列建议修改表格对应列，保存后重新上传；也可先下载最新模板对照填写。
+          </p>
           <ul class="unit-list">
             <li v-for="(m, i) in unitMismatches" :key="i">
               <span class="unit-row-no">{{ m.sheetName || '' }}{{ m.rowNo ? ' 第 ' + m.rowNo + ' 行' : '' }}</span>
-              责任单位「<b>{{ m.raw }}</b>」
+              <b>{{ m.field || '责任单位' }}</b
+              ><template v-if="m.raw">「<b>{{ m.raw }}</b>」</template><template v-else>（空）</template>
               <template v-if="m.reason === 'internal'">
                 → 属项目部内部机构（甲方），不是承包商单位，请改填具体施工单位全称
               </template>
+              <template v-else-if="m.reason === 'empty'">
+                → 不能为空，请从下拉选择规范值
+              </template>
               <template v-else-if="m.suggests && m.suggests.length">
-                → 建议改为 <b>{{ m.suggests.join(' / ') }}</b>
+                → 规范值可能是 <b>{{ m.suggests.join(' / ') }}</b>
               </template>
               <template v-else>
-                → 网格库无相似单位，请人工确认
+                → 数据库中无匹配规范值，请从下拉选择或到对应设置页核对
               </template>
             </li>
           </ul>
@@ -542,8 +550,8 @@ async function handleParse() {
   } catch (e) {
     const resp = e.response?.data || {}
     parseError.value = resp.error || '解析失败，请检查文件格式'
-    if (resp.code === 'UNIT_UNMATCH') {
-      // 责任单位与网格化管理库不一致：逐行给出改正建议
+    if (resp.code === 'DICT_UNMATCH' || resp.code === 'UNIT_UNMATCH') {
+      // 三列硬拦截 / 责任单位不一致：逐行给出改正建议
       unitMismatches.value = Array.isArray(resp.data?.mismatches) ? resp.data.mismatches : []
       missingCols.value = []
     } else {
@@ -581,8 +589,8 @@ async function handleConfirm() {
       step.value = 'upload'
       return
     }
-    if (resp.code === 'UNIT_UNMATCH') {
-      parseError.value = resp.error || '导入失败：责任单位与网格化管理库不一致'
+    if (resp.code === 'DICT_UNMATCH' || resp.code === 'UNIT_UNMATCH') {
+      parseError.value = resp.error || '导入失败：字段值不符合数据库规范'
       unitMismatches.value = Array.isArray(inner.mismatches) ? inner.mismatches : []
       missingCols.value = []
       step.value = 'upload'
