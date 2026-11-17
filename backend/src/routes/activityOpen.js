@@ -18,6 +18,45 @@ const svc   = require('../services/activityService')
 
 const router = express.Router()
 
+// ═══ 必填校验（2026-11-17 业务要求）：表单所有字段必须填写 + 必须上传附件 ═══
+// 字段 key 与前端 contractor/ActivitySubmitPage.vue 的 MONDAY_FIELDS / WEDNESDAY_FIELDS 一致
+const REQUIRED_FIELDS = {
+  monday: ['activity_time', 'location', 'activity_name', 'host', 'hse_meeting', 'training', 'hazard_check', 'drill', 'next_plan', 'remark'],
+  wednesday: ['study_time', 'location', 'host', 'study_content', 'study_detail', 'attendees', 'remark'],
+}
+const FIELD_LABELS = {
+  activity_time: '活动时间', location: '活动地点', activity_name: '会议（活动）名称', host: '主持人',
+  hse_meeting: '周一 HSE 例会', training: '培训学习情况', hazard_check: '隐患排查情况', drill: '应急演练情况',
+  next_plan: '下步重点工作安排', remark: '备注',
+  study_time: '学习时间', study_content: '学习内容', study_detail: '学习具体内容', attendees: '参加人员',
+}
+
+/** 校验结构化表单所有必填字段；缺失则抛出 Error */
+function assertFormComplete(periodType, form) {
+  const keys = REQUIRED_FIELDS[periodType] || []
+  const missing = keys.filter((k) => !String((form && form[k]) == null ? '' : form[k]).trim())
+  if (!missing.length) return
+  const labels = missing.map((k) => {
+    if (k === 'location') return periodType === 'wednesday' ? '学习地点' : '活动地点'
+    return FIELD_LABELS[k] || k
+  })
+  const e = new Error(`以下必填项未填写：${labels.join('、')}。请逐项如实填写后再提交`)
+  e.code = 'REQUIRED_FIELD'
+  throw e
+}
+
+/** 校验该单位本期是否已上传附件；无附件则抛出 Error */
+async function assertHasAttachment(periodId, unitId) {
+  const [[r]] = await pool.query(
+    'SELECT COUNT(*) AS cnt FROM t_activity_file WHERE period_id = ? AND unit_id = ?', [periodId, unitId]
+  )
+  if (!r || !r.cnt) {
+    const e = new Error('尚未上传附件：请至少上传 1 个附件（签到表 / 现场照片 / 佐证材料等）后再提交')
+    e.code = 'ATTACHMENT_REQUIRED'
+    throw e
+  }
+}
+
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 const uploadXlsx = multer({
   storage: multer.memoryStorage(),
@@ -178,6 +217,9 @@ router.post('/submit', async (req, res) => {
       return res.status(400).json({ success: false, error: '类比排查请下载标准表后回填上传，或使用在线补录' })
     }
     const form = req.body.form || {}
+    // 必填校验：所有表单字段必须填写 + 必须已上传附件
+    assertFormComplete(p.period_type, form)
+    await assertHasAttachment(p.id, unit.id)
     const id = await upsertRecord(p, unit, uploader_name, uploader_phone, form, 'form')
     ok(res, { record_id: id, period_title: p.title, unit_name: unit.unit_name })
   } catch (e) { fail(res, e, 400) }
@@ -191,6 +233,8 @@ router.post('/import', uploadXlsx.single('file'), guard, async (req, res) => {
     if (p.period_type !== 'inspection') {
       return res.status(400).json({ success: false, error: '该期次为活动表单，请直接填写表单提交' })
     }
+    // 必填校验：回填前必须有佐证附件（前端已引导先上传，服务端兜底）
+    await assertHasAttachment(p.id, unit.id)
     const def = store.parseDef(p)
     if (!def.columns.length) return res.status(400).json({ success: false, error: '该批次未配置标准表，请联系管理员' })
     const parsed = svc.parseFilledWorkbook(req.file.buffer, def)
@@ -235,6 +279,8 @@ router.post('/rows', async (req, res) => {
     }
     const rows = Array.isArray(req.body.rows) ? req.body.rows : []
     if (!rows.length) return res.status(400).json({ success: false, error: '请至少填写一行排查内容' })
+    // 必填校验：排查内容必须有佐证附件
+    await assertHasAttachment(p.id, unit.id)
     const def = store.parseDef(p)
     const id = await upsertRecord(p, unit, uploader_name, uploader_phone, {}, 'online')
     // 在线补录为追加模式（不清空回填导入的数据）
@@ -323,5 +369,8 @@ router.delete('/rows/:id', async (req, res) => {
     ok(res, { id: w.id })
   } catch (e) { fail(res, e) }
 })
+
+// 导出校验函数供自测（挂在 router 属性上，不改变 Express 路由行为）
+router._requiredCheck = { assertFormComplete, assertHasAttachment, REQUIRED_FIELDS }
 
 module.exports = router

@@ -84,12 +84,14 @@
       <!-- 周一 / 周三：结构化表单 -->
       <section v-if="period && type !== 'inspection'" class="card">
         <h2 class="sec-title">② 填写{{ type === 'monday' ? 'HSE 活动（会议）记录' : '周三安全培训教育主题活动' }}</h2>
+        <p class="required-tip"><i>*</i> 本节所有项目均为必填项，务必逐项如实填写；内容为空或上传附件缺失将无法提交。</p>
         <div class="form-grid">
-          <div v-for="f in fields" :key="f.key" class="form-group" :class="{ full: f.wide }">
-            <label>{{ f.label }}</label>
+          <div v-for="f in fields" :key="f.key" class="form-group" :class="{ full: f.wide, 'field-error': fieldErrors[f.key] }">
+            <label>{{ f.label }} <i>*</i></label>
             <input v-if="f.type === 'date'" v-model="form[f.key]" type="date" class="form-input" />
             <textarea v-else-if="f.wide" v-model="form[f.key]" class="form-input" rows="3" :placeholder="f.placeholder || ''"></textarea>
             <input v-else v-model="form[f.key]" class="form-input" :placeholder="f.placeholder || ''" />
+            <p v-if="fieldErrors[f.key]" class="field-err-msg">此项必填</p>
           </div>
         </div>
         <div class="submit-line">
@@ -153,8 +155,9 @@
       </section>
 
       <!-- 附件 -->
-      <section v-if="period" class="card">
-        <h2 class="sec-title">③ 上传附件{{ type === 'inspection' ? '（排查佐证材料）' : '（签到表 / 照片 / 材料）' }}</h2>
+      <section v-if="period" class="card" :class="{ 'attach-error': attachMissing }">
+        <h2 class="sec-title">③ 上传附件{{ type === 'inspection' ? '（排查佐证材料）' : '（签到表 / 照片 / 材料）' }} <i>*</i></h2>
+        <p class="required-tip"><i>*</i> 附件为必传项：至少上传 1 个附件（签到表 / 现场照片 / 材料等）后才可提交通过。</p>
         <div class="upload-row">
           <select v-if="categories.length > 1" v-model="fileCategory" class="form-input">
             <option v-for="c in categories" :key="c" :value="c">{{ c }}</option>
@@ -170,6 +173,10 @@
         </div>
         <p v-if="type === 'inspection'" class="hint attach-hint">
           可上传整改前后对比照片、情况说明等佐证材料；照片建议标注拍摄位置与时间。
+        </p>
+        <p class="attach-status" :class="myFiles.length ? 'ok' : 'no'">
+          <template v-if="myFiles.length">✓ 本期已上传 {{ myFiles.length }} 个附件</template>
+          <template v-else>✗ 尚未上传附件，请先选择文件并点击「上传附件」</template>
         </p>
       </section>
 
@@ -317,6 +324,9 @@ const myRecord = ref(null)
 const myRows = ref([])
 const myFiles = ref([])
 const myColumns = ref([])
+// 必填校验状态
+const fieldErrors = reactive({})
+const attachMissing = ref(false)
 
 const toast = reactive({ show: false, msg: '', type: 'success' })
 let toastTimer = null
@@ -415,11 +425,59 @@ function identity(extra = {}) {
     uploader_name: uploaderName.value.trim(), uploader_phone: uploaderPhone.value.trim(), ...extra,
   }
 }
+/** 校验表单所有字段是否填写（全部必填）；返回缺失字段的 label 列表 */
+function validateFormFields() {
+  Object.keys(fieldErrors).forEach((k) => delete fieldErrors[k])
+  const missing = []
+  for (const f of fields.value) {
+    const val = String(form[f.key] == null ? '' : form[f.key]).trim()
+    if (!val) {
+      fieldErrors[f.key] = true
+      missing.push(f.label)
+    }
+  }
+  return missing
+}
+/** 校验是否已上传附件；若本次已选文件但尚未上传，则自动上传 */
+async function ensureAttachment() {
+  // 已选了文件但未点上传 → 先自动上传，避免用户漏点
+  if (attachFile.value && !uploading.value) {
+    const fd = new FormData()
+    const i = identity()
+    Object.keys(i).forEach((k) => fd.append(k, i[k]))
+    fd.append('category', fileCategory.value || '其他附件')
+    fd.append('file', attachFile.value)
+    uploading.value = true
+    try {
+      await uploadActivityFile(fd)
+      attachFile.value = null
+      if (attachInput.value) attachInput.value.value = ''
+      await loadMine()
+    } finally { uploading.value = false }
+  }
+  const has = Array.isArray(myFiles.value) && myFiles.value.length > 0
+  attachMissing.value = !has
+  return has
+}
 async function submitForm() {
   // 未填写名称/时间时按批次默认值补齐（周一默认「周一安全活动」）
   if (type.value === 'monday' && !String(form.activity_name || '').trim()) form.activity_name = '周一安全活动'
   if (type.value === 'monday' && !form.activity_time && period.value?.activity_date) form.activity_time = fmtDate(period.value.activity_date)
   if (type.value === 'wednesday' && !form.study_time && period.value?.activity_date) form.study_time = fmtDate(period.value.activity_date)
+  // 必填校验：表单所有字段 + 附件
+  const missing = validateFormFields()
+  if (missing.length) {
+    showToast(`还有 ${missing.length} 项必填内容未填写：${missing.slice(0, 3).join('、')}${missing.length > 3 ? ' 等' : ''}`, 'error')
+    return
+  }
+  try {
+    await identity()
+    const hasAttach = await ensureAttachment()
+    if (!hasAttach) {
+      showToast('请先上传至少 1 个附件后再提交（签到表 / 照片 / 材料）', 'error')
+      return
+    }
+  } catch (e) { showToast(errMsg(e), 'error'); return }
   submitting.value = true
   try {
     const payload = identity({ form: { ...form } })
@@ -434,6 +492,11 @@ function triggerImport() { importInput.value?.click() }
 function onImportChange(e) { const f = e.target.files?.[0]; if (f) { importFile.value = f; importResult.value = null } }
 async function doImport() {
   if (!importFile.value) return
+  // 附件必传：回填表本身已作为「回填表」附件留档，但排查佐证材料仍需单独上传
+  if (!(await ensureAttachment())) {
+    showToast('请先上传「排查佐证材料」附件后再回填', 'error')
+    return
+  }
   importing.value = true
   importResult.value = null
   try {
@@ -457,6 +520,11 @@ function addRow() {
   onlineRows.value.push({})
 }
 async function submitRows() {
+  // 附件必传
+  if (!(await ensureAttachment())) {
+    showToast('请先上传「排查佐证材料」附件后再提交补录', 'error')
+    return
+  }
   submitting.value = true
   try {
     const payload = identity({ rows: onlineRows.value })
@@ -569,6 +637,15 @@ textarea.form-input { resize: vertical; }
 .sel-unit b { color: #0c447c; }
 @media (max-width: 640px) { .unit-row { grid-template-columns: 1fr; } }
 .hint { font-size: 12px; color: var(--c-text-3); line-height: 1.6; margin: 4px 0 0; }
+/* 必填校验提示 */
+.required-tip { font-size: 12.5px; color: #b42318; background: #fef3f2; border: 1px solid #fecdca; border-radius: 8px; padding: 8px 12px; margin: -4px 0 14px; line-height: 1.6; }
+.required-tip i { color: #e24b4a; font-style: normal; font-weight: 700; }
+.form-group.field-error .form-input { border-color: #e24b4a; background: #fff8f7; }
+.field-err-msg { font-size: 11.5px; color: #e24b4a; margin: 2px 0 0; }
+.attach-status { font-size: 12.5px; margin: 10px 0 0; font-weight: 600; }
+.attach-status.ok { color: #067647; }
+.attach-status.no { color: #b42318; }
+.card.attach-error { border-color: #fecdca; }
 .hint.overdue { color: #ba7517; }
 .hint.empty-hint { color: #ba7517; background: #fff7e6; border-radius: 8px; padding: 10px 12px; line-height: 1.7; }
 .tip-line { display: flex; align-items: center; gap: 7px; margin-top: 14px; padding: 10px 12px; border-radius: 8px; background: var(--c-surface-2, #f7f8fa); font-size: 12px; color: var(--c-text-2); }
