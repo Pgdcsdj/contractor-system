@@ -915,7 +915,7 @@ function buildStationDetailWhere(query) {
   const params = []
   const filter = {
     start_date: '', end_date: '', unit_name: '',
-    center_station_name: '', metric: 'total',
+    center_station_name: '', metric: 'total', status: '', hazard_level: '',
   }
   const dateRe = /^\d{4}-\d{2}-\d{2}$/
 
@@ -930,8 +930,26 @@ function buildStationDetailWhere(query) {
     where.push('report_time <= ?'); params.push(ed + ' 23:59:59'); filter.end_date = ed
   }
   const unit = query.unit_name ? String(query.unit_name).trim() : ''
-  if (unit) {
+  if (unit === '未标注') {
+    // 看板 byUnit 将空单位名归集为「未标注」，下钻时须同口径匹配 NULL/空串
+    where.push("(unit_name IS NULL OR unit_name = '')")
+    filter.unit_name = unit
+  } else if (unit) {
     where.push('unit_name = ?'); params.push(unit); filter.unit_name = unit
+  }
+
+  // 看板下钻：状态（reported/assigned/rectifying/verifying/closed）与隐患等级（重大隐患/一般隐患）
+  const STATUS_KEYS = ['reported', 'assigned', 'rectifying', 'verifying', 'closed']
+  const rawStatus = query.status ? String(query.status).trim() : ''
+  if (rawStatus) {
+    if (!STATUS_KEYS.includes(rawStatus)) throw new Error('status 不是有效的隐患状态')
+    where.push('status = ?'); params.push(rawStatus); filter.status = rawStatus
+  }
+  const VALID_LEVELS = ['重大隐患', '一般隐患', '较大隐患', '低']
+  const rawLevel = query.hazard_level ? String(query.hazard_level).trim() : ''
+  if (rawLevel) {
+    if (!VALID_LEVELS.includes(rawLevel)) throw new Error('hazard_level 不是有效的隐患等级')
+    where.push('hazard_level = ?'); params.push(rawLevel); filter.hazard_level = rawLevel
   }
 
   const center = query.center_station_name ? String(query.center_station_name).trim() : ''
@@ -969,6 +987,8 @@ function stationDetailFilterText(filter) {
     center,
     date: (filter.start_date || '不限') + ' ~ ' + (filter.end_date || '不限'),
     unit: filter.unit_name || '全部单位',
+    status: filter.status || '',
+    hazard_level: filter.hazard_level || '',
     metric: STATION_METRIC_TEXT[filter.metric] || '全部隐患',
   }
 }
@@ -1016,6 +1036,8 @@ function buildStationDetailWorkbook(rows, filter) {
     ['检查时间区间', f.date],
     ['中心站范围', f.center],
     ['隐患单位', f.unit],
+    ...(f.status ? [['隐患状态', f.status]] : []),
+    ...(f.hazard_level ? [['隐患等级', f.hazard_level]] : []),
     ['统计指标', f.metric],
     ['导出条数', rows.length],
     ['时间口径', "report_time（检查时间）；end_date 含当天 23:59:59"],

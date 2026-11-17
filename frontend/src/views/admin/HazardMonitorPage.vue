@@ -19,8 +19,8 @@
         :key="card.key"
         :to="card.to || undefined"
         class="stat-card"
-        :class="{ 'danger': card.danger, 'clickable': card.to || card.anchor }"
-        @click="() => card.anchor && scrollToOverdue()"
+        :class="{ 'danger': card.danger, 'clickable': card.to || card.anchor || card.drill }"
+        @click="() => onStatCardClick(card)"
       >
         <span class="stat-icon" :class="card.color"><Icon :name="card.icon" :size="24" /></span>
         <div class="stat-info">
@@ -33,24 +33,24 @@
     <!-- 行1：状态分布 + 等级分布 -->
     <div class="row-2">
       <div class="card">
-        <h3 class="card-title">状态分布</h3>
+        <h3 class="card-title">状态分布 <span class="drill-hint">点击数字查看明细</span></h3>
         <div class="dist-list">
           <div class="dist-item" v-for="s in statusList" :key="s.key">
             <span class="dist-label">{{ s.label }}</span>
             <div class="bar"><div class="bar-fill" :style="{ width: pct(s.count, statusMax) + '%', background: statusColorMap[s.key] }"></div></div>
-            <span class="dist-count">{{ s.count }}</span>
+            <a class="dist-count drill-link" href="javascript:void(0)" @click.prevent="openStatDrill({ status: s.key }, '状态：' + s.label)">{{ s.count }}</a>
             <span :class="['badge', statusBadge(s.key)]">{{ statusLabel(s.key) }}</span>
           </div>
         </div>
       </div>
 
       <div class="card">
-        <h3 class="card-title">等级分布</h3>
+        <h3 class="card-title">等级分布 <span class="drill-hint">点击数字查看明细</span></h3>
         <div class="dist-list">
           <div class="dist-item" v-for="l in levelList" :key="l.key">
             <span class="dist-label">{{ l.label }}</span>
             <div class="bar"><div class="bar-fill" :style="{ width: pct(l.count, levelMax) + '%', background: levelColorMap[l.key] }"></div></div>
-            <span class="dist-count">{{ l.count }}</span>
+            <a class="dist-count drill-link" href="javascript:void(0)" @click.prevent="openStatDrill({ hazard_level: l.key }, '等级：' + l.label)">{{ l.count }}</a>
             <span :class="['badge', levelBadge(l.key)]">{{ l.label }}</span>
           </div>
         </div>
@@ -74,9 +74,9 @@
       </div>
       <div class="unit-bars">
         <div class="unit-item" v-for="u in unitList" :key="u.unitName">
-          <span class="unit-name" :title="u.unitName">{{ u.unitName }}</span>
+          <a class="unit-name drill-link" :title="'点击查看 ' + u.unitName + ' 的隐患明细'" href="javascript:void(0)" @click.prevent="openStatDrill({ unit_name: u.unitName }, u.unitName)">{{ u.unitName }}</a>
           <div class="bar"><div class="bar-fill bar-new" :style="{ width: pct(u.count, unitMax) + '%' }"></div></div>
-          <span class="unit-count">{{ u.count }}</span>
+          <a class="unit-count drill-link" href="javascript:void(0)" @click.prevent="openStatDrill({ unit_name: u.unitName }, u.unitName)">{{ u.count }}</a>
         </div>
       </div>
       <table class="data-table unit-table">
@@ -85,13 +85,16 @@
         </thead>
         <tbody>
           <tr v-for="u in unitList" :key="u.unitName">
-            <td>{{ u.unitName }}</td>
-            <td>{{ u.count }}</td>
+            <td><a class="drill-link" href="javascript:void(0)" @click.prevent="openStatDrill({ unit_name: u.unitName }, u.unitName)">{{ u.unitName }}</a></td>
+            <td><a class="drill-link" href="javascript:void(0)" @click.prevent="openStatDrill({ unit_name: u.unitName }, u.unitName)">{{ u.count }}</a></td>
             <td>
-              <span v-if="u.overdue" class="badge badge-danger">{{ u.overdue }}</span>
+              <a v-if="u.overdue" class="badge badge-danger drill-link" href="javascript:void(0)" @click.prevent="openStatDrill({ unit_name: u.unitName, metric: 'overdue' }, u.unitName + ' · 超期')">{{ u.overdue }}</a>
               <span v-else class="muted">0</span>
             </td>
-            <td>{{ u.closed }}</td>
+            <td>
+              <a v-if="u.closed" class="drill-link" href="javascript:void(0)" @click.prevent="openStatDrill({ unit_name: u.unitName, metric: 'closed' }, u.unitName + ' · 已闭环')">{{ u.closed }}</a>
+              <span v-else class="muted">0</span>
+            </td>
             <td>{{ u.count ? Math.round((u.closed / u.count) * 100) : 0 }}%</td>
           </tr>
           <tr v-if="unitList.length === 0">
@@ -400,11 +403,11 @@ const statCards = computed(() => {
   const d = data.value
   const bs = d.byStatus || {}
   return [
-    { key: 'total', label: '隐患总数', value: d.total ?? 0, icon: 'hazard', color: 'icon-blue', to: '' },
+    { key: 'total', label: '隐患总数', value: d.total ?? 0, icon: 'hazard', color: 'icon-blue', to: '', drill: {} },
     { key: 'rate', label: '闭环率', value: `${d.closedRate ?? 0}%`, icon: 'check', color: 'icon-green', to: '' },
     { key: 'overdue', label: '超期数', value: d.overdue ?? 0, icon: 'alert', color: 'icon-red', to: '', anchor: true, danger: (d.overdue ?? 0) > 0 },
-    { key: 'rectifying', label: '整改中', value: bs.rectifying ?? 0, icon: 'settings', color: 'icon-amber', to: '' },
-    { key: 'verifying', label: '待验收', value: bs.verifying ?? 0, icon: 'clock', color: 'icon-blue', to: '' },
+    { key: 'rectifying', label: '整改中', value: bs.rectifying ?? 0, icon: 'settings', color: 'icon-amber', to: '', drill: { status: 'rectifying' } },
+    { key: 'verifying', label: '待验收', value: bs.verifying ?? 0, icon: 'clock', color: 'icon-blue', to: '', drill: { status: 'verifying' } },
   ]
 })
 
@@ -429,19 +432,17 @@ const statusList = computed(() => {
 const statusMax = computed(() => maxOf(statusList.value, 'count') || 1)
 
 // ── 等级分布 ──
+// 修复：后端 byLevel 的 key 是规范值「重大隐患/一般隐患」（系统仅两级），
+// 原实现取 bl['重大']/bl['一般'] 导致全部显示 0。这里对齐规范值。
 const levelColorMap = {
-  重大: 'var(--c-danger)',
-  较大: 'var(--c-warning)',
-  一般: 'var(--c-blue-600)',
-  低: 'var(--c-text-3)',
+  重大隐患: 'var(--c-danger)',
+  一般隐患: 'var(--c-blue-600)',
 }
 const levelList = computed(() => {
   const bl = data.value.byLevel || {}
   return [
-    { key: '重大', label: '重大', count: bl['重大'] || 0 },
-    { key: '较大', label: '较大', count: bl['较大'] || 0 },
-    { key: '一般', label: '一般', count: bl['一般'] || 0 },
-    { key: '低', label: '低', count: bl['低'] || 0 },
+    { key: '重大隐患', label: '重大', count: bl['重大隐患'] || 0 },
+    { key: '一般隐患', label: '一般', count: bl['一般隐患'] || 0 },
   ]
 })
 const levelMax = computed(() => maxOf(levelList.value, 'count') || 1)
@@ -548,17 +549,36 @@ function drillSubtitleText(p) {
   const date = (p.start_date || p.end_date)
     ? `检查时间 ${p.start_date || '不限'} ~ ${p.end_date || '不限'}`
     : '检查时间：全部'
-  return `${date} · 不含已删除记录 · 与排名统计表同口径`
+  const extras = []
+  if (p.status) extras.push('状态：' + statusLabel(p.status))
+  if (p.hazard_level) extras.push('等级：' + p.hazard_level)
+  if (p.unit_name) extras.push('单位：' + p.unit_name)
+  return `${date}${extras.length ? ' · ' + extras.join(' · ') : ''} · 不含已删除记录 · 与统计口径一致`
 }
 
-function startDrill(params, title) {
+function startDrill(params, title, subtitle) {
   drill.value = {
     ...drill.value,
     open: true, loading: true, exporting: false, error: '',
-    title, subtitle: drillSubtitleText(params), params,
+    title, subtitle: subtitle || drillSubtitleText(params), params,
     list: [], total: 0, page: 1, pageSize: 20, pages: 1,
   }
   fetchDrill()
+}
+
+// 看板统计下钻：状态分布 / 等级分布 / 各单位隐患数 → 复用明细弹窗
+function openStatDrill(extra, label) {
+  const params = { ...extra, page: 1, pageSize: 20 }
+  const conds = []
+  if (extra.status) conds.push('状态：' + statusLabel(extra.status))
+  if (extra.hazard_level) conds.push('等级：' + extra.hazard_level)
+  if (extra.unit_name) conds.push('单位：' + extra.unit_name)
+  if (extra.metric === 'overdue') conds.push('仅超期')
+  if (extra.metric === 'closed') conds.push('仅已闭环')
+  const subtitle = conds.length
+    ? `${conds.join(' · ')} · 不含已删除记录 · 点击「导出本清单」可导出全部`
+    : '全部隐患 · 不含已删除记录'
+  startDrill(params, label || (conds.join(' · ') || '隐患明细'), subtitle)
 }
 
 function openDrill(row, metric) {
@@ -673,6 +693,12 @@ function scrollToOverdue() {
   overdueRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
+// 顶部统计卡：总数/整改中/待验收直接下钻明细；超期数沿用页内超期清单锚点
+function onStatCardClick(card) {
+  if (card.drill) openStatDrill(card.drill, card.label)
+  else if (card.anchor) scrollToOverdue()
+}
+
 // ── 超期预警清单：加载 / 选择 / 催办 ──
 async function loadOverdue() {
   overdueLoading.value = true
@@ -763,6 +789,7 @@ onMounted(load)
 
 .row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
 .card-title { font-size: 15px; font-weight: 700; margin-bottom: 16px; color: var(--c-text); }
+.drill-hint { margin-left: 8px; font-size: 12px; font-weight: 400; color: var(--c-text-3); }
 
 /* 分布条形 */
 .dist-list { display: flex; flex-direction: column; gap: 12px; }
