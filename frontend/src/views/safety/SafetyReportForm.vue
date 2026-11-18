@@ -33,10 +33,19 @@
           </select>
         </div>
 
-        <!-- 场所站点 -->
+        <!-- 场所站点（与管理端一致：生产场站 → 施工点两级字典下拉，拼成 location） -->
         <div class="form-group">
-          <label>场所站点 <span class="req">*</span></label>
-          <input v-model="form.location" class="form-input" placeholder="必填，如：3#阀室 / 集气站" />
+          <label>场所站点（生产场站 / 施工点） <span class="req">*</span></label>
+          <div class="cascade">
+            <select v-model="centerStation" class="form-input" @change="onLocationChange">
+              <option value="">生产场站</option>
+              <option v-for="c in centerStations" :key="c.code" :value="c.name">{{ c.name }}</option>
+            </select>
+            <select v-model="wellSite" class="form-input" @change="onLocationChange">
+              <option value="">施工点</option>
+              <option v-for="w in wellSites" :key="w.code" :value="w.name">{{ w.name }}</option>
+            </select>
+          </div>
         </div>
 
         <!-- 业务部门 -->
@@ -142,6 +151,11 @@ const units = ref([])
 const levels = ref([])
 const businessDepts = ref([])
 const bizLinks = ref([])
+// 场所站点两级字典（与管理端录入页同口径）
+const centerStations = ref([])
+const wellSites = ref([])
+const centerStation = ref('')
+const wellSite = ref('')
 const photoUrls = ref([])
 const submitting = ref(false)
 // 隐患排查项目下拉：字典项（"＋新增"走浮层，保存后自动选中）
@@ -186,11 +200,27 @@ function showToast(msg, type = 'success') {
 function onUnitChange() {
   const u = units.value.find((x) => String(x.id) === String(form.contractor_unit_id))
   form.unit_name = u ? u.unit_name : ''
+  // 该责任单位在当前映射表里只对应一个业务口时自动选中，随后自动带出负责人；
+  // 多个业务口时清空让用户明确选择，避免带错人。
+  const depts = [...new Set(
+    bizLinks.value
+      .filter((l) => l.rectify_unit === form.unit_name && l.business_dept)
+      .map((l) => l.business_dept)
+  )]
+  if (!depts.includes(form.business_dept)) {
+    form.business_dept = depts.length === 1 ? depts[0] : ''
+  }
   applyAutoHead()
 }
 
 function onBizChange() {
   applyAutoHead()
+}
+
+// 生产场站 / 施工点两级联动，拼接为单个 location 串
+function onLocationChange() {
+  const parts = [centerStation.value, wellSite.value]
+  form.location = parts.every((p) => !p) ? '' : parts.join('/')
 }
 
 // 选齐「责任单位 + 业务部门」后，从关联表自动带出负责人姓名（写入 business_dept_head）
@@ -214,6 +244,8 @@ function resetForm() {
   form.contractor_unit_id = ''
   form.unit_name = ''
   form.location = ''
+  centerStation.value = ''
+  wellSite.value = ''
   form.business_dept = ''
   form.hazard_investigation_item = ''
   prevInvestigationItem.value = ''
@@ -228,7 +260,7 @@ function resetForm() {
 
 async function handleSubmit() {
   if (!form.unit_name) return showToast('请选择责任单位', 'error')
-  if (!form.location.trim()) return showToast('请填写场所站点', 'error')
+  if (!form.location.trim()) return showToast('请选择场所站点（生产场站 / 施工点）', 'error')
   if (!form.description.trim()) return showToast('请填写隐患描述', 'error')
   if (!form.hazard_level) return showToast('请选择隐患等级', 'error')
   if (!form.responsible_person.trim()) return showToast('请填写整改责任人', 'error')
@@ -264,18 +296,22 @@ async function handleSubmit() {
 
 async function loadOptions() {
   try {
-    const [uRes, lRes, bdRes, bizRes, iiRes] = await Promise.all([
+    const [uRes, lRes, bdRes, bizRes, iiRes, csRes, wsRes] = await Promise.all([
       getContractorUnits(),
       getHazardDict('level'),
       getHazardDict('business_dept'),
       getRectifyUnitBiz(),
       getHazardDict('hazard_investigation_item'),
+      getHazardDict('center_station'),
+      getHazardDict('well_site'),
     ])
     units.value = uRes.data?.data?.list || uRes.data?.data || []
     levels.value = lRes.data?.data || []
     businessDepts.value = bdRes.data?.data || []
     bizLinks.value = bizRes.data?.data || []
     investigationItemDict.value = iiRes.data?.data || []
+    centerStations.value = csRes.data?.data || []
+    wellSites.value = wsRes.data?.data || []
   } catch (e) {
     showToast(e.response?.data?.error || '字典加载失败', 'error')
   }
@@ -351,6 +387,7 @@ onMounted(loadOptions)
 }
 .form-group.full { grid-column: 1 / -1; }
 .form-group label { display: block; font-size: 13px; font-weight: 500; color: var(--c-text-2); margin-bottom: 6px; }
+.cascade { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .req { color: var(--c-danger); }
 
 .form-actions {

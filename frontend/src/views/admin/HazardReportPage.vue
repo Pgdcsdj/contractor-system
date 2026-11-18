@@ -193,6 +193,15 @@ function showToast(msg, type = 'success') {
 function onUnitChange() {
   const u = units.value.find((x) => String(x.id) === String(form.contractor_unit_id))
   form.unit_name = u ? u.unit_name : ''
+  // 责任单位只对应一个业务口时自动选中，随后自动带出负责人；多个业务口时让用户明确选择
+  const depts = [...new Set(
+    bizLinks.value
+      .filter((l) => l.rectify_unit === form.unit_name && l.business_dept)
+      .map((l) => l.business_dept)
+  )]
+  if (!depts.includes(form.business_dept)) {
+    form.business_dept = depts.length === 1 ? depts[0] : ''
+  }
   applyAutoHead()
 }
 

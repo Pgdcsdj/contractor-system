@@ -36,9 +36,16 @@
           </div>
         </div>
         <div class="toolbar-right">
+          <span v-if="selectedIds.length" class="export-hint">已勾选 {{ selectedIds.length }} 条，导出仅含勾选项</span>
           <span class="total-count">共 {{ total }} 条</span>
-          <button class="btn btn-primary" :disabled="exporting || total === 0" @click="handleExport" :title="`导出当前筛选结果（共 ${total} 条）`">
-            <Icon name="download" :size="16" /> {{ exporting ? '导出中…' : '导出筛选结果' }}
+          <button
+            class="btn btn-primary"
+            :disabled="exporting || (selectedIds.length === 0 && total === 0)"
+            @click="handleExport"
+            :title="selectedIds.length ? `仅导出勾选的 ${selectedIds.length} 条` : `导出当前筛选结果（共 ${total} 条）`"
+          >
+            <Icon name="download" :size="16" />
+            {{ exporting ? '导出中…' : (selectedIds.length ? `导出选中 ${selectedIds.length} 条` : '导出筛选结果') }}
           </button>
           <button class="btn btn-danger" :disabled="!selectedIds.length || deleting" @click="handleBatchDelete">
             <Icon name="trash" :size="16" /> 批量删除
@@ -270,8 +277,16 @@ async function handleExport() {
     const p = buildParams()
     delete p.page
     delete p.pageSize
+    // 有勾选就只导出勾选项（可跨页）；未勾选才导出当前筛选结果
+    const selected = [...selectedIds.value]
+    if (selected.length) p.ids = selected.join(',')
     await exportHazards(p)
-    showToast(`已导出当前筛选结果（共 ${total.value} 条）`, 'success')
+    showToast(
+      selected.length
+        ? `已导出勾选的 ${selected.length} 条隐患`
+        : `已导出当前筛选结果（共 ${total.value} 条）`,
+      'success'
+    )
   } catch (e) {
     showToast('导出失败：' + (e?.message || '未知错误'), 'error')
   } finally {
@@ -501,6 +516,7 @@ onUnmounted(() => {
 
 .toolbar-right { display: flex; align-items: center; gap: 12px; }
 .total-count { font-size: 13px; color: var(--c-text-2); white-space: nowrap; }
+.export-hint { font-size: 12px; color: var(--c-primary); white-space: nowrap; }
 .toolbar-right .btn { width: auto; }
 
 .tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }

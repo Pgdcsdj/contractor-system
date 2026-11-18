@@ -375,8 +375,17 @@ router.get('/import/logs', requireAdminOrSafety, async (req, res) => {
 function buildHazardListFilter(req) {
   const {
     status = '', contractor_unit_id = '', unit_name = '', level = '',
-    keyword = '', is_overdue = '', hazard_investigation_item = '',
+    keyword = '', is_overdue = '', hazard_investigation_item = '', ids = '',
   } = req.query || {}
+  // 「仅导出勾选项」：ids 为逗号分隔的记录 ID，白名单式数字校验后走参数化 IN
+  let idList = []
+  if (ids) {
+    const rawIds = Array.isArray(ids) ? ids : String(ids).split(',')
+    idList = [...new Set(rawIds.map((x) => Number(String(x).trim()))
+      .filter((n) => Number.isSafeInteger(n) && n > 0))]
+    if (!idList.length) throw new Error('ids 参数无效')
+    if (idList.length > 5000) throw new Error('单次最多导出 5000 条，请减少勾选项')
+  }
   let investigationItems = []
   if (hazard_investigation_item) {
     const raw = Array.isArray(hazard_investigation_item)
@@ -386,6 +395,10 @@ function buildHazardListFilter(req) {
   }
   const where = []
   const params = []
+  if (idList.length) {
+    where.push(`id IN (${idList.map(() => '?').join(', ')})`)
+    params.push(...idList)
+  }
   if (contractor_unit_id) { where.push('contractor_unit_id = ?'); params.push(Number(contractor_unit_id)) }
   if (unit_name) { where.push('unit_name = ?'); params.push(unit_name) }
   if (level) { where.push('hazard_level = ?'); params.push(level) }
@@ -410,6 +423,10 @@ function buildHazardListFilter(req) {
   // 汇总条件（忽略 status / is_overdue，用于列表 Tab 计数），与列表原逻辑一致
   const sumWhere = []
   const sumParams = []
+  if (idList.length) {
+    sumWhere.push(`id IN (${idList.map(() => '?').join(', ')})`)
+    sumParams.push(...idList)
+  }
   if (contractor_unit_id) { sumWhere.push('contractor_unit_id = ?'); sumParams.push(Number(contractor_unit_id)) }
   if (unit_name) { sumWhere.push('unit_name = ?'); sumParams.push(unit_name) }
   if (level) { sumWhere.push('hazard_level = ?'); sumParams.push(level) }
@@ -439,6 +456,7 @@ function buildHazardListFilter(req) {
       items: investigationItems.length ? investigationItems.join('、') : '全部隐患项目',
       status: status ? (STATION_STATUS_TEXT[status] || status) : '全部状态',
       overdue: is_overdue === '1' ? '仅超期' : '不限',
+      ids: idList.length ? `仅勾选的 ${idList.length} 条` : '不限',
     },
   }
 }
@@ -1133,8 +1151,13 @@ const HAZARD_EXPORT_HEADERS = [
   '是否超期', '整改措施', '标准依据', '备注', '闭环时间',
 ]
 router.get('/export', adminAuth, async (req, res) => {
+  let built
   try {
-    const built = buildHazardListFilter(req)
+    built = buildHazardListFilter(req)
+  } catch (e) {
+    return res.status(400).json({ success: false, error: e.message })
+  }
+  try {
     const [rows] = await pool.query(
       `SELECT ${HAZARD_COLUMNS}, ${OVERDUE_EXPR} AS is_overdue
          FROM t_hazard ${built.whereClause}
@@ -1188,6 +1211,7 @@ router.get('/export', adminAuth, async (req, res) => {
       ['隐患排查项目', f.items],
       ['状态', f.status],
       ['超期筛选', f.overdue],
+      ['勾选导出', f.ids],
       ['导出条数', rows.length],
       ['数据范围', 't_hazard 且 deleted_at IS NULL（不含软删除记录）'],
       ['口径说明', '本清单与隐患闭环页面当前筛选条件、排序（检查时间倒序）完全一致'],
