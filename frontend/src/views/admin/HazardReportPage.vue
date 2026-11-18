@@ -33,15 +33,16 @@
         <div class="form-group">
           <label>场所站点（生产场站 / 施工点） <span class="req">*</span></label>
           <div class="cascade">
-            <select v-model="centerStation" class="form-input" @change="onLocationChange">
+            <select v-model="centerStation" class="form-input" @change="onLocationChange('station')">
               <option value="">生产场站</option>
               <option v-for="c in centerStations" :key="c.code" :value="c.name">{{ c.name }}</option>
             </select>
-            <select v-model="wellSite" class="form-input" @change="onLocationChange">
+            <select v-model="wellSite" class="form-input" @change="onLocationChange('site')">
               <option value="">施工点</option>
               <option v-for="w in wellSites" :key="w.code" :value="w.name">{{ w.name }}</option>
             </select>
           </div>
+          <p class="field-hint">如果是在生产现场施工作业，请在生产场站选择；如果是新建工程，请在施工点选择。两个不能够同时选择。</p>
         </div>
 
         <!-- 业务部门（复用 business_dept 列，下拉来自隐患设置可维护列表） -->
@@ -221,10 +222,11 @@ function applyAutoHead() {
   }
 }
 
-// 位置两级联动：两段拼接为单 location 串（生产场站/施工点，缺级留空段）
-function onLocationChange() {
-  const parts = [centerStation.value, wellSite.value]
-  form.location = parts.every((p) => !p) ? '' : parts.join('/')
+// 生产场站 / 施工点互斥：选任一项即清空另一项，location 始终只保留选中的那一段
+function onLocationChange(source) {
+  if (source === 'station' && centerStation.value) wellSite.value = ''
+  if (source === 'site' && wellSite.value) centerStation.value = ''
+  form.location = centerStation.value || wellSite.value || ''
 }
 
 // 标准依据：按排查项目自动匹配（仅当依据为空时生效，避免覆盖用户手填）
@@ -375,6 +377,7 @@ onMounted(loadOptions)
 .form-group label { display: block; font-size: 13px; font-weight: 500; color: var(--c-text-2); margin-bottom: 6px; }
 .req { color: var(--c-danger); }
 .cascade { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.field-hint { margin: 6px 0 0; font-size: 12px; line-height: 1.5; color: var(--c-text-3); }
 .btn-mini {
   margin-left: 8px; padding: 2px 10px; font-size: 12px; line-height: 1.6;
   border: 1px solid var(--c-border); border-radius: 8px; cursor: pointer;
