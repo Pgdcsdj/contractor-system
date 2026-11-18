@@ -71,7 +71,10 @@
 
       <!-- 责任单位·业务口 关联维护区（替换原 整改单位 / 业务部门 两个独立 Tab） -->
       <div v-else class="biz-link-area">
-        <p class="hint">责任单位与对应业务口（业务归口）关联维护。新增关联时会自动把责任单位、业务口写入各自字典。</p>
+        <p class="hint">
+          责任单位与对应业务口（业务归口）关联维护。责任单位取自「网格化管理」单位库，名称须与网格单位完全一致，隐患录入选该单位时才能自动带出业务口与负责人。
+          <span v-if="orphanCount > 0" class="hint-warn">当前有 {{ orphanCount }} 条关联的责任单位在网格单位库中找不到（已停用或改了名），建议重新选择。</span>
+        </p>
         <table class="data-table">
           <thead>
             <tr>
@@ -89,7 +92,12 @@
               <td colspan="4" class="empty-cell">暂无关联，请新增</td>
             </tr>
             <tr v-for="item in bizLinks" :key="item.id">
-              <td><strong>{{ item.rectify_unit }}</strong></td>
+              <td>
+                <strong>{{ item.rectify_unit }}</strong>
+                <span v-if="gridStatus(item.rectify_unit).label" class="grid-tag" :class="gridStatus(item.rectify_unit).cls">
+                  {{ gridStatus(item.rectify_unit).label }}
+                </span>
+              </td>
               <td>{{ item.business_dept || '（无）' }}</td>
               <td>{{ item.head_name || '（未设）' }}{{ item.head_phone ? ' / ' + item.head_phone : '' }}</td>
               <td>
@@ -156,8 +164,18 @@
       <div class="modal">
         <h3>{{ editingBizId ? '编辑责任单位·业务口关联' : '新增责任单位·业务口关联' }}</h3>
         <div class="form-group">
-          <label>责任单位</label>
-          <input v-model="newRectifyUnit" class="form-input" placeholder="如：某承包商单位" />
+          <label>责任单位（取自网格化管理单位库） <span class="req">*</span></label>
+          <input v-model="unitKeyword" class="form-input unit-search" placeholder="输入关键词筛选，如 70166 / 中原井下" />
+          <select v-model="newRectifyUnit" class="form-input unit-select" size="8">
+            <option value="" disabled>请选择网格单位（可先用上方关键词筛选）</option>
+            <option v-if="legacyUnitOption" :value="legacyUnitOption">{{ legacyUnitOption }}（原值，未在网格库）</option>
+            <optgroup v-for="g in unitGroups" :key="g.level" :label="g.label">
+              <option v-for="u in g.units" :key="u.id" :value="u.unit_name">
+                {{ u.unit_name }}{{ u.grid_l2 ? '（' + u.grid_l2 + '）' : '' }}{{ u.is_active ? '' : '·已停用' }}
+              </option>
+            </optgroup>
+          </select>
+          <p class="field-hint">只能选网格单位库里的名称；若某单位不在列表中，请先到「网格化管理」新增或恢复该单位。带「已停用」的单位不建议再建立新关联。</p>
         </div>
         <div class="form-group">
           <label>业务口（业务归口，可自定义）</label>
@@ -244,6 +262,7 @@ import {
   getRectifyUnitBiz,
   saveRectifyUnitBiz,
   deleteRectifyUnitBiz,
+  getContractorUnitOptions,
   importLocationDict,
   importStationMap,
   backfillHazardStation,
@@ -321,6 +340,64 @@ const newHeadPhone = ref('')
 const editingBizId = ref(null)
 const editingBizOldUnit = ref('')
 const savingBiz = ref(false)
+
+// ─── 网格化单位库（责任单位下拉来源，与「网格化管理」同源 t_contractor_unit）──
+const unitOptions = ref([])
+const unitKeyword = ref('')
+const unitLoading = ref(false)
+
+const unitNameSet = computed(() => new Set(unitOptions.value.map((u) => u.unit_name)))
+
+// 按层级分组（一级~四级），关键词过滤；在册排在前面
+const unitGroups = computed(() => {
+  const kw = unitKeyword.value.trim().toLowerCase()
+  const hit = unitOptions.value.filter(
+    (u) => !kw || String(u.unit_name || '').toLowerCase().includes(kw) || String(u.grid_l2 || '').toLowerCase().includes(kw)
+  )
+  return ['一级', '二级', '三级', '四级', '其他']
+    .map((level) => ({
+      level,
+      label:
+        level === '其他'
+          ? '未标注层级'
+          : `${level}网格（${hit.filter((u) => (u.grid_level || '其他') === level).length}）`,
+      units: hit
+        .filter((u) => (u.grid_level || '其他') === level)
+        .sort((a, b) => Number(b.is_active) - Number(a.is_active)),
+    }))
+    .filter((g) => g.units.length)
+})
+
+// 编辑历史行时，若原值已不在网格库（停用删除/改名），保留一个占位项避免保存时丢值
+const legacyUnitOption = computed(() => {
+  const old = editingBizOldUnit.value
+  if (!old || !unitOptions.value.length) return ''
+  return unitNameSet.value.has(old) ? '' : old
+})
+
+// 关联行与网格单位的对应状态
+function gridStatus(name) {
+  const u = unitOptions.value.find((x) => x.unit_name === name)
+  if (!u) return { label: '未对应网格单位', cls: 'bad' }
+  if (!Number(u.is_active)) return { label: '网格单位已停用', cls: 'muted' }
+  return { label: '', cls: '' }
+}
+
+const orphanCount = computed(
+  () => bizLinks.value.filter((l) => unitOptions.value.length && !unitNameSet.value.has(l.rectify_unit)).length
+)
+
+async function loadUnitOptions() {
+  unitLoading.value = true
+  try {
+    const res = await getContractorUnitOptions()
+    unitOptions.value = res.data?.data || []
+  } catch {
+    unitOptions.value = []
+  } finally {
+    unitLoading.value = false
+  }
+}
 
 // 通用加载某个 type 的字典项
 async function loadType(type) {
@@ -427,7 +504,9 @@ function openAddBiz() {
   newBiz.value = ''
   newHeadName.value = ''
   newHeadPhone.value = ''
+  unitKeyword.value = ''
   showBizForm.value = true
+  if (!unitOptions.value.length) loadUnitOptions()
 }
 
 // 编辑关联：打开弹窗并预填
@@ -438,14 +517,21 @@ function editBizLink(item) {
   newBiz.value = item.business_dept || ''
   newHeadName.value = item.head_name || ''
   newHeadPhone.value = item.head_phone || ''
+  unitKeyword.value = ''
   showBizForm.value = true
+  if (!unitOptions.value.length) loadUnitOptions()
 }
 
 // 新增 / 编辑关联：写关联 + 自动补字典（整改单位 / 业务口），再重新加载
 async function submitAddBiz() {
   const ru = newRectifyUnit.value.trim()
   if (!ru) {
-    alert('责任单位不能为空')
+    alert('请选择责任单位')
+    return
+  }
+  // 必须与网格单位库一致；仅允许「沿用未在库中的历史原值」
+  if (unitOptions.value.length && !unitNameSet.value.has(ru) && ru !== editingBizOldUnit.value) {
+    alert('责任单位须从网格化管理单位库中选择，请在下拉列表里重新选择')
     return
   }
   savingBiz.value = true
@@ -618,6 +704,7 @@ onMounted(() => {
   // 预加载全部字典类型（rectify_biz 是前端虚拟 Tab，走 loadBizLinks，不是后端字典类型）
   const tasks = DICT_TABS.filter((t) => t.type !== 'rectify_biz').map((t) => loadType(t.type))
   loadBizLinks()
+  loadUnitOptions()
   return Promise.all(tasks)
 })
 </script>
@@ -664,6 +751,21 @@ onMounted(() => {
 .empty-cell { text-align: center; padding: 30px; color: var(--text-secondary); }
 
 .hint { font-size: 13px; color: var(--text-secondary); margin: 0 0 12px; line-height: 1.6; }
+.hint-warn { display: inline-block; margin-left: 6px; color: #b45309; }
+
+/* 责任单位与网格单位对应状态标记 */
+.grid-tag {
+  display: inline-block; margin-left: 8px; padding: 1px 8px; border-radius: 999px;
+  font-size: 12px; white-space: nowrap;
+}
+.grid-tag.bad { background: #fde8e8; color: #b91c1c; }
+.grid-tag.muted { background: #eef0f3; color: #6b7280; }
+
+/* 责任单位：关键词筛选 + 网格单位列表框 */
+.unit-search { margin-bottom: 8px; }
+.unit-select { height: auto; padding: 6px; line-height: 1.7; }
+.field-hint { margin: 6px 0 0; font-size: 12px; line-height: 1.6; color: var(--text-secondary); }
+.req { color: #b91c1c; }
 
 .code-cell {
   font-family: monospace; background: #f2f4f7; padding: 2px 6px;

@@ -15,6 +15,11 @@ export function getContractorUnits(params = {}) {
   return request.get('/api/contractor-units', { params: { pageSize: 200, ...params } })
 }
 
+/** 网格化管理单位下拉选项（隐患设置页「责任单位·业务口」关联用，含停用项与层级） */
+export function getContractorUnitOptions() {
+  return request.get('/api/contractor-units/options')
+}
+
 /** 获取责任单位（unit_name）去重列表，用于闭环页「全部单位」下拉筛选 */
 export function getHazardsUnitNames(params = {}) {
   return request.get('/api/hazards/unit-names', { params })
