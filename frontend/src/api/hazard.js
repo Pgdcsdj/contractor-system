@@ -312,8 +312,9 @@ export function getStandardBasisOptions() {
 }
 
 /** 单条匹配（录入页自动匹配用） */
-export function matchStandardBasis(category, description = '') {
-  return request.post('/api/hazards/standard-basis/match', { category, description })
+export function matchStandardBasis(category, description = '', ai = false) {
+  // ai=true：字串召回 + 大模型语义精排（服务端失败自动回退，不会报错）
+  return request.post('/api/hazards/standard-basis/match', { category, description, ai })
 }
 
 /** 新增 */

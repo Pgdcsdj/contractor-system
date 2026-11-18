@@ -77,17 +77,21 @@
 
         <!-- 标准依据（按排查项目 + 问题描述联合匹配，可手动覆盖 / 切换候选） -->
         <div class="form-group full">
-          <label>
-            标准依据
+          <div class="basis-head">
+            <span class="basis-head-title">标准依据</span>
             <button
               type="button"
               class="btn btn-mini"
               :disabled="matching || (!form.hazard_investigation_item && !form.description.trim())"
               @click="doMatchBasis"
             >
-              {{ matching ? '匹配中…' : '自动匹配依据' }}
+              {{ matching ? (useAiMatch ? 'AI 分析中…' : '匹配中…') : '自动匹配依据' }}
             </button>
-          </label>
+            <label class="ai-toggle" title="先用条款关键词召回，再由大模型判断哪几条最对应（约 3~8 秒，失败自动回退普通匹配）">
+              <input type="checkbox" v-model="useAiMatch" />
+              AI 精排
+            </label>
+          </div>
           <textarea v-model="form.standard_basis" class="form-input" rows="2" placeholder="填写问题描述后点「自动匹配依据」，可从候选条款中切换；也可直接手填"></textarea>
           <p v-if="basisHint" class="basis-hint" :class="basisHintType">{{ basisHint }}</p>
           <div v-if="basisCandidates.length > 1" class="basis-candidates">
@@ -98,10 +102,10 @@
               type="button"
               class="basis-chip"
               :class="{ active: c.code === activeBasisCode }"
-              :title="c.standard_basis + (c.source ? '｜' + c.source : '')"
+              :title="(c.standard_basis || '') + (c.source ? '｜' + c.source : '')"
               @click="chooseBasis(c)"
             >
-              {{ i + 1 }}. {{ c.code }} · {{ c.category }}<em v-if="c.sub_segment || c.inspect_object">（{{ c.sub_segment || c.inspect_object }}）</em>
+              {{ i + 1 }}. {{ chipLabel(c) }}
             </button>
           </div>
         </div>
@@ -150,7 +154,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, onMounted, watch } from 'vue'
 import Icon from '@/components/Icon.vue'
 import HazardPhotoUpload from '@/views/admin/components/HazardPhotoUpload.vue'
 import HazardImportModal from '@/views/admin/components/HazardImportModal.vue'
@@ -173,6 +177,8 @@ const matching = ref(false)
 const basisHint = ref('')
 const basisHintType = ref('')
 const basisCandidates = ref([])
+// AI 精排开关（记住上次选择，默认开）
+const useAiMatch = ref(localStorage.getItem('tnb_basis_ai') !== '0')
 const activeBasisCode = ref('')
 
 // 隐患设置下拉：业务部门；责任单位·业务口关联（用于自动带出负责人）
@@ -250,7 +256,9 @@ function onLocationChange(source) {
   form.location = centerStation.value || wellSite.value || ''
 }
 
-// 标准依据：排查项目 + 问题描述联合检索，返回 top5 候选供切换
+watch(useAiMatch, (v) => localStorage.setItem('tnb_basis_ai', v ? '1' : '0'))
+
+// 标准依据：排查项目 + 问题描述联合检索；AI 精排开关开启时由大模型从召回池里重排
 async function doMatchBasis() {
   if (!form.hazard_investigation_item && !form.description.trim()) {
     basisHint.value = '请先填写「问题描述」或选择「隐患排查项目」'
@@ -260,12 +268,19 @@ async function doMatchBasis() {
   matching.value = true
   basisHint.value = ''
   try {
-    const res = await matchStandardBasis(form.hazard_investigation_item, form.description)
+    const res = await matchStandardBasis(form.hazard_investigation_item, form.description, useAiMatch.value)
     const m = res.data?.data || {}
     basisCandidates.value = Array.isArray(m.candidates) ? m.candidates : []
     activeBasisCode.value = ''
     if (m.matched && basisCandidates.value.length) {
-      chooseBasis(basisCandidates.value[0])
+      if (m.lowConfidence) {
+        // 低置信：只给候选不自动填入，避免把不相关的条款写进台账
+        activeBasisCode.value = ''
+        basisHint.value = '没找到高相关条款，下面几条只是字面最接近的：请补充问题描述关键词，或从候选中点选、直接手填'
+        basisHintType.value = 'warn'
+      } else {
+        chooseBasis(basisCandidates.value[0], m)
+      }
     } else {
       basisHint.value = '未找到高相关条款，请补充问题描述关键词、改用更准确的项目名，或直接手填标准依据'
       basisHintType.value = 'warn'
@@ -279,12 +294,22 @@ async function doMatchBasis() {
   }
 }
 
-function chooseBasis(c) {
+// 候选卡片展示「标准出处」，比编号更容易被现场认出来
+function chipLabel(c) {
+  const src = String(c.source || '').replace(/\n/g, ' ').trim()
+  const doc = (src.match(/《[^》]+》/) || [])[0] || ''
+  const no = (src.match(/[A-Z]{2,3}(?:\/T)?\s*\d{2,5}[.\-—]\d{2,4}/) || [])[0] || ''
+  if (doc || no) return [doc, no].filter(Boolean).join(' ')
+  return c.sub_segment || c.inspect_object || c.category || c.code
+}
+
+function chooseBasis(c, matched) {
   form.standard_basis = c.standard_basis || ''
   activeBasisCode.value = c.code || ''
   const scope = [c.category, c.sub_segment || c.inspect_object].filter(Boolean).join(' / ')
   const more = basisCandidates.value.length > 1 ? ` · 另有 ${basisCandidates.value.length - 1} 条候选可点选` : ''
-  basisHint.value = `已采用 ${c.code || ''}${scope ? '（' + scope + '）' : ''}${c.source ? '：' + String(c.source).slice(0, 80) : ''}${more}`
+  const aiTag = matched && matched.aiUsed ? `AI 精排推荐${matched.aiReason ? '（' + matched.aiReason + '）' : ''}｜` : ''
+  basisHint.value = `${aiTag}已采用 ${c.code || ''}${scope ? '（' + scope + '）' : ''}${c.source ? '：' + String(c.source).slice(0, 80) : ''}${more}`
   basisHintType.value = 'ok'
 }
 
@@ -428,6 +453,13 @@ onMounted(loadOptions)
   background: var(--c-bg-soft); color: var(--c-primary);
 }
 .btn-mini:disabled { opacity: .5; cursor: not-allowed; }
+.basis-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 6px; }
+.basis-head-title { font-size: 13px; font-weight: 500; color: var(--c-text-2); }
+.form-group .ai-toggle {
+  display: inline-flex; align-items: center; gap: 4px; margin: 0;
+  font-size: 12px; font-weight: 400; color: var(--c-text-3); cursor: pointer; user-select: none;
+}
+.form-group .ai-toggle input { margin: 0; cursor: pointer; }
 .basis-hint { font-size: 12px; margin: 6px 0 0; line-height: 1.5; }
 .basis-hint.ok { color: var(--c-success); }
 .basis-hint.warn { color: var(--c-warning); }

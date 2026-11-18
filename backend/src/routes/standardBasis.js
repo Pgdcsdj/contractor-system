@@ -70,8 +70,9 @@ router.get('/options', requireAdminOrSafety, async (req, res) => {
 // ─── 单条匹配（录入隐患时自动匹配依据）────────────────────────────────────────
 router.post('/match', requireAdminOrSafety, async (req, res) => {
   try {
-    const { category, description } = req.body || {}
-    const m = await svc.matchStandardBasisDb(pool, { category, description })
+    const { category, description, ai } = req.body || {}
+    // ai=true：字串召回 top12 后交大模型语义精排（失败自动回退字串排序，不报错）
+    const m = await svc.matchStandardBasisDb(pool, { category, description, ai: ai === true || ai === 1 || ai === '1' })
     res.json({ success: true, data: m })
   } catch (e) {
     res.status(500).json({ success: false, error: e.message })
