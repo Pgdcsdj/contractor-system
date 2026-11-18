@@ -72,19 +72,38 @@
         <!-- 问题描述 -->
         <div class="form-group full">
           <label>问题描述 <span class="req">*</span></label>
-          <textarea v-model="form.description" class="form-input" rows="3" placeholder="描述隐患具体情况、风险点"></textarea>
+          <textarea v-model="form.description" class="form-input" rows="3" placeholder="描述隐患具体情况、风险点（自动匹配依据会读取这里的关键词）" @input="clearBasisCandidates"></textarea>
         </div>
 
-        <!-- 标准依据（按排查项目自动匹配，可手动覆盖） -->
+        <!-- 标准依据（按排查项目 + 问题描述联合匹配，可手动覆盖 / 切换候选） -->
         <div class="form-group full">
           <label>
             标准依据
-            <button type="button" class="btn btn-mini" :disabled="!form.hazard_investigation_item || matching" @click="doMatchBasis">
+            <button
+              type="button"
+              class="btn btn-mini"
+              :disabled="matching || (!form.hazard_investigation_item && !form.description.trim())"
+              @click="doMatchBasis"
+            >
               {{ matching ? '匹配中…' : '自动匹配依据' }}
             </button>
           </label>
-          <textarea v-model="form.standard_basis" class="form-input" rows="2" placeholder="选择「隐患排查项目」后点「自动匹配依据」，或从问题依据库自动带入；也可手填"></textarea>
+          <textarea v-model="form.standard_basis" class="form-input" rows="2" placeholder="填写问题描述后点「自动匹配依据」，可从候选条款中切换；也可直接手填"></textarea>
           <p v-if="basisHint" class="basis-hint" :class="basisHintType">{{ basisHint }}</p>
+          <div v-if="basisCandidates.length > 1" class="basis-candidates">
+            <span class="basis-candidates-label">候选条款（点击采用）：</span>
+            <button
+              v-for="(c, i) in basisCandidates"
+              :key="c.code + i"
+              type="button"
+              class="basis-chip"
+              :class="{ active: c.code === activeBasisCode }"
+              :title="c.standard_basis + (c.source ? '｜' + c.source : '')"
+              @click="chooseBasis(c)"
+            >
+              {{ i + 1 }}. {{ c.code }} · {{ c.category }}<em v-if="c.sub_segment || c.inspect_object">（{{ c.sub_segment || c.inspect_object }}）</em>
+            </button>
+          </div>
         </div>
 
         <!-- 整改情况（可多次更新） -->
@@ -153,6 +172,8 @@ const showImport = ref(false)
 const matching = ref(false)
 const basisHint = ref('')
 const basisHintType = ref('')
+const basisCandidates = ref([])
+const activeBasisCode = ref('')
 
 // 隐患设置下拉：业务部门；责任单位·业务口关联（用于自动带出负责人）
 const businessDepts = ref([])
@@ -229,27 +250,28 @@ function onLocationChange(source) {
   form.location = centerStation.value || wellSite.value || ''
 }
 
-// 标准依据：按排查项目自动匹配（仅当依据为空时生效，避免覆盖用户手填）
+// 标准依据：排查项目 + 问题描述联合检索，返回 top5 候选供切换
 async function doMatchBasis() {
-  if (!form.hazard_investigation_item) {
-    basisHint.value = '请先选择「隐患排查项目」'
+  if (!form.hazard_investigation_item && !form.description.trim()) {
+    basisHint.value = '请先填写「问题描述」或选择「隐患排查项目」'
     basisHintType.value = 'warn'
     return
   }
   matching.value = true
   basisHint.value = ''
   try {
-    const res = await matchStandardBasis(form.hazard_investigation_item)
+    const res = await matchStandardBasis(form.hazard_investigation_item, form.description)
     const m = res.data?.data || {}
-    if (m.matched) {
-      form.standard_basis = m.standard_basis
-      basisHint.value = m.source ? `已匹配：${m.standard_basis}（${m.source}）` : `已匹配：${m.standard_basis}`
-      basisHintType.value = 'ok'
+    basisCandidates.value = Array.isArray(m.candidates) ? m.candidates : []
+    activeBasisCode.value = ''
+    if (m.matched && basisCandidates.value.length) {
+      chooseBasis(basisCandidates.value[0])
     } else {
-      basisHint.value = '问题依据库中未找到该排查项目对应的标准依据'
+      basisHint.value = '未找到高相关条款，请补充问题描述关键词、改用更准确的项目名，或直接手填标准依据'
       basisHintType.value = 'warn'
     }
   } catch (e) {
+    basisCandidates.value = []
     basisHint.value = '匹配失败：' + (e.response?.data?.error || e.message)
     basisHintType.value = 'warn'
   } finally {
@@ -257,9 +279,28 @@ async function doMatchBasis() {
   }
 }
 
-// 排查项目下拉变化 → 若依据为空则自动匹配
+function chooseBasis(c) {
+  form.standard_basis = c.standard_basis || ''
+  activeBasisCode.value = c.code || ''
+  const scope = [c.category, c.sub_segment || c.inspect_object].filter(Boolean).join(' / ')
+  const more = basisCandidates.value.length > 1 ? ` · 另有 ${basisCandidates.value.length - 1} 条候选可点选` : ''
+  basisHint.value = `已采用 ${c.code || ''}${scope ? '（' + scope + '）' : ''}${c.source ? '：' + String(c.source).slice(0, 80) : ''}${more}`
+  basisHintType.value = 'ok'
+}
+
+function clearBasisCandidates() {
+  basisCandidates.value = []
+  activeBasisCode.value = ''
+  if (basisHintType.value === 'ok') {
+    basisHint.value = ''
+    basisHintType.value = ''
+  }
+}
+
+// 排查项目下拉变化 → 依据为空且已填描述时自动匹配
 function onInvestigationItemChange() {
-  if (!form.standard_basis) doMatchBasis()
+  clearBasisCandidates()
+  if (!form.standard_basis && form.description.trim()) doMatchBasis()
 }
 
 // 批量导入成功回调（弹窗已展示明细，这里给个全局提示）
@@ -288,6 +329,9 @@ function resetForm() {
   form.plan_finish_time = ''
   centerStation.value = ''
   wellSite.value = ''
+  basisHint.value = ''
+  basisHintType.value = ''
+  clearBasisCandidates()
   photoUrls.value = []
 }
 
@@ -387,6 +431,15 @@ onMounted(loadOptions)
 .basis-hint { font-size: 12px; margin: 6px 0 0; line-height: 1.5; }
 .basis-hint.ok { color: var(--c-success); }
 .basis-hint.warn { color: var(--c-warning); }
+.basis-candidates { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; }
+.basis-candidates-label { font-size: 12px; color: var(--c-text-3); }
+.basis-chip {
+  padding: 3px 9px; border: 1px solid var(--c-border); border-radius: 999px;
+  background: var(--c-surface); color: var(--c-text-2); font-size: 12px; cursor: pointer;
+}
+.basis-chip:hover { border-color: var(--c-primary); color: var(--c-primary); }
+.basis-chip.active { border-color: var(--c-primary); background: var(--c-primary); color: #fff; }
+.basis-chip em { font-style: normal; opacity: .85; }
 
 .form-actions {
   display: flex; gap: 12px; justify-content: flex-end; margin-top: 22px;

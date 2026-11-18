@@ -307,8 +307,8 @@ export function getStandardBasisOptions() {
 }
 
 /** 单条匹配（录入页自动匹配用） */
-export function matchStandardBasis(category) {
-  return request.post('/api/hazards/standard-basis/match', { category })
+export function matchStandardBasis(category, description = '') {
+  return request.post('/api/hazards/standard-basis/match', { category, description })
 }
 
 /** 新增 */

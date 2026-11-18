@@ -816,8 +816,11 @@ async function cleanRow(row, mapping, ctx) {
   const rawBasis = getVal('standard_basis')
   if (rawBasis) {
     rec.standard_basis = rawBasis
-  } else if (ctx.basisLib && rec.hazard_investigation_item) {
-    const m = matchStandardBasis(ctx.basisLib, { category: rec.hazard_investigation_item })
+  } else if (ctx.basisLib && (rec.hazard_investigation_item || rec.description)) {
+    const m = matchStandardBasis(ctx.basisLib, {
+      category: rec.hazard_investigation_item,
+      description: rec.description,
+    })
     rec.standard_basis = m.matched ? m.standard_basis : ''
   } else {
     rec.standard_basis = ''

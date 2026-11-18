@@ -8,9 +8,9 @@
  *   source         ← 检查依据（basis）
  *   附加：code / place / sub_segment / inspect_object / deduct_level
  *
- * 匹配规则（关键词模糊）：隐患排查项目 / 问题描述 作为关键词，
- *   在 category/sub_segment/inspect_object/content/basis/code 中 LIKE 搜索，
- *   优先返回 category 命中的行（对齐原「按排查项目匹配」语义）。
+ * 匹配规则（v2026.11.18.3）：隐患排查项目 + 问题描述联合检索。
+ *   全库 895 条载入内存，按 2~4 字字串 + IDF 抑制泛词 + 现场高频问题词加权打分，
+ *   返回 top5 候选（含来源条款与命中词），不再因排查项目名对不上就判「未找到」。
  *
  * 对外能力（函数名与旧版一致，hazardLoop / importService / standardBasis 路由无需改动）：
  *   loadBasisLibrary(pool)
@@ -31,9 +31,122 @@ const SELECT_COLS = `
   content AS standard_basis, basis AS source, deduct_level
 `
 
-// 归一：去前后空格 + 小写（仅用于内存模糊匹配比较）
+// 归一：NFKC + 小写 + 去标点空白；「标识/标志」视为同义词
 function norm(s) {
-  return String(s == null ? '' : s).trim().toLowerCase()
+  return String(s == null ? '' : s).normalize('NFKC').toLowerCase()
+    .replace(/标识/g, '标志')
+    .replace(/[\s\p{P}\p{S}]/gu, '')
+}
+
+// 中文无分词：用 2~4 字字串做特征，配合全库 IDF 抑制「安全/生产/措施」等泛词
+function textGrams(s) {
+  const out = new Set()
+  for (const n of [2, 3, 4]) {
+    for (let i = 0; i <= s.length - n; i++) out.add(s.slice(i, i + n))
+  }
+  return out
+}
+
+// 现场高频问题词：命中即加权，避免只按泛词排序
+const SIGNAL_TERMS = [
+  ['孔洞', 18], ['坠落风险', 20], ['作业平台', 18], ['操作平台', 18],
+  ['安全警示标志', 15], ['静电接地', 15], ['防静电接地', 15],
+  ['液位计', 15], ['盲盖', 15], ['装车', 12], ['护栏', 12], ['安全带', 12],
+  ['高处作业', 12], ['动火作业', 12], ['受限空间', 12], ['吊装', 12],
+  ['硫化氢', 10], ['防护罩', 10], ['临边', 10],
+]
+const MIN_SCORE = 3.5
+const MAX_CANDIDATES = 5
+
+function rowText(r) {
+  return norm([r.category, r.sub_segment, r.inspect_object, r.standard_basis].join(' '))
+}
+
+function buildMatchIndex(lib) {
+  const rows = Array.isArray(lib) ? lib : []
+  const df = new Map()
+  const grams = rows.map((r) => {
+    const g = textGrams(rowText(r))
+    for (const x of g) df.set(x, (df.get(x) || 0) + 1)
+    return g
+  })
+  return { rows, grams, df, total: rows.length }
+}
+
+function idf(index, g) {
+  return Math.log(1 + index.total / (index.df.get(g) || 1))
+}
+
+function scoreLibrary(index, arg = {}) {
+  const category = norm(arg && arg.category)
+  const description = norm(arg && arg.description)
+  const input = norm([category, description].filter(Boolean).join(' '))
+  if (!input) return { matched: false, standard_basis: '', source: '', candidates: [] }
+
+  const inputGrams = [...textGrams(input)].filter((g) => index.df.has(g))
+  const out = []
+  index.rows.forEach((r, i) => {
+    const rg = index.grams[i]
+    const rtext = rowText(r)
+    const matched = [...rg].filter((g) => inputGrams.includes(g))
+    let base = 0
+    for (const g of matched) base += idf(index, g) * (g.length >= 3 ? 1.4 : 1)
+    const cat = norm(r.category)
+    const sub = norm(r.sub_segment)
+    const obj = norm(r.inspect_object)
+    const place = norm(r.place)
+    if (cat && input.includes(cat)) base += 8
+    for (const t of String(obj || '').split(/\s+/).map(norm).filter((x) => x.length >= 2)) {
+      if (input.includes(t)) base += 8
+    }
+    if (sub && input.includes(sub)) base += 8
+    if (place && input.includes(place)) base += 2
+    const terms = []
+    for (const [term, w] of SIGNAL_TERMS) {
+      if (input.includes(term) && rtext.includes(term)) { base += w; terms.push(term) }
+    }
+    let score = base / Math.sqrt(Math.max(8, rg.size))
+    if (cat && category === cat) score += 20
+    else if (cat && category && category.includes(cat)) score += 8
+    out.push({
+      score: Math.round(score * 100) / 100,
+      code: r.code || '',
+      category: r.category || '',
+      sub_segment: r.sub_segment || '',
+      inspect_object: r.inspect_object || '',
+      standard_basis: r.standard_basis || '',
+      source: r.source || '',
+      matchedTerms: matched.slice().sort((a, b) => idf(index, b) - idf(index, a)).slice(0, 8),
+      signalTerms: terms,
+    })
+  })
+  out.sort((a, b) => b.score - a.score)
+  // 同一条款在不同场所会重复入库（如 A1-305 / A8-013），候选里只留一条，给其它问题词让位
+  const candidates = []
+  const seenBasis = new Set()
+  for (const x of out) {
+    if (x.score < MIN_SCORE) break
+    const key = norm(x.standard_basis)
+    if (seenBasis.has(key)) continue
+    seenBasis.add(key)
+    candidates.push(x)
+    if (candidates.length >= MAX_CANDIDATES) break
+  }
+  if (!candidates.length) {
+    return { matched: false, standard_basis: '', source: '', candidates: [] }
+  }
+  const top = candidates[0]
+  return {
+    matched: true,
+    standard_basis: top.standard_basis,
+    source: top.source,
+    code: top.code,
+    category: top.category,
+    score: top.score,
+    matchedTerms: top.matchedTerms,
+    signalTerms: top.signalTerms,
+    candidates,
+  }
 }
 
 // ─── 加载 / 匹配 ────────────────────────────────────────────────────────────
@@ -48,47 +161,28 @@ async function loadBasisLibrary(p) {
   return rows || []
 }
 
-// 行内任意字段是否包含关键词
-function kwHit(row, k) {
-  return [row.category, row.sub_segment, row.inspect_object, row.standard_basis, row.source, row.code, row.place, row.deduct_level]
-    .some((f) => norm(f).includes(k))
-}
-
-/**
- * 纯函数：在已加载的库里按关键词模糊匹配（category 命中优先）
- * @returns {Object} { matched, standard_basis, source, code, category }
- */
+/** 纯函数：在已加载的库里匹配（导入 Excel 复用同一份 lib，避免重复查库） */
 function matchStandardBasis(lib, arg = {}) {
-  const kw = (arg && arg.category) || ''
-  if (!kw || !Array.isArray(lib)) return { matched: false, standard_basis: '', source: '' }
-  const k = norm(kw)
-  let hit = lib.find((r) => norm(r.category).includes(k)) // 违章分类优先
-  if (!hit) hit = lib.find((r) => kwHit(r, k))
-  if (hit) {
-    return { matched: true, standard_basis: hit.standard_basis || '', source: hit.source || '', code: hit.code, category: hit.category }
-  }
-  return { matched: false, standard_basis: '', source: '' }
+  if (!Array.isArray(lib)) return { matched: false, standard_basis: '', source: '' }
+  return scoreLibrary(buildMatchIndex(lib), arg)
 }
 
+let matchIndexCache = { at: 0, index: null }
+async function getMatchIndex(p) {
+  const now = Date.now()
+  if (matchIndexCache.index && now - matchIndexCache.at < 60 * 1000) return matchIndexCache.index
+  const lib = await loadBasisLibrary(p)
+  const index = buildMatchIndex(lib)
+  matchIndexCache = { at: now, index }
+  return index
+}
+
+/** DB 版：库仅 895 条，整库载入内存打分；索引 60 秒缓存 */
 async function matchStandardBasisDb(p, arg = {}) {
-  const kw = String((arg && arg.category) || '').trim()
-  if (!kw) return { matched: false, standard_basis: '', source: '' }
-  const like = `%${kw}%`
-  const [rows] = await p.execute(
-    `SELECT ${SELECT_COLS}
-       FROM t_violation
-       WHERE enabled = 1
-         AND (category LIKE ? OR sub_segment LIKE ? OR inspect_object LIKE ?
-              OR content LIKE ? OR basis LIKE ? OR code LIKE ?)
-       ORDER BY (CASE WHEN category LIKE ? THEN 0 ELSE 1 END), id
-       LIMIT 1`,
-    [like, like, like, like, like, like, like]
-  )
-  if (rows && rows.length) {
-    const r = rows[0]
-    return { matched: true, standard_basis: r.standard_basis || '', source: r.source || '', code: r.code, category: r.category }
-  }
-  return { matched: false, standard_basis: '', source: '' }
+  const category = String((arg && arg.category) || '').trim()
+  const description = String((arg && arg.description) || '').trim()
+  if (!category && !description) return { matched: false, standard_basis: '', source: '' }
+  return scoreLibrary(await getMatchIndex(p), { category, description })
 }
 
 // ─── 筛选项（适用场所 / 违章分类 / 扣分风险等级 去重列表）────────────────────────

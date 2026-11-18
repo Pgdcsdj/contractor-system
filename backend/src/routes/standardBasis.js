@@ -70,8 +70,8 @@ router.get('/options', requireAdminOrSafety, async (req, res) => {
 // ─── 单条匹配（录入隐患时自动匹配依据）────────────────────────────────────────
 router.post('/match', requireAdminOrSafety, async (req, res) => {
   try {
-    const { category } = req.body || {}
-    const m = await svc.matchStandardBasisDb(pool, { category })
+    const { category, description } = req.body || {}
+    const m = await svc.matchStandardBasisDb(pool, { category, description })
     res.json({ success: true, data: m })
   } catch (e) {
     res.status(500).json({ success: false, error: e.message })

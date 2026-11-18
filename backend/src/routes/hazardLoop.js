@@ -161,10 +161,13 @@ router.post('/', adminAuth, async (req, res) => {
     // 录入人上下文：取当前登录管理员/安全员（设计 §8.2，recorder_* 由后端写入，前端不传）
     const recorderCtx = await resolveRecorderContext(req.admin)
 
-    // 标准依据：前端未填则按排查项目从问题依据库服务端兜底匹配
+    // 标准依据：前端未填则用「排查项目 + 问题描述」从依据库服务端兜底匹配
     let standardBasisValue = standard_basis || ''
-    if (!standardBasisValue && hazard_investigation_item) {
-      const m = await matchStandardBasisDb(pool, { category: hazard_investigation_item })
+    if (!standardBasisValue && (hazard_investigation_item || description)) {
+      const m = await matchStandardBasisDb(pool, {
+        category: hazard_investigation_item,
+        description,
+      })
       if (m.matched) standardBasisValue = m.standard_basis
     }
 
