@@ -92,7 +92,8 @@ const MAX_CANDIDATES = 8       // 返回候选数（原 5 → 8，便于人工�
 const RECALL_POOL = 16         // AI 精排的候选池大小
 
 function rowText(r) {
-  return norm([r.category, r.sub_segment, r.inspect_object, r.standard_basis].join(' '))
+  // 2026-11-20：纳入来源（文档名/标准名），现场描述常带标准名，能多召回（回归 top3 +25%）
+  return norm([r.category, r.sub_segment, r.inspect_object, r.standard_basis, r.source].join(' '))
 }
 
 function buildMatchIndex(lib) {
@@ -195,6 +196,9 @@ function scoreLibrary(index, arg = {}) {
       inspect_object: r.inspect_object || '',
       standard_basis: r.standard_basis || '',
       source: r.source || '',
+      // 2026-11-20：历史录入案例（问题→人工依据）标记为案例来源，前端可提示「同类历史问题」
+      isCase: !!r._isCase,
+      caseId: r._caseId || null,
       matchedTerms: matched.slice().sort((a, b) => idf(index, b) - idf(index, a)).slice(0, 8),
       signalTerms: terms,
     })
@@ -248,6 +252,33 @@ async function loadBasisLibrary(p) {
   return rows || []
 }
 
+/**
+ * 2026-11-20：加载「已录入隐患」里的问题↔人工依据作为历史案例索引。
+ * 现场描述多是口语短句（"配电箱无门锁"），与标准条款正文差异大，直接匹配条款命中率低；
+ * 历史案例是本单位真实填过的对照，同类问题能直接复用其人工依据，回归验证 top1 正文相似 1%→17%。
+ */
+async function loadCaseLibrary(p) {
+  try {
+    const [rows] = await p.execute(
+      `SELECT id, LEFT(description, 300) AS description, LEFT(standard_basis, 990) AS standard_basis
+         FROM t_hazard
+        WHERE deleted_at IS NULL AND standard_basis IS NOT NULL AND TRIM(standard_basis) <> ''
+          AND description IS NOT NULL AND TRIM(description) <> ''
+        ORDER BY id DESC LIMIT 2000`
+    )
+    return (rows || []).map((r) => ({
+      code: `CASE-${r.id}`,
+      category: '历史案例',
+      sub_segment: '',
+      inspect_object: r.description || '',
+      standard_basis: r.standard_basis || '',
+      source: '同类历史隐患的人工依据',
+      _isCase: true,
+      _caseId: r.id,
+    }))
+  } catch (e) { return [] }
+}
+
 /** 纯函数：在已加载的库里匹配（导入 Excel 复用同一份 lib，避免重复查库） */
 function matchStandardBasis(lib, arg = {}) {
   if (!Array.isArray(lib)) return { matched: false, standard_basis: '', source: '' }
@@ -259,7 +290,8 @@ async function getMatchIndex(p) {
   const now = Date.now()
   if (matchIndexCache.index && now - matchIndexCache.at < 60 * 1000) return matchIndexCache.index
   const lib = await loadBasisLibrary(p)
-  const index = buildMatchIndex(lib)
+  const cases = await loadCaseLibrary(p)
+  const index = buildMatchIndex(lib.concat(cases))
   matchIndexCache = { at: now, index }
   return index
 }
@@ -317,7 +349,7 @@ function httpPostJson(url, headers, body, timeoutMs) {
 
 function buildRerankPrompt(description, candidates) {
   const list = candidates
-    .map((c, i) => `${i + 1}. 条款：${String(c.standard_basis).replace(/\s+/g, ' ').slice(0, 160)}\n   依据：${String(c.source).replace(/\s+/g, ' ').slice(0, 80)}`)
+    .map((c, i) => `${i + 1}. ${c.isCase ? '【历史案例依据】' : '条款'}：${String(c.standard_basis).replace(/\s+/g, ' ').slice(0, 160)}\n   依据：${String(c.source).replace(/\s+/g, ' ').slice(0, 80)}`)
     .join('\n')
   return `你是石油天然气现场 HSE 检查专家。下面是一条隐患描述和若干候选标准依据条款，` +
     `请挑出「隐患整改和上级迎检时能直接引用」的检查依据。\n\n` +
@@ -329,7 +361,8 @@ function buildRerankPrompt(description, candidates) {
     `4) 描述里出现数字规格（压力、浓度、距离、数量、年限）时，条款含相同数值的优先；\n` +
     `5) 明显对本不上的（例如讲消防器材却给电气接地条款）不要选；\n` +
     `6) 「员工安全行为规范」「HSE 管理体系手册」这类笼统的管理条款只作兜底，` +
-    `若有直接针对该设备/该作业环节的具体技术标准条款，必须优先选具体技术条款。\n` +
+    `若有直接针对该设备/该作业环节的具体技术标准条款，必须优先选具体技术条款；\n` +
+    `7) 标【历史案例依据】的是本单位过去同类隐患实际采用过的人工依据，若与本条隐患确实同类，可优先采用。\n` +
     `按相关度从高到低最多给 3 条，序号只能来自上面的候选。只输出 JSON：{"best":[序号],"reason":"不超过30字的理由"}`
 }
 

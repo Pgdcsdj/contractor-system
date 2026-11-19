@@ -76,7 +76,38 @@
         <!-- 问题描述 -->
         <div class="form-group full">
           <label>问题描述 <span class="req">*</span></label>
-          <textarea v-model="form.description" class="form-input" rows="3" placeholder="描述隐患具体情况、风险点"></textarea>
+          <textarea v-model="form.description" class="form-input" rows="3" placeholder="描述隐患具体情况、风险点" @input="clearBasisCandidates"></textarea>
+        </div>
+
+        <!-- 标准依据（本地算法自动匹配，不使用 AI 精排） -->
+        <div class="form-group full">
+          <div class="basis-head">
+            <span class="basis-head-title">标准依据</span>
+            <button
+              type="button"
+              class="btn btn-mini"
+              :disabled="matchingBasis || (!form.hazard_investigation_item && !form.description.trim())"
+              @click="doMatchBasis"
+            >
+              {{ matchingBasis ? '匹配中…' : '自动匹配依据' }}
+            </button>
+          </div>
+          <textarea v-model="form.standard_basis" class="form-input" rows="2" placeholder="填写问题描述后点「自动匹配依据」，可从候选条款中切换；也可直接手填"></textarea>
+          <p v-if="basisHint" class="basis-hint" :class="basisHintType">{{ basisHint }}</p>
+          <div v-if="basisCandidates.length > 1" class="basis-candidates">
+            <span class="basis-candidates-label">候选条款（点击采用）：</span>
+            <button
+              v-for="(c, i) in basisCandidates"
+              :key="(c.code || '') + i"
+              type="button"
+              class="basis-chip"
+              :class="{ active: c.code === activeBasisCode }"
+              :title="(c.standard_basis || '') + (c.source ? '｜' + c.source : '')"
+              @click="chooseBasis(c)"
+            >
+              {{ i + 1 }}. {{ c.isCase ? '历史案例·' : '' }}{{ chipLabel(c) }}
+            </button>
+          </div>
         </div>
 
         <!-- 整改情况（可多次更新） -->
@@ -143,7 +174,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { getHazardDict, getContractorUnits, getRectifyUnitBiz, reportHazard, createHazardDict } from '@/api/hazard'
+import { getHazardDict, getContractorUnits, getRectifyUnitBiz, reportHazard, createHazardDict, matchStandardBasis } from '@/api/hazard'
 import HazardPhotoUpload from '@/views/admin/components/HazardPhotoUpload.vue'
 
 const router = useRouter()
@@ -166,6 +197,13 @@ const newItemName = ref('')
 const savingItem = ref(false)
 const prevInvestigationItem = ref('')
 
+// 标准依据自动匹配（仅本地算法，安全员录入不接 AI 精排）
+const matchingBasis = ref(false)
+const basisHint = ref('')
+const basisHintType = ref('')
+const basisCandidates = ref([])
+const activeBasisCode = ref('')
+
 const investigationItems = computed(() => {
   const set = new Set()
   investigationItemDict.value.forEach((d) => d && d.name && set.add(d.name))
@@ -182,6 +220,7 @@ const form = reactive({
   business_dept_head: '',
   hazard_level: '',
   description: '',
+  standard_basis: '',
   rectify_measures: '',
   remark: '',
   responsible_person: '',
@@ -242,6 +281,70 @@ function toSqlDateTime(v) {
   return v.replace('T', ' ') + (v.length === 16 ? ':00' : '')
 }
 
+// 标准依据：只用本地字串算法（ai=false），从依据库 + 历史同类隐患案例中召回
+async function doMatchBasis() {
+  if (!form.hazard_investigation_item && !form.description.trim()) {
+    basisHint.value = '请先填写问题描述或选择隐患排查项目'
+    basisHintType.value = 'warn'
+    return
+  }
+  matchingBasis.value = true
+  basisHint.value = ''
+  try {
+    // 第三个参数 false = 关闭 AI 精排，纯本地算法
+    const res = await matchStandardBasis(form.hazard_investigation_item, form.description, false)
+    const m = res.data?.data || {}
+    basisCandidates.value = Array.isArray(m.candidates) ? m.candidates : []
+    activeBasisCode.value = ''
+    if (m.matched && basisCandidates.value.length) {
+      if (m.lowConfidence) {
+        activeBasisCode.value = ''
+        basisHint.value = '未找到高相关条款，下面只是字面最接近的几条：请补充问题描述关键词，或点选候选、直接手填'
+        basisHintType.value = 'warn'
+      } else {
+        chooseBasis(basisCandidates.value[0], m)
+      }
+    } else {
+      basisHint.value = '未找到相关条款，请补充问题描述关键词或直接手填'
+      basisHintType.value = 'warn'
+    }
+  } catch (e) {
+    basisCandidates.value = []
+    basisHint.value = '匹配失败：' + (e.response?.data?.error || e.message)
+    basisHintType.value = 'warn'
+  } finally {
+    matchingBasis.value = false
+  }
+}
+
+// 候选卡片展示「标准名 + 标准号」；历史案例标注来源
+function chipLabel(c) {
+  const src = String(c.source || '').replace(/\n/g, ' ').trim()
+  const doc = (src.match(/《[^》]+》/) || [])[0] || ''
+  const no = (src.match(/[A-Z]{2,3}(?:\/T)?\s*\d{2,5}[.\-—]\d{2,4}/) || [])[0] || ''
+  if (doc || no) return [doc, no].filter(Boolean).join(' ')
+  return c.sub_segment || c.inspect_object || c.category || c.code
+}
+
+function chooseBasis(c, matched) {
+  if (!c) return
+  form.standard_basis = c.standard_basis || ''
+  activeBasisCode.value = c.code || ''
+  const tag = c.isCase ? '（本单位历史同类隐患依据）' : ''
+  const more = basisCandidates.value.length > 1 ? ` · 另有 ${basisCandidates.value.length - 1} 条候选可点选` : ''
+  basisHint.value = `${tag}已采用 ${c.code || ''}${c.source ? '：' + String(c.source).slice(0, 70) : ''}${more}`
+  basisHintType.value = 'ok'
+}
+
+function clearBasisCandidates() {
+  basisCandidates.value = []
+  activeBasisCode.value = ''
+  if (basisHintType.value === 'ok') {
+    basisHint.value = ''
+    basisHintType.value = ''
+  }
+}
+
 function resetForm() {
   form.contractor_unit_id = ''
   form.unit_name = ''
@@ -254,6 +357,8 @@ function resetForm() {
   form.business_dept_head = ''
   form.hazard_level = ''
   form.description = ''
+  form.standard_basis = ''
+  clearBasisCandidates()
   form.rectify_measures = ''
   form.responsible_person = ''
   form.plan_finish_time = ''
@@ -278,6 +383,7 @@ async function handleSubmit() {
       hazard_investigation_item: form.hazard_investigation_item,
       business_dept_head: form.business_dept_head,
       description: form.description,
+      standard_basis: form.standard_basis,
       hazard_level: form.hazard_level,
       rectify_measures: form.rectify_measures,
       remark: form.remark,
@@ -392,6 +498,27 @@ onMounted(loadOptions)
 .cascade { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .field-hint { margin: 6px 0 0; font-size: 12px; line-height: 1.5; color: var(--c-text-3); }
 .req { color: var(--c-danger); }
+
+/* 标准依据自动匹配 */
+.basis-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.basis-head-title { font-size: 13px; font-weight: 500; color: var(--c-text-2); }
+.btn-mini {
+  margin-left: 8px; padding: 2px 10px; font-size: 12px; line-height: 1.6;
+  border: 1px solid var(--c-border); border-radius: 8px; cursor: pointer;
+  background: var(--c-bg-soft); color: var(--c-primary);
+}
+.btn-mini:disabled { opacity: .5; cursor: not-allowed; }
+.basis-hint { font-size: 12px; margin: 6px 0 0; line-height: 1.5; }
+.basis-hint.ok { color: var(--c-success); }
+.basis-hint.warn { color: var(--c-warning); }
+.basis-candidates { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; }
+.basis-candidates-label { font-size: 12px; color: var(--c-text-3); }
+.basis-chip {
+  padding: 3px 9px; border: 1px solid var(--c-border); border-radius: 999px;
+  background: var(--c-surface); color: var(--c-text-2); font-size: 12px; cursor: pointer;
+}
+.basis-chip:hover { border-color: var(--c-primary); color: var(--c-primary); }
+.basis-chip.active { border-color: var(--c-primary); background: var(--c-primary); color: #fff; }
 
 .form-actions {
   display: flex; gap: 12px; justify-content: flex-end; margin-top: 22px;
