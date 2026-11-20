@@ -108,9 +108,9 @@ router.get('/options', adminAuth, async (req, res) => {
 })
 
 // ─── GET /api/contractor-units/overview ─────────────────────────────────────
-// 通南巴项目部所管承包商概述：在册三级/四级单位，按人员管理在册人员汇总人数。
+// 通南巴项目部所管承包商概述：在册三级/四级单位，只统计主管单位为「通南巴项目部」的人员。
 // 人数口径：优先按 t_user.contractor_unit_id 关联；未关联的按 t_user.unit = 单位名兜底。
-// 同一人只计一次；未关联到网格单位的人员不计入任何承包商。
+// 同一人只计一次；普光分公司等其他主管单位的人员、未关联到网格单位的人员均不计入任何承包商。
 router.get('/overview', adminAuth, async (req, res) => {
   const [rows] = await pool.execute(
     `SELECT cu.id, cu.unit_name, cu.grid_l2, cu.grid_level, cu.parent_unit_name,
@@ -120,6 +120,7 @@ router.get('/overview', adminAuth, async (req, res) => {
      FROM t_contractor_unit cu
      LEFT JOIN t_user u
        ON u.status = 1
+      AND u.supervising_unit = '通南巴项目部'
       AND (u.contractor_unit_id = cu.id
         OR (u.contractor_unit_id IS NULL AND u.unit = cu.unit_name))
      WHERE cu.is_active = 1 AND cu.grid_level IN ('三级', '四级')
@@ -127,8 +128,10 @@ router.get('/overview', adminAuth, async (req, res) => {
      ORDER BY FIELD(cu.grid_level, '三级', '四级'), CAST(cu.seq_no AS UNSIGNED), cu.id`
   )
 
-  const [[{ userTotal }]] = await pool.execute(
-    'SELECT COUNT(*) AS userTotal FROM t_user WHERE status = 1'
+  const [[{ userTotal, tnbPeople }]] = await pool.execute(
+    `SELECT COUNT(*) AS userTotal,
+            SUM(supervising_unit = '通南巴项目部') AS tnbPeople
+       FROM t_user WHERE status = 1`
   )
 
   const levels = ['三级', '四级'].map((level) => {
@@ -159,7 +162,9 @@ router.get('/overview', adminAuth, async (req, res) => {
       totalUnits: levels.reduce((sum, l) => sum + l.unitCount, 0),
       totalPeople: linkedPeople,
       userTotal: Number(userTotal || 0),
-      unlinkedPeople: Math.max(0, Number(userTotal || 0) - linkedPeople),
+      tnbPeople: Number(tnbPeople || 0),
+      otherPeople: Math.max(0, Number(userTotal || 0) - Number(tnbPeople || 0)),
+      unlinkedPeople: Math.max(0, Number(tnbPeople || 0) - linkedPeople),
       levels,
     },
   })

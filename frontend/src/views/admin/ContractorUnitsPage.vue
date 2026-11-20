@@ -67,8 +67,11 @@
         </div>
         <div v-else-if="!overviewLoading" class="overview-empty">暂无承包商概述数据</div>
         <p class="overview-note">
-          人员管理共 {{ overview.userTotal }} 人；其中 {{ overview.totalPeople }} 人已关联到上述三级/四级网格单位，
-          {{ overview.unlinkedPeople }} 人未关联或单位不在网格主数据，未计入各单位。人数按「关联单位 ID 优先、单位名称兜底」统计，同一人只计一次。
+          人员管理共 {{ overview.userTotal }} 人；其中主管单位为<strong>通南巴项目部</strong>的 {{ overview.tnbPeople }} 人纳入本概述范围，
+          {{ overview.otherPeople }} 人主管单位非通南巴项目部或未填写，不在统计范围。
+          通南巴人员中，{{ overview.totalPeople }} 人已关联到上述三级/四级网格单位并计入各单位，
+          {{ overview.unlinkedPeople }} 人未关联或单位不在网格主数据，未计入各单位。
+          人数按「关联单位 ID 优先、单位名称兜底」统计，同一人只计一次。
         </p>
       </div>
     </div>
@@ -271,7 +274,7 @@ const pageSize = 50
 const totalCount = ref(0)
 
 // 通南巴项目部承包商概述
-const overview = ref({ totalUnits: 0, totalPeople: 0, userTotal: 0, unlinkedPeople: 0, levels: [] })
+const overview = ref({ totalUnits: 0, totalPeople: 0, userTotal: 0, tnbPeople: 0, otherPeople: 0, unlinkedPeople: 0, levels: [] })
 const overviewLoading = ref(true)
 const showOverview = ref(true)
 
@@ -328,9 +331,9 @@ async function fetchOverview() {
   overviewLoading.value = true
   try {
     const res = await request.get('/api/contractor-units/overview')
-    overview.value = res.data?.data || { totalUnits: 0, totalPeople: 0, userTotal: 0, unlinkedPeople: 0, levels: [] }
+    overview.value = res.data?.data || { totalUnits: 0, totalPeople: 0, userTotal: 0, tnbPeople: 0, otherPeople: 0, unlinkedPeople: 0, levels: [] }
   } catch {
-    overview.value = { totalUnits: 0, totalPeople: 0, userTotal: 0, unlinkedPeople: 0, levels: [] }
+    overview.value = { totalUnits: 0, totalPeople: 0, userTotal: 0, tnbPeople: 0, otherPeople: 0, unlinkedPeople: 0, levels: [] }
   } finally {
     overviewLoading.value = false
   }
