@@ -25,6 +25,54 @@
       </div>
     </div>
 
+    <!-- 通南巴项目部承包商概述 -->
+    <div class="card overview-card">
+      <div class="overview-head">
+        <div>
+          <h3>通南巴项目部承包商概述</h3>
+          <p>按网格层级列示在册承包商；人数从「人员管理」在册人员汇总</p>
+        </div>
+        <div class="overview-head-right">
+          <div class="overview-kpis">
+            <span>在册承包商 <b>{{ overview.totalUnits }}</b> 家</span>
+            <span class="kpi-divider">·</span>
+            <span>三级 <b>{{ levelSummary('三级').unitCount }}</b> 家 / <b>{{ levelSummary('三级').peopleCount }}</b> 人</span>
+            <span class="kpi-divider">·</span>
+            <span>四级 <b>{{ levelSummary('四级').unitCount }}</b> 家 / <b>{{ levelSummary('四级').peopleCount }}</b> 人</span>
+          </div>
+          <button class="btn btn-ghost btn-mini" @click="showOverview = !showOverview">
+            {{ showOverview ? '收起' : '展开' }}
+          </button>
+        </div>
+      </div>
+
+      <div v-if="showOverview" class="overview-body">
+        <div v-if="overviewLoading" class="overview-empty"><div class="spinner" style="margin:0 auto"></div></div>
+        <div v-else-if="overview.levels.length" class="overview-grid">
+          <section v-for="lv in overview.levels" :key="lv.level" class="overview-level">
+            <header class="overview-level-head">
+              <span class="level-tag" :class="'lv-' + (lv.level === '三级' ? '3' : '4')">{{ lv.level }}单位</span>
+              <strong>{{ lv.unitCount }} 家</strong>
+              <span class="overview-level-people">{{ lv.peopleCount }} 人</span>
+            </header>
+            <div class="overview-list">
+              <div v-for="u in lv.units" :key="u.id" class="overview-row" :title="u.parent_unit_name ? '上级：' + u.parent_unit_name : ''">
+                <span class="overview-unit-name">{{ u.unit_name }}</span>
+                <span v-if="u.grid_l2" class="grid-tag">{{ u.grid_l2 }}</span>
+                <span class="overview-people"><b>{{ u.people_count }}</b> 人</span>
+              </div>
+              <div v-if="!lv.units.length" class="overview-empty">暂无在册单位</div>
+            </div>
+          </section>
+        </div>
+        <div v-else-if="!overviewLoading" class="overview-empty">暂无承包商概述数据</div>
+        <p class="overview-note">
+          人员管理共 {{ overview.userTotal }} 人；其中 {{ overview.totalPeople }} 人已关联到上述三级/四级网格单位，
+          {{ overview.unlinkedPeople }} 人未关联或单位不在网格主数据，未计入各单位。人数按「关联单位 ID 优先、单位名称兜底」统计，同一人只计一次。
+        </p>
+      </div>
+    </div>
+
     <!-- 单位表格 -->
     <div class="card table-card">
       <table class="data-table">
@@ -222,6 +270,11 @@ const page = ref(1)
 const pageSize = 50
 const totalCount = ref(0)
 
+// 通南巴项目部承包商概述
+const overview = ref({ totalUnits: 0, totalPeople: 0, userTotal: 0, unlinkedPeople: 0, levels: [] })
+const overviewLoading = ref(true)
+const showOverview = ref(true)
+
 // 二级专业板块（与「承包商单位导入模板」保持一致，7 大板块）
 const gridL2Options = [
   '钻前工程',
@@ -267,6 +320,22 @@ function levelClass(lvl) {
 function onSearchChange() { page.value = 1; fetchList() }
 function onFilterChange() { page.value = 1; fetchList() }
 
+function levelSummary(level) {
+  return overview.value.levels.find((l) => l.level === level) || { unitCount: 0, peopleCount: 0 }
+}
+
+async function fetchOverview() {
+  overviewLoading.value = true
+  try {
+    const res = await request.get('/api/contractor-units/overview')
+    overview.value = res.data?.data || { totalUnits: 0, totalPeople: 0, userTotal: 0, unlinkedPeople: 0, levels: [] }
+  } catch {
+    overview.value = { totalUnits: 0, totalPeople: 0, userTotal: 0, unlinkedPeople: 0, levels: [] }
+  } finally {
+    overviewLoading.value = false
+  }
+}
+
 function formatDate(iso) {
   if (!iso) return '-'
   const d = new Date(iso)
@@ -295,6 +364,7 @@ async function handleAdd() {
     showAdd.value = false
     addForm.value = { unit_name: '', grid_l2: '', grid_level: '', parent_id: null, grid_leader: '', grid_member: '', remark: '' }
     loadOptions()
+    fetchOverview()
     fetchList()
   } catch (e) {
     alert(e.response?.data?.error || '添加失败')
@@ -323,7 +393,7 @@ async function handleImport() {
     })
     importResult.value = res.data.data || res.data
     if (!importResult.value.fail) {
-      setTimeout(() => { showImport.value = false; loadOptions(); fetchList() }, 1800)
+      setTimeout(() => { showImport.value = false; loadOptions(); fetchOverview(); fetchList() }, 1800)
     }
   } catch (e) {
     importResult.value = { success: 0, fail: 1, failPreview: [{ error: e.response?.data?.error || '导入失败' }] }
@@ -364,6 +434,7 @@ async function handleEdit() {
     })
     showEdit.value = false
     loadOptions()
+    fetchOverview()
     fetchList()
   } catch (e) {
     alert('保存失败：' + (e.response?.data?.error || e.message))
@@ -376,6 +447,7 @@ async function removeItem(item) {
   if (!confirm(`确认将「${item.unit_name}」置为退场？（保留历史关联数据）`)) return
   try {
     await request.delete(`/api/contractor-units/${item.id}`)
+    fetchOverview()
     fetchList()
   } catch (e) {
     alert('操作失败：' + (e.response?.data?.error || e.message))
@@ -400,12 +472,44 @@ async function fetchList() {
   loading.value = false
 }
 
-onMounted(() => { loadOptions(); fetchList() })
+onMounted(() => { loadOptions(); fetchOverview(); fetchList() })
 watch(page, fetchList)
 </script>
 
 <style scoped>
 .users-page { max-width: 1240px; }
+
+/* 承包商概述 */
+.overview-card { padding: 16px 18px; margin-bottom: 14px; }
+.overview-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.overview-head h3 { font-size: 16px; font-weight: 700; color: var(--c-text); margin: 0 0 4px; }
+.overview-head p { font-size: 12.5px; color: var(--c-text-3); margin: 0; }
+.overview-head-right { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.overview-kpis { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--c-text-2); flex-wrap: wrap; }
+.overview-kpis b { color: var(--c-blue-600); font-weight: 700; }
+.kpi-divider { color: var(--c-border-strong); }
+.overview-body { margin-top: 14px; }
+.overview-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.overview-level { border: 1px solid var(--c-border); border-radius: var(--r); overflow: hidden; background: var(--c-surface); }
+.overview-level-head {
+  display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+  background: var(--c-surface-2); border-bottom: 1px solid var(--c-border);
+}
+.overview-level-head strong { font-size: 13px; color: var(--c-text); }
+.overview-level-people { margin-left: auto; font-size: 13px; color: var(--c-text-2); }
+.overview-list { max-height: 360px; overflow-y: auto; }
+.overview-row {
+  display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+  border-bottom: 1px solid var(--c-border); font-size: 13px;
+}
+.overview-row:last-child { border-bottom: none; }
+.overview-row:hover { background: var(--c-surface-2); }
+.overview-unit-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--c-text); }
+.overview-people { margin-left: auto; white-space: nowrap; color: var(--c-text-2); }
+.overview-people b { color: var(--c-blue-600); font-weight: 700; }
+.overview-empty { padding: 22px; text-align: center; color: var(--c-text-3); font-size: 13px; }
+.overview-note { margin: 12px 0 0; font-size: 12px; line-height: 1.6; color: var(--c-text-3); }
+.btn-mini { padding: 4px 10px; font-size: 12px; }
 
 .toolbar {
   display: flex; align-items: center; justify-content: space-between;
@@ -489,6 +593,10 @@ watch(page, fetchList)
   font-size: 14px; background: var(--c-surface); color: var(--c-text);
 }
 .form-input:focus { outline: none; border-color: var(--c-blue-600); box-shadow: 0 0 0 3px rgba(29,111,184,.15); }
+
+@media (max-width: 900px) {
+  .overview-grid { grid-template-columns: 1fr; }
+}
 
 @keyframes spin { to { transform: rotate(360deg) } }
 @keyframes overlay-in { from { opacity: 0 } to { opacity: 1 } }

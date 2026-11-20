@@ -3,6 +3,7 @@
  *
  * GET    /api/contractor-units           单位列表（搜索/分页/板块/层级筛选，默认仅显示在册）
  * GET    /api/contractor-units/options   下拉选项（id/unit_name/grid_l2/grid_level/parent_id）
+ * GET    /api/contractor-units/overview  承包商概述（三级/四级在册单位 + 人员管理人数汇总）
  * GET    /api/contractor-units/:id       单位详情
  * POST   /api/contractor-units           新增单位
  * PUT    /api/contractor-units/:id       编辑单位
@@ -104,6 +105,64 @@ router.get('/options', adminAuth, async (req, res) => {
      FROM t_contractor_unit ORDER BY FIELD(grid_level, '一级','二级','三级','四级'), CAST(seq_no AS UNSIGNED), id`
   )
   res.json({ success: true, data: rows })
+})
+
+// ─── GET /api/contractor-units/overview ─────────────────────────────────────
+// 通南巴项目部所管承包商概述：在册三级/四级单位，按人员管理在册人员汇总人数。
+// 人数口径：优先按 t_user.contractor_unit_id 关联；未关联的按 t_user.unit = 单位名兜底。
+// 同一人只计一次；未关联到网格单位的人员不计入任何承包商。
+router.get('/overview', adminAuth, async (req, res) => {
+  const [rows] = await pool.execute(
+    `SELECT cu.id, cu.unit_name, cu.grid_l2, cu.grid_level, cu.parent_unit_name,
+            COUNT(DISTINCT u.id) AS people_count,
+            COUNT(DISTINCT CASE WHEN u.contractor_unit_id = cu.id THEN u.id END) AS people_by_id,
+            COUNT(DISTINCT CASE WHEN u.contractor_unit_id IS NULL AND u.unit = cu.unit_name THEN u.id END) AS people_by_name
+     FROM t_contractor_unit cu
+     LEFT JOIN t_user u
+       ON u.status = 1
+      AND (u.contractor_unit_id = cu.id
+        OR (u.contractor_unit_id IS NULL AND u.unit = cu.unit_name))
+     WHERE cu.is_active = 1 AND cu.grid_level IN ('三级', '四级')
+     GROUP BY cu.id
+     ORDER BY FIELD(cu.grid_level, '三级', '四级'), CAST(cu.seq_no AS UNSIGNED), cu.id`
+  )
+
+  const [[{ userTotal }]] = await pool.execute(
+    'SELECT COUNT(*) AS userTotal FROM t_user WHERE status = 1'
+  )
+
+  const levels = ['三级', '四级'].map((level) => {
+    const units = rows
+      .filter((r) => r.grid_level === level)
+      .map((r) => ({
+        id: r.id,
+        unit_name: r.unit_name,
+        grid_l2: r.grid_l2 || '',
+        grid_level: r.grid_level,
+        parent_unit_name: r.parent_unit_name || '',
+        people_count: Number(r.people_count || 0),
+        people_by_id: Number(r.people_by_id || 0),
+        people_by_name: Number(r.people_by_name || 0),
+      }))
+    return {
+      level,
+      unitCount: units.length,
+      peopleCount: units.reduce((sum, u) => sum + u.people_count, 0),
+      units,
+    }
+  })
+
+  const linkedPeople = levels.reduce((sum, l) => sum + l.peopleCount, 0)
+  res.json({
+    success: true,
+    data: {
+      totalUnits: levels.reduce((sum, l) => sum + l.unitCount, 0),
+      totalPeople: linkedPeople,
+      userTotal: Number(userTotal || 0),
+      unlinkedPeople: Math.max(0, Number(userTotal || 0) - linkedPeople),
+      levels,
+    },
+  })
 })
 
 // ─── GET /api/contractor-units/:id ──────────────────────────────────────────
