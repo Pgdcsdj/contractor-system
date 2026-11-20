@@ -77,7 +77,7 @@
       <div class="modal wide">
         <h3><Icon name="settings" :size="19" /> 受控单位名单设置</h3>
         <p class="modal-hint">
-          这张名单就是月度统计表的行。施工队伍变动时在此增删；同一单位有多个队/井，可加多行分别填写队别与井号。
+          这张名单就是月度统计表的行。施工队伍变动时在此增删；同一单位有多个队/井，可加多行分别填写队别与井号。当前共 {{ editRows.length }} 行，保存前会自动留存旧名单快照。
         </p>
         <div class="table-scroll settings-scroll">
           <table class="data-table compact">
@@ -188,6 +188,7 @@ const showSettings = ref(false)
 const saving = ref(false)
 const units = ref([])
 const editRows = ref([])
+const originalCount = ref(0)
 
 async function openSettings() {
   try {
@@ -199,6 +200,7 @@ async function openSettings() {
       team_name: r.team_name || '',
       well_no: r.well_no || '',
     }))
+    originalCount.value = editRows.value.length
     showSettings.value = true
   } catch (e) { showToast(errMsg(e), 'error') }
 }
@@ -217,6 +219,8 @@ async function doSave() {
       unit_name: String(r.unit_name).trim(), team_name: r.team_name || '', well_no: r.well_no || '',
     }))
   if (!rows.length) return showToast('名单不能为空', 'error')
+  if (rows.length < originalCount.value &&
+      !confirm(`当前名单 ${originalCount.value} 行，保存后将只剩 ${rows.length} 行。确认继续吗？`)) return
   saving.value = true
   try {
     await saveActivityStatUnits(rows)

@@ -1029,6 +1029,18 @@ async function autoMigrate() {
         KEY idx_unit (unit_id)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='安全活动月度统计-受控单位名单'
     `)
+    await ensureTable(`
+      CREATE TABLE IF NOT EXISTS t_activity_stat_unit_archive (
+        id           INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        snapshot_json MEDIUMTEXT     NOT NULL COMMENT '保存前的完整名单快照(JSON)',
+        row_count    INT             NOT NULL DEFAULT 0 COMMENT '快照行数',
+        operator_id  INT UNSIGNED    DEFAULT NULL COMMENT '操作人ID',
+        operator_name VARCHAR(100)  NOT NULL DEFAULT '' COMMENT '操作人',
+        reason       VARCHAR(100)   NOT NULL DEFAULT '' COMMENT '操作说明',
+        created_at   DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        KEY idx_created (created_at)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='安全活动受控单位名单-保存前快照'
+    `)
     console.log('[migrate] ✅ 承包商安全活动相关表结构已就绪')
 
     // ─── 直接作业预约报备（数据源：钉钉群在线表格，每天 22:00 同步）───────────

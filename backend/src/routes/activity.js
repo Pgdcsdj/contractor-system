@@ -375,7 +375,7 @@ router.post('/stat-units', async (req, res) => {
   try {
     const rows = Array.isArray(req.body?.rows) ? req.body.rows : null
     if (!rows) return res.status(400).json({ success: false, error: '参数错误：rows 应为数组' })
-    ok(res, await store.saveStatUnits(rows))
+    ok(res, await store.saveStatUnits(rows, req.admin || {}))
   } catch (e) { fail(res, e) }
 })
 

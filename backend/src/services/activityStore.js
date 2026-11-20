@@ -299,23 +299,69 @@ async function statUnits() {
   return fresh
 }
 
-/** 保存受控单位名单（整表覆盖） */
-async function saveStatUnits(list) {
-  await pool.execute('DELETE FROM t_activity_stat_unit')
-  let i = 1
-  for (const r of list || []) {
-    const name = String(r.unit_name || '').trim()
-    if (!name) continue
-    const seq = Number(r.seq_no) || i
-    await pool.execute(
-      `INSERT INTO t_activity_stat_unit (unit_id, seq_no, unit_name, team_name, well_no, sort_no)
-       VALUES (?,?,?,?,?,?)`,
+/** 保存受控单位名单（整表覆盖）
+ * 2026-11-20：改为「先留快照 → 事务内删除+插入」，任何一步失败都回滚，
+ * 避免请求卡住时只剩部分行；保存前快照写入 t_activity_stat_unit_archive 便于恢复。
+ */
+async function saveStatUnits(list, operator = {}) {
+  const rows = (Array.isArray(list) ? list : [])
+    .map((r) => ({ ...r, unit_name: String(r.unit_name || '').trim() }))
+    .filter((r) => r.unit_name)
+  if (!rows.length) throw new Error('名单不能为空，已取消保存（原名单未改动）')
+  if (rows.length > 200) throw new Error('名单最多 200 行，已取消保存（原名单未改动）')
+
+  // 兜底建表：不依赖启动时 autoMigrate，避免迁移未执行时保存失败
+  await pool.execute(
+    `CREATE TABLE IF NOT EXISTS t_activity_stat_unit_archive (
+       id            INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+       snapshot_json MEDIUMTEXT     NOT NULL COMMENT '保存前的完整名单快照(JSON)',
+       row_count     INT             NOT NULL DEFAULT 0 COMMENT '快照行数',
+       operator_id   INT UNSIGNED    DEFAULT NULL COMMENT '操作人ID',
+       operator_name VARCHAR(100)   NOT NULL DEFAULT '' COMMENT '操作人',
+       reason        VARCHAR(100)   NOT NULL DEFAULT '' COMMENT '操作说明',
+       created_at    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+       KEY idx_created (created_at)
+     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='安全活动受控单位名单-保存前快照'`
+  )
+
+  const conn = await pool.getConnection()
+  try {
+    await conn.beginTransaction()
+    const [old] = await conn.execute(
+      `SELECT id, unit_id, seq_no, unit_name, team_name, well_no, is_active, sort_no
+         FROM t_activity_stat_unit ORDER BY sort_no, seq_no, id`
+    )
+    await conn.execute(
+      `INSERT INTO t_activity_stat_unit_archive
+         (snapshot_json, row_count, operator_id, operator_name, reason)
+       VALUES (?,?,?,?,?)`,
       [
-        Number(r.unit_id) || null, seq, name.slice(0, 200),
-        String(r.team_name || '').slice(0, 100), String(r.well_no || '').slice(0, 120), i,
+        JSON.stringify(old), old.length,
+        Number(operator.id) || null,
+        String(operator.name || operator.username || '').slice(0, 100),
+        '受控单位名单保存前自动快照',
       ]
     )
-    i++
+    await conn.execute('DELETE FROM t_activity_stat_unit')
+    let i = 1
+    for (const r of rows) {
+      const seq = Number(r.seq_no) || i
+      await conn.execute(
+        `INSERT INTO t_activity_stat_unit (unit_id, seq_no, unit_name, team_name, well_no, sort_no)
+         VALUES (?,?,?,?,?,?)`,
+        [
+          Number(r.unit_id) || null, seq, r.unit_name.slice(0, 200),
+          String(r.team_name || '').slice(0, 100), String(r.well_no || '').slice(0, 120), i,
+        ]
+      )
+      i++
+    }
+    await conn.commit()
+  } catch (e) {
+    await conn.rollback()
+    throw e
+  } finally {
+    conn.release()
   }
   return statUnits()
 }
