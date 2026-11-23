@@ -81,6 +81,18 @@ const HAZARD_COLUMNS = [
 // ─── is_overdue 计算表达式（列表 / 详情 / 超期通用）──────────────────────────
 const OVERDUE_EXPR = `CASE WHEN status <> 'closed' AND plan_finish_time IS NOT NULL AND plan_finish_time < NOW() THEN 1 ELSE 0 END`
 
+// ─── 四中心站考核口径：排除工程施工类责任单位 ────────────────────────────────
+// 四中心站排名考核的是「产销厂属地生产现场」隐患；钻井、钻前、井下作业、油建、
+// 建工、设计院、工管中心、甲供料等工程施工单位的问题，责任在施工单位，
+// 不列入中心站排名（2026-11-23 业务确认）。调整口径只需改这一个数组。
+const CENTER_STATION_EXCLUDED_UNIT_KEYWORDS = ['钻井', '井下', '油建', '建工', '设计院', '工管中心', '甲供料']
+
+/** 生成「排除工程施工类责任单位」的条件片段与参数（排名与明细共用，保证口径一致）。 */
+function centerStationScope() {
+  const clause = '(' + CENTER_STATION_EXCLUDED_UNIT_KEYWORDS.map(() => "IFNULL(unit_name,'') NOT LIKE ?").join(' AND ') + ')'
+  return { clause, params: CENTER_STATION_EXCLUDED_UNIT_KEYWORDS.map((k) => `%${k}%`) }
+}
+
 // ─── 钉钉通知 fire-and-forget ────────────────────────────────────────────────
 // 事件开关统一收口到「钉钉通知设置」配置（t_system_config.dingtalk_notify_config）：
 //   - 总开关 enabled=false → 全部静默跳过
@@ -817,7 +829,13 @@ router.get('/center-station-ranking', requireAdminOrSafety, async (req, res) => 
     const params = []
     if (start_date) { where.push('report_time >= ?'); params.push(String(start_date) + ' 00:00:00') }
     if (end_date) { where.push('report_time <= ?'); params.push(String(end_date) + ' 23:59:59') }
-    if (unitFilter) { where.push('unit_name = ?'); params.push(unitFilter) }
+    if (unitFilter) {
+      // 显式指定单位时按该单位统计，不叠加默认排除（否则查施工单位会被自身条件抹掉）
+      where.push('unit_name = ?'); params.push(unitFilter)
+    } else {
+      const s = centerStationScope()
+      where.push(s.clause); params.push(...s.params)
+    }
 
     const sql = `
       SELECT center_station_name,
@@ -862,14 +880,21 @@ router.get('/center-station-ranking', requireAdminOrSafety, async (req, res) => 
     outRows.sort((a, b) => b.total - a.total)
     outRows.forEach((r, i) => { r.rank = i + 1 })
 
-    // 未归属样本（按场所聚合 Top10）
+    // 未归属样本（按场所聚合 Top10）——与排名主查询同口径
+    const unWhere = ['deleted_at IS NULL', "(center_station_name = '' OR center_station_name IS NULL)"]
+    const unParams = []
+    if (unitFilter) {
+      unWhere.push('unit_name = ?'); unParams.push(unitFilter)
+    } else {
+      const s = centerStationScope()
+      unWhere.push(s.clause); unParams.push(...s.params)
+    }
     const [unRows] = await pool.query(
       `SELECT location, COUNT(*) AS c
          FROM t_hazard
-        WHERE deleted_at IS NULL AND (center_station_name = '' OR center_station_name IS NULL)
-        ${unitFilter ? 'AND unit_name = ?' : ''}
+        WHERE ${unWhere.join(' AND ')}
         GROUP BY location ORDER BY c DESC LIMIT 10`,
-      unitFilter ? [unitFilter] : []
+      unParams
     )
     const unassignedTotal = (byCenter.get('') || { total: 0 }).total
     const sample = unRows.map((r) => ({
@@ -957,6 +982,10 @@ function buildStationDetailWhere(query) {
     filter.unit_name = unit
   } else if (unit) {
     where.push('unit_name = ?'); params.push(unit); filter.unit_name = unit
+  } else {
+    // 未指定单位时套用四中心站默认口径（排除工程施工类），与排名接口保持一致
+    const s = centerStationScope()
+    where.push(s.clause); params.push(...s.params)
   }
 
   // 看板下钻：状态（reported/assigned/rectifying/verifying/closed）与隐患等级（重大隐患/一般隐患）
@@ -1007,7 +1036,7 @@ function stationDetailFilterText(filter) {
   return {
     center,
     date: (filter.start_date || '不限') + ' ~ ' + (filter.end_date || '不限'),
-    unit: filter.unit_name || '全部单位',
+    unit: filter.unit_name || '全部单位（已排除工程施工类）',
     status: filter.status || '',
     hazard_level: filter.hazard_level || '',
     metric: STATION_METRIC_TEXT[filter.metric] || '全部隐患',

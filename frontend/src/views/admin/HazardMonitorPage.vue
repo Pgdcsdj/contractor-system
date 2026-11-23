@@ -112,7 +112,10 @@
       <div class="card-head-row">
         <h3 class="card-title">
           四中心站隐患排名（考核）
-          <span class="sub-count">（按检查时间统计，问题越多排名越前）</span>
+          <span
+            class="sub-count"
+            title="统计口径：已排除钻井、井下作业、油建、建工、设计院、工管中心、甲供料等工程施工类责任单位——这些单位的问题责任在施工单位，不列入中心站考核。"
+          >（按检查时间统计，问题越多排名越前；已排除工程施工类）</span>
         </h3>
         <div class="rank-filter">
           <input v-model="rankStart" type="date" class="filter-date" />
