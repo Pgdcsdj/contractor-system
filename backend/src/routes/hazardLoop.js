@@ -81,16 +81,20 @@ const HAZARD_COLUMNS = [
 // ─── is_overdue 计算表达式（列表 / 详情 / 超期通用）──────────────────────────
 const OVERDUE_EXPR = `CASE WHEN status <> 'closed' AND plan_finish_time IS NOT NULL AND plan_finish_time < NOW() THEN 1 ELSE 0 END`
 
-// ─── 四中心站考核口径：排除工程施工类责任单位 ────────────────────────────────
-// 四中心站排名考核的是「产销厂属地生产现场」隐患；钻井、钻前、井下作业、油建、
-// 建工、设计院、工管中心、甲供料等工程施工单位的问题，责任在施工单位，
-// 不列入中心站排名（2026-11-23 业务确认）。调整口径只需改这一个数组。
-const CENTER_STATION_EXCLUDED_UNIT_KEYWORDS = ['钻井', '井下', '油建', '建工', '设计院', '工管中心', '甲供料']
+// ─── 四中心站考核口径：只统计产销厂属地责任单位（白名单） ─────────────────────
+// 四中心站排名考核的是「产销厂属地生产现场」隐患，责任主体是天然气产销厂通南巴项目部。
+// 以下单位的问题责任不在产销厂属地，一律不列入中心站排名（2026-11-23 业务确认）：
+//   · 工程施工类：钻井、钻前、井下作业、油建、建工、设计院、工管中心、甲供料
+//   · 生产运行类：天然气处理厂、采油气工程服务中心
+//   · 其他服务类：测控、试油气、外部承包商等
+// 历史上曾用「排除关键词」黑名单，已连续两轮补词仍漏（测控/兴澳/试油气等），
+// 故改为白名单：只认产销厂，新增任何外部单位自动不进排名，无需再改代码。
+const CENTER_STATION_INCLUDED_UNIT_KEYWORDS = ['产销厂']
 
-/** 生成「排除工程施工类责任单位」的条件片段与参数（排名与明细共用，保证口径一致）。 */
+/** 生成「只统计产销厂属地单位」的条件片段与参数（排名与明细共用，保证口径一致）。 */
 function centerStationScope() {
-  const clause = '(' + CENTER_STATION_EXCLUDED_UNIT_KEYWORDS.map(() => "IFNULL(unit_name,'') NOT LIKE ?").join(' AND ') + ')'
-  return { clause, params: CENTER_STATION_EXCLUDED_UNIT_KEYWORDS.map((k) => `%${k}%`) }
+  const clause = '(' + CENTER_STATION_INCLUDED_UNIT_KEYWORDS.map(() => "IFNULL(unit_name,'') LIKE ?").join(' OR ') + ')'
+  return { clause, params: CENTER_STATION_INCLUDED_UNIT_KEYWORDS.map((k) => `%${k}%`) }
 }
 
 // ─── 钉钉通知 fire-and-forget ────────────────────────────────────────────────
@@ -830,7 +834,7 @@ router.get('/center-station-ranking', requireAdminOrSafety, async (req, res) => 
     if (start_date) { where.push('report_time >= ?'); params.push(String(start_date) + ' 00:00:00') }
     if (end_date) { where.push('report_time <= ?'); params.push(String(end_date) + ' 23:59:59') }
     if (unitFilter) {
-      // 显式指定单位时按该单位统计，不叠加默认排除（否则查施工单位会被自身条件抹掉）
+      // 显式指定单位时按该单位统计，不叠加默认白名单（否则筛外部单位会查不到数据）
       where.push('unit_name = ?'); params.push(unitFilter)
     } else {
       const s = centerStationScope()
@@ -983,7 +987,7 @@ function buildStationDetailWhere(query) {
   } else if (unit) {
     where.push('unit_name = ?'); params.push(unit); filter.unit_name = unit
   } else {
-    // 未指定单位时套用四中心站默认口径（排除工程施工类），与排名接口保持一致
+    // 未指定单位时套用四中心站默认口径（只统计产销厂属地），与排名接口保持一致
     const s = centerStationScope()
     where.push(s.clause); params.push(...s.params)
   }
@@ -1036,7 +1040,7 @@ function stationDetailFilterText(filter) {
   return {
     center,
     date: (filter.start_date || '不限') + ' ~ ' + (filter.end_date || '不限'),
-    unit: filter.unit_name || '全部单位（已排除工程施工类）',
+    unit: filter.unit_name || '全部单位（仅产销厂属地）',
     status: filter.status || '',
     hazard_level: filter.hazard_level || '',
     metric: STATION_METRIC_TEXT[filter.metric] || '全部隐患',
