@@ -42,6 +42,7 @@ const hazardStandardRoutes   = require('./routes/hazardStandard')  // 隐患排�
 const activityRoutes         = require('./routes/activity')         // 承包商安全活动（管理端：周一周三/类比排查）
 const activityOpenRoutes     = require('./routes/activityOpen')     // 承包商安全活动（公开免登录填报端）
 const sitePermitRoutes       = require('./routes/sitePermit')       // 直接作业预约报备（钉钉表格同步）
+const trainingArchiveRoutes  = require('./routes/trainingArchive')  // 培训档案（一期一档/一人一档导出）
 
 // ─── 系统版本常量（与前端 src/version.js 保持一致）─────────────────────
 const { APP_VERSION, BUILD_DATE } = require('./version')
@@ -1099,6 +1100,50 @@ async function autoMigrate() {
     `)
     console.log('[migrate] ✅ 直接作业预约报备表结构已就绪')
 
+    // ── 培训档案（一期一档）：培训场次 + 场次↔试卷关联 ──────────────────────
+    // 制度依据：中原油勘制〔2024〕39号 3.10.1「一期一档」、3.10.2「一人一档」。
+    // 考试记录（t_record）只能证明"谁考了多少分"，培训日期/地点/主讲/学时必须由
+    // 管理员在「培训场次」里确认录入——不得用答题时间推算，否则构成编造培训记录
+    // （《生产经营单位安全培训规定》第31条）。
+    await ensureTable(`
+      CREATE TABLE IF NOT EXISTS t_training_session (
+        id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        title           VARCHAR(200)  NOT NULL COMMENT '培训名称',
+        category_id     INT UNSIGNED  DEFAULT NULL COMMENT '培训类别，同 t_material_category',
+        session_date    DATE          NOT NULL COMMENT '培训实施日期（人工确认，非答题时间）',
+        time_range      VARCHAR(50)   NOT NULL DEFAULT '' COMMENT '如 09:00-11:30',
+        location        VARCHAR(200)  NOT NULL DEFAULT '' COMMENT '培训地点',
+        lecturer        VARCHAR(100)  NOT NULL DEFAULT '' COMMENT '主讲人',
+        lecturer_unit   VARCHAR(150)  NOT NULL DEFAULT '' COMMENT '主讲人单位',
+        hours           DECIMAL(4,1)  NOT NULL DEFAULT 0.0 COMMENT '本次培训学时（档案核心字段）',
+        train_mode      VARCHAR(30)   NOT NULL DEFAULT '' COMMENT '集中授课/现场实操/视频学习/会议宣贯/网络自学',
+        organizer       VARCHAR(150)  NOT NULL DEFAULT '' COMMENT '组织单位',
+        target_desc     VARCHAR(500)  NOT NULL DEFAULT '' COMMENT '参训范围说明',
+        expected_count  INT           DEFAULT NULL COMMENT '应参人数（NULL=按目标人群自动计算）',
+        assessment_type VARCHAR(30)   NOT NULL DEFAULT '' COMMENT '闭卷考试/实操考核/问答/无考核',
+        doc_checklist   JSON          DEFAULT NULL COMMENT '附件到位情况 {notice,plan,sign,ppt,paper,score,eval}',
+        status          VARCHAR(16)   NOT NULL DEFAULT 'planned' COMMENT 'planned/done/archived',
+        remark          VARCHAR(500)  NOT NULL DEFAULT '',
+        created_by      INT UNSIGNED  DEFAULT NULL,
+        created_at      DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at      DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        KEY idx_session_date (session_date),
+        KEY idx_category (category_id),
+        KEY idx_status (status)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='培训场次（一期一档主实体）'
+    `)
+    await ensureTable(`
+      CREATE TABLE IF NOT EXISTS t_training_session_material (
+        id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        session_id  INT UNSIGNED NOT NULL,
+        material_id INT UNSIGNED NOT NULL,
+        created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uk_session_material (session_id, material_id),
+        KEY idx_material (material_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='培训场次关联的试卷/题库'
+    `)
+    console.log('[migrate] ✅ 培训档案（一期一档）表结构已就绪')
+
     console.log('[migrate] ✅ 隐患闭环相关表结构已就绪')
   } catch (err) {
     console.error('[migrate] 自动迁移失败:', err.message)
@@ -1146,6 +1191,7 @@ app.use('/api/open/activity', activityOpenRoutes)           // 承包商安全�
 app.use('/api/quality', qualityRoutes)                      // 出题质量量化校验与追踪
 app.use('/api/notify-config', notifyConfigRoutes)            // 钉钉通知开关配置（后台可设）
 app.use('/api/site-permit', sitePermitRoutes)                // 直接作业预约报备（钉钉表格同步）
+app.use('/api/training-archive', trainingArchiveRoutes)      // 培训档案（一期一档/一人一档）
 
 // ─── 直接作业预约报备：每天 22:00 从钉钉表格同步 ─────────────────────────────
 // 时区 Asia/Shanghai（容器 ENV 已设）；配置开关在 /api/site-permit/config。

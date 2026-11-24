@@ -42,6 +42,10 @@
           <Icon name="clipboard" :size="20" class="nav-icon" />
           <span v-if="!sidebarCollapsed" class="nav-label">答题记录</span>
         </router-link>
+        <router-link to="/admin/training-archive" class="nav-item">
+          <Icon name="inbox" :size="20" class="nav-icon" />
+          <span v-if="!sidebarCollapsed" class="nav-label">培训档案</span>
+        </router-link>
 
         <!-- 分组：承包商安全活动 -->
         <div v-if="!sidebarCollapsed" class="nav-group-title">承包商安全活动</div>

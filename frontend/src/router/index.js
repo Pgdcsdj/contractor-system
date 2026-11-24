@@ -134,6 +134,12 @@ const routes = [
         component: () => import('@/views/admin/RecordsPage.vue'),
       },
       {
+        // 培训档案：一期一档 / 一人一档（应对上级检查）
+        path: 'training-archive',
+        name: 'TrainingArchive',
+        component: () => import('@/views/admin/TrainingArchivePage.vue'),
+      },
+      {
         path: 'records/:id',
         name: 'RecordGrade',
         component: () => import('@/views/admin/EssayGradePage.vue'),
