@@ -76,6 +76,7 @@
             </td>
             <td>
               <button class="btn btn-sm btn-primary" @click="openDetail(r.id)">明细</button>
+              <button class="btn btn-sm btn-outline" style="margin-left:6px" @click="exportDetailPdf(r.id)">PDF</button>
               <button v-if="r.needs_grading" class="btn btn-sm btn-outline" style="margin-left:6px" @click="goGrade(r.id)">评分</button>
             </td>
           </tr>
@@ -95,7 +96,14 @@
       <div class="detail-panel">
         <div class="detail-head">
           <div class="detail-title">答题明细</div>
-          <button class="detail-close" @click="closeDetail">✕</button>
+          <div class="detail-head-actions">
+            <button
+              class="btn btn-sm btn-outline"
+              :disabled="!detailData || detailLoading"
+              @click="exportDetailPdf(detailData?.record?.id)"
+            >📄 导出答题情况 PDF</button>
+            <button class="detail-close" @click="closeDetail">✕</button>
+          </div>
         </div>
 
         <div class="detail-body" v-if="detailData">
@@ -307,6 +315,13 @@ function exportExcel() {
   window.open(`/api/record/export?${params}&token=${token}`, '_blank')
 }
 
+// 单条答题明细导出 PDF：走 ?token= 直链，window.open 无法携带 Authorization 头
+function exportDetailPdf(id) {
+  if (!id) return
+  const token = localStorage.getItem('tnb_admin_token') || ''
+  window.open(`/api/record/${id}/detail-pdf?token=${encodeURIComponent(token)}`, '_blank')
+}
+
 onMounted(() => {
   fetchRecords()
   fetchTrainings()
@@ -404,6 +419,7 @@ onMounted(() => {
   position: sticky; top: 0; background: #fff; z-index: 2;
 }
 .detail-title { font-size: 16px; font-weight: 600; }
+.detail-head-actions { display: flex; align-items: center; gap: 10px; }
 .detail-close { border: none; background: #f0f0f0; width: 28px; height: 28px; border-radius: 50%; cursor: pointer; font-size: 14px; }
 .detail-close:hover { background: #e0e0e0; }
 .detail-body { padding: 16px 18px; overflow-y: auto; }

@@ -11,6 +11,8 @@ RUN addgroup -g 1001 -S nodejs && adduser -S nodeapp -u 1001
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package*.json ./
 COPY --from=builder /app/src ./src
+# 答题明细 PDF 导出所需中文字体（Noto Sans CJK SC 子集，约 6.8MB）
+COPY --from=builder /app/assets/fonts ./assets/fonts
 USER nodeapp
 EXPOSE 3000
 ENV NODE_ENV=production PORT=3000 TZ=Asia/Shanghai

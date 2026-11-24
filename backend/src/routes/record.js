@@ -10,6 +10,7 @@
 const express = require('express')
 const { queryRecords, getRecordById, saveEssayGrades } = require('../services/recordService')
 const { exportRecordsToExcel } = require('../services/exportExcel')
+const { generateRecordDetailPdf, detailPdfFilename } = require('../services/exportRecordDetailPdf')
 const { pool }               = require('../db/db')
 const { verifyAdminToken }   = require('../services/adminAuth')
 const { signRecord }         = require('../utils/hashHelper')
@@ -389,6 +390,78 @@ router.patch('/:id/essay-grade', adminAuth, async (req, res) => {
   }
 })
 
+// 组装单条答题逐题明细，供「明细 JSON」与「明细 PDF」两个接口共用，
+// 保证两条链路的取数口径、字段、题目顺序完全一致（避免 PDF 与页面对不上）。
+async function buildRecordDetailData(id) {
+  const rec = await getRecordById(id)
+  if (!rec) return null
+
+  // answers 快照（提交时存档：{questionId, answer, isCorrect, score, analysis}）
+  let answers = rec.answers
+  if (typeof answers === 'string') {
+    try { answers = JSON.parse(answers) } catch { answers = [] }
+  }
+  if (!Array.isArray(answers)) answers = []
+
+  // 该题库全部启用题目（含选项/配图/正确答案/解析），用于匹配补全展示信息
+  const [questions] = await pool.query(
+    `SELECT id, type, question, options, answer, analysis, score, image_url, sort_order
+     FROM t_question WHERE material_id = ? AND status = 1`,
+    [rec.material_id]
+  )
+  const qMap = new Map(questions.map(q => [Number(q.id), q]))
+
+  // 合并明细：顺序 = 用户实际作答顺序（exam 即为本次卷面；study/practice 为全量）
+  const detail = answers.map((a, idx) => {
+    const q = qMap.get(Number(a.questionId)) || {}
+    let options = null
+    if (q.options) {
+      try { options = typeof q.options === 'string' ? JSON.parse(q.options) : q.options } catch { options = null }
+    }
+    return {
+      index: idx + 1,
+      questionId: Number(a.questionId),
+      type: q.type || '',
+      question: q.question || '',
+      imageUrl: q.image_url || null,
+      options,                                       // {A:'..',B:'..'} 或 null（判断题）
+      userAnswer: a.answer == null ? '' : String(a.answer),
+      correctAnswer: q.answer == null ? '' : String(q.answer),
+      isCorrect: !!a.isCorrect,
+      score: Number(a.score) || 0,
+      maxScore: Number(q.score) || 0,
+      analysis: q.analysis || a.analysis || '',
+      comment: a.comment || null,                   // 人工批改评语（essay 题）
+    }
+  })
+
+  const maxScore = Number(rec.max_score) || 0
+  const passed = maxScore > 0 && Math.round(Number(rec.score) / maxScore * 100) >= Number(rec.pass_score || 0)
+
+  return {
+    record: {
+      id: rec.id,
+      userName: rec.user_name,
+      unit: rec.unit,
+      supervisingUnit: rec.supervising_unit,
+      materialId: rec.material_id,
+      materialTitle: rec.material_title,
+      score: Number(rec.score),
+      maxScore,
+      passScore: Number(rec.pass_score || 0),
+      passed,
+      durationSec: rec.duration_sec,
+      submittedAt: rec.submitted_at,
+      mode: rec.mode,
+      isOffline: rec.is_offline,
+      essayGraded: rec.essay_graded || 0,
+    },
+    totalCorrect: detail.filter(d => d.isCorrect).length,
+    totalCount: detail.length,
+    detail,
+  }
+}
+
 // ─── GET /api/record/:id/detail ───────────────────────────────────────────
 // 答题逐题明细：管理员点击成绩后查看具体作答情况（题干/选项/用户答案/正确答案/配图/解析/对错/分值）
 // 以用户实际作答顺序(answers 快照)为准，从题库补全 options/image_url/answer/analysis，组装成可直接渲染的明细数组
@@ -398,79 +471,36 @@ router.get('/:id/detail', adminAuth, async (req, res) => {
     const id = Number(req.params.id)
     if (!Number.isInteger(id) || id <= 0) return sendError(res, 400, '记录ID不合法')
 
-    const rec = await getRecordById(id)
-    if (!rec) return sendError(res, 404, '答题记录不存在')
+    const data = await buildRecordDetailData(id)
+    if (!data) return sendError(res, 404, '答题记录不存在')
 
-    // answers 快照（提交时存档：{questionId, answer, isCorrect, score, analysis}）
-    let answers = rec.answers
-    if (typeof answers === 'string') {
-      try { answers = JSON.parse(answers) } catch { answers = [] }
-    }
-    if (!Array.isArray(answers)) answers = []
-
-    // 该题库全部启用题目（含选项/配图/正确答案/解析），用于匹配补全展示信息
-    const [questions] = await pool.query(
-      `SELECT id, type, question, options, answer, analysis, score, image_url, sort_order
-       FROM t_question WHERE material_id = ? AND status = 1`,
-      [rec.material_id]
-    )
-    const qMap = new Map(questions.map(q => [Number(q.id), q]))
-
-    // 合并明细：顺序 = 用户实际作答顺序（exam 即为本次卷面；study/practice 为全量）
-    const detail = answers.map((a, idx) => {
-      const q = qMap.get(Number(a.questionId)) || {}
-      let options = null
-      if (q.options) {
-        try { options = typeof q.options === 'string' ? JSON.parse(q.options) : q.options } catch { options = null }
-      }
-      return {
-        index: idx + 1,
-        questionId: Number(a.questionId),
-        type: q.type || '',
-        question: q.question || '',
-        imageUrl: q.image_url || null,
-        options,                                       // {A:'..',B:'..'} 或 null（判断题）
-        userAnswer: a.answer == null ? '' : String(a.answer),
-        correctAnswer: q.answer == null ? '' : String(q.answer),
-        isCorrect: !!a.isCorrect,
-        score: Number(a.score) || 0,
-        maxScore: Number(q.score) || 0,
-        analysis: q.analysis || a.analysis || '',
-        comment: a.comment || null,                   // 人工批改评语（essay 题）
-      }
-    })
-
-    const maxScore = Number(rec.max_score) || 0
-    const passed = maxScore > 0 && Math.round(Number(rec.score) / maxScore * 100) >= Number(rec.pass_score || 0)
-
-    res.json({
-      success: true,
-      data: {
-        record: {
-          id: rec.id,
-          userName: rec.user_name,
-          unit: rec.unit,
-          supervisingUnit: rec.supervising_unit,
-          materialId: rec.material_id,
-          materialTitle: rec.material_title,
-          score: Number(rec.score),
-          maxScore,
-          passScore: Number(rec.pass_score || 0),
-          passed,
-          durationSec: rec.duration_sec,
-          submittedAt: rec.submitted_at,
-          mode: rec.mode,
-          isOffline: rec.is_offline,
-          essayGraded: rec.essay_graded || 0,
-        },
-        totalCorrect: detail.filter(d => d.isCorrect).length,
-        totalCount: detail.length,
-        detail,
-      },
-    })
+    res.json({ success: true, data })
   } catch (err) {
     sendError(res, 500, '服务器内部错误')
     console.error('[record.detail]', err)
+  }
+})
+
+// ─── GET /api/record/:id/detail-pdf ───────────────────────────────────────
+// 把该条记录的逐题作答明细导出为可归档 PDF（用于上级检查/培训档案留存）。
+// 走 ?token= 直链下载，与 export Excel 一致；regist 在 /:id/detail 之后，路径段数不同不会被吞。
+router.get('/:id/detail-pdf', adminAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id)
+    if (!Number.isInteger(id) || id <= 0) return sendError(res, 400, '记录ID不合法')
+
+    const data = await buildRecordDetailData(id)
+    if (!data) return sendError(res, 404, '答题记录不存在')
+
+    const buffer = await generateRecordDetailPdf(data)
+    const filename = encodeURIComponent(detailPdfFilename(data, id))
+    res.setHeader('Content-Type', 'application/pdf')
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${filename}`)
+    res.setHeader('Content-Length', buffer.length)
+    res.send(buffer)
+  } catch (err) {
+    sendError(res, 500, 'PDF 生成失败：' + (err.message || '未知错误'))
+    console.error('[record.detail-pdf]', err)
   }
 })
 
