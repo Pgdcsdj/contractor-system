@@ -55,18 +55,19 @@ function sendError(res, status, message) {
 // ─── GET /api/record/list ───────────────────────────────────────────────────
 router.get('/list', async (req, res) => {
   // keyword/passed 必须透传（此前漏接导致页面"及格/不及格"筛选完全失效，export 路由早已补接）
-  const { userId, materialId, unit, dateFrom, dateTo, keyword, passed, page, pageSize } = req.query
+  // mode/includeAll：成绩单默认只列考试记录，练习/学习记录需显式 includeAll=1 才出现
+  const { userId, materialId, unit, dateFrom, dateTo, keyword, passed, mode, includeAll, page, pageSize } = req.query
 
-  const result = await queryRecords({ userId, materialId, unit, dateFrom, dateTo, keyword, passed, page, pageSize })
+  const result = await queryRecords({ userId, materialId, unit, dateFrom, dateTo, keyword, passed, mode, includeAll, page, pageSize })
   res.json({ success: true, data: result })
 })
 
 // ─── GET /api/record/export ─────────────────────────────────────────────────
 router.get('/export', async (req, res) => {
-  const { userId, materialId, unit, dateFrom, dateTo, keyword, passed } = req.query
+  const { userId, materialId, unit, dateFrom, dateTo, keyword, passed, mode, includeAll } = req.query
 
-  // 与页面筛选完全同口径导出（含 keyword/passed）；allowLarge 放开 pageSize 钳制，最多 5000 条（防内存溢出）
-  const result = await queryRecords({ userId, materialId, unit, dateFrom, dateTo, keyword, passed, pageSize: 5000, allowLarge: true })
+  // 与页面筛选完全同口径导出（含 keyword/passed/mode）；allowLarge 放开 pageSize 钳制，最多 5000 条（防内存溢出）
+  const result = await queryRecords({ userId, materialId, unit, dateFrom, dateTo, keyword, passed, mode, includeAll, pageSize: 5000, allowLarge: true })
   const buffer = exportRecordsToExcel(result.list)
 
   const now      = new Date().toLocaleDateString('zh-CN').replace(/\//g, '')
@@ -91,10 +92,11 @@ router.get('/summary', async (req, res) => {
   )
 
   // 累计答题次数（不去重，代表"已完成答题"总次数）
+  // ⚠ 只算正式考试：练习/学习不抽题、满分非 100，计入会让完成率与通过率双双失真
   const [[{ totalCompleted }]] = await pool.execute(
     `SELECT COUNT(*) AS totalCompleted
        FROM t_record r JOIN t_user u ON u.id = r.user_id
-      WHERE u.supervising_unit = ?`,
+      WHERE u.supervising_unit = ? AND r.mode = 'exam'`,
     [SCOPE_SUPERVISING_UNIT]
   )
 
@@ -107,15 +109,22 @@ router.get('/summary', async (req, res) => {
   const [[{ todayCompleted }]] = await pool.execute(
     `SELECT COUNT(DISTINCT r.user_id) AS todayCompleted
        FROM t_record r JOIN t_user u ON u.id = r.user_id
-      WHERE DATE(r.submitted_at) = CURDATE() AND u.supervising_unit = ?`,
+      WHERE DATE(r.submitted_at) = CURDATE() AND u.supervising_unit = ? AND r.mode = 'exam'`,
     [SCOPE_SUPERVISING_UNIT]
   )
 
-  // 今日通过人数（score >= 60 视为通过）
+  // 今日通过人数
+  // ⚠ 通过判定必须用「百分比 ≥ 该试卷 pass_score」口径：
+  //   原来直接写 r.score >= 60，各卷及格线不同（吊装卷 pass_score=80），70 分会被错算成通过。
   const [[{ todayPassed }]] = await pool.execute(
     `SELECT COUNT(DISTINCT r.user_id) AS todayPassed
-       FROM t_record r JOIN t_user u ON u.id = r.user_id
-      WHERE DATE(r.submitted_at) = CURDATE() AND r.score >= 60 AND u.supervising_unit = ?`,
+       FROM t_record r
+       JOIN t_user     u ON u.id = r.user_id
+       JOIN t_material m ON m.id = r.material_id
+      WHERE DATE(r.submitted_at) = CURDATE() AND u.supervising_unit = ?
+        AND r.mode = 'exam'
+        AND r.max_score > 0
+        AND ROUND(r.score / r.max_score * 100) >= m.pass_score`,
     [SCOPE_SUPERVISING_UNIT]
   )
 
@@ -153,13 +162,14 @@ router.get('/incomplete', async (req, res) => {
   let rows
   if (materialId) {
     // 指定培训：未完成该题库的所有活跃用户
+    // ⚠ 只认正式考试记录：只做了练习/学习的人同样算"未参加考试"，必须留在催促名单里
     ;[rows] = await pool.execute(
       `SELECT u.id, u.name, u.unit, u.phone
        FROM t_user u
        WHERE u.status = 1 AND u.supervising_unit = ?
          AND NOT EXISTS (
            SELECT 1 FROM t_record r
-           WHERE r.user_id = u.id AND r.material_id = ?
+           WHERE r.user_id = u.id AND r.material_id = ? AND r.mode = 'exam'
          )
        ORDER BY u.unit, u.name`,
       [SCOPE_SUPERVISING_UNIT, materialId]
@@ -172,7 +182,7 @@ router.get('/incomplete', async (req, res) => {
        WHERE u.status = 1 AND u.supervising_unit = ?
          AND NOT EXISTS (
            SELECT 1 FROM t_record r
-           WHERE r.user_id = u.id AND DATE(r.submitted_at) = CURDATE()
+           WHERE r.user_id = u.id AND DATE(r.submitted_at) = CURDATE() AND r.mode = 'exam'
          )
        ORDER BY u.unit, u.name`,
       [SCOPE_SUPERVISING_UNIT]
@@ -192,7 +202,7 @@ router.get('/completed', async (req, res) => {
               MAX(r.submitted_at) AS last_submit
          FROM t_record r
          JOIN t_user u ON u.id = r.user_id
-        WHERE DATE(r.submitted_at) = CURDATE() AND u.supervising_unit = ?
+        WHERE DATE(r.submitted_at) = CURDATE() AND u.supervising_unit = ? AND r.mode = 'exam'
         GROUP BY u.id, u.name, u.unit, u.phone
         ORDER BY last_submit DESC`,
       [SCOPE_SUPERVISING_UNIT]

@@ -9,6 +9,9 @@
 const { pool }                    = require('../db/db')
 const { signRecord, verifyRecord } = require('../utils/hashHelper')
 
+// 三种作答模式（与 routes/quiz.js 的 QUIZ_MODES 保持一致）
+const QUIZ_MODES_LIST = ['study', 'practice', 'exam']
+
 /**
  * 提交单次答题记录
  * @param {object} params
@@ -88,15 +91,28 @@ async function hasCompleted(userId, materialId) {
 
 /**
  * 管理员查询答题记录列表
- * 支持筛选：userId / materialId / unit / dateFrom / dateTo / keyword(姓名或手机) / passed(0|1)
+ * 支持筛选：userId / materialId / unit / dateFrom / dateTo / keyword(姓名或手机) / passed(0|1) / mode
  * allowLarge: 导出场景专用——放开 100 条钳制（上限 5000）；普通列表一律钳 100，防滥用
+ *
+ * ⚠️ 模式口径（2026-11-24）：成绩单默认只列「考试 exam」记录。
+ * 练习(practice)/学习(study)模式不抽题、整库下发（如 200 题满分 260），
+ * 若混入考试成绩列表会出现 260/260 之类误导性数字，且会污染通过率与催促名单。
+ * includeAll=1 时才放开全部模式；显式传 mode 则按该模式过滤。
  */
-async function queryRecords({ userId, materialId, unit, dateFrom, dateTo, keyword, passed, page = 1, pageSize = 20, allowLarge = false }) {
+async function queryRecords({ userId, materialId, unit, dateFrom, dateTo, keyword, passed, mode, includeAll, page = 1, pageSize = 20, allowLarge = false }) {
   const cap = allowLarge ? 5000 : 100
   const safePageSize = Math.min(cap, Math.max(1, Number(pageSize) || 20))
   const safeOffset   = (Math.max(1, Number(page) || 1) - 1) * safePageSize
   let where = 'WHERE 1=1'
   const params = []
+
+  const wantMode = String(mode || '').trim().toLowerCase()
+  const showAll  = includeAll === '1' || includeAll === 1 || includeAll === true || includeAll === 'true'
+  if (QUIZ_MODES_LIST.includes(wantMode)) {
+    where += ' AND r.mode = ?'; params.push(wantMode)
+  } else if (!showAll) {
+    where += " AND r.mode = 'exam'"
+  }
 
   if (userId)     { where += ' AND r.user_id = ?';          params.push(userId) }
   if (materialId) { where += ' AND r.material_id = ?';      params.push(materialId) }

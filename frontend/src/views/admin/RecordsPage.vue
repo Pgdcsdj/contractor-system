@@ -13,6 +13,11 @@
           <option value="1">及格</option>
           <option value="0">不及格</option>
         </select>
+        <!-- 默认只列正式考试：练习/学习模式不抽题、整库下发，满分可能是 260，混入会误导 -->
+        <label class="mode-toggle" title="默认只显示正式考试记录。练习/学习模式不抽题、整库下发（例如 200 题满分 260），勾选后一并显示，此时得分不能与考试成绩直接比较。">
+          <input v-model="filters.showAllModes" type="checkbox" @change="fetchRecords" />
+          含练习/学习记录
+        </label>
         <input v-model="filters.startDate" type="date" class="filter-input date-input" @change="fetchRecords" />
         <span class="date-sep">至</span>
         <input v-model="filters.endDate" type="date" class="filter-input date-input" @change="fetchRecords" />
@@ -50,6 +55,10 @@
               <button class="score-btn" :class="r.passed ? 'pass' : 'fail'" @click="openDetail(r.id)">
                 {{ r.score }}/{{ r.max_score }}分
               </button>
+              <!-- 非考试记录（勾选"含练习/学习记录"时才可能出现）用徽章明确标注，避免与考试成绩混淆 -->
+              <span v-if="r.mode && r.mode !== 'exam'" class="mode-tag" :class="'mode-' + r.mode">
+                {{ modeText(r.mode) }}
+              </span>
             </td>
             <td><span :class="['badge', r.passed ? 'badge-success' : 'badge-danger']">{{ r.passed ? '及格' : '不及格' }}</span></td>
             <td class="time-cell">{{ formatTime(r.submitted_at) }}</td>
@@ -184,6 +193,7 @@ const pageSize = 20
 const filters = ref({
   keyword: '', training: '', passed: '',
   startDate: '', endDate: '',
+  showAllModes: false, // 默认只看正式考试；勾选后包含练习/学习记录
 })
 
 // 明细弹窗状态
@@ -200,6 +210,7 @@ function debounceFetch() {
 }
 
 // 后端参数映射：training→materialId、startDate→dateFrom、endDate→dateTo、keyword/passed 透传
+// showAllModes → includeAll=1（放开模式过滤，默认后端只返回 exam）
 function buildParams() {
   const params = { page: page.value, pageSize }
   if (filters.value.keyword)   params.keyword = filters.value.keyword
@@ -207,6 +218,7 @@ function buildParams() {
   if (filters.value.passed !== '') params.passed = filters.value.passed
   if (filters.value.startDate) params.dateFrom = filters.value.startDate
   if (filters.value.endDate)   params.dateTo = filters.value.endDate
+  if (filters.value.showAllModes) params.includeAll = 1
   return params
 }
 
@@ -317,6 +329,21 @@ onMounted(() => {
   padding: 8px 10px; border: 1px solid var(--border);
   border-radius: 8px; font-size: 13px; background: #fff;
 }
+/* 「含练习/学习记录」开关：与既有筛选控件同高，虚线边框提示这是可选的放宽项 */
+.mode-toggle {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 13px; color: var(--text-secondary); cursor: pointer;
+  padding: 7px 10px; border: 1px dashed var(--border); border-radius: 8px; white-space: nowrap;
+}
+.mode-toggle input { margin: 0; cursor: pointer; }
+.mode-toggle:hover { border-color: var(--primary); color: var(--primary); }
+/* 非考试记录徽章：沿用答题列表页（QuizListPage）的既有配色，保持全站一致 */
+.mode-tag {
+  display: inline-block; margin-left: 6px; padding: 1px 6px;
+  font-size: 11px; border-radius: 4px; vertical-align: middle; border: 1px solid transparent;
+}
+.mode-tag.mode-practice { background: #FBF1E0; color: #C2740B; border-color: #F3DDAE; }
+.mode-tag.mode-study    { background: #EAF3FB; color: #155A96; border-color: #BFE0F5; }
 .toolbar-right { display: flex; align-items: center; gap: 12px; white-space: nowrap; }
 .total-count { font-size: 13px; color: var(--text-secondary); }
 

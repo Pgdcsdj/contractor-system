@@ -768,9 +768,10 @@ router.post('/:materialId/submit', authMiddleware, async (req, res) => {
     const scoreOf = (q) => (scoreCfg[q.type] > 0 ? scoreCfg[q.type] : q.score)
 
     // 考试次数限制（轻量拦截：基于已有记录数；P0 采用覆盖式提交，仅做提示性拦截）
+    // ⚠ 只统计 exam 记录：练习/学习属于练手，不应消耗正式考试次数
     if (material.attempt_limit > 0 && mode === QUIZ_MODES.EXAM) {
       const [[{ cnt }]] = await pool.execute(
-        'SELECT COUNT(*) AS cnt FROM t_record WHERE user_id = ? AND material_id = ?',
+        "SELECT COUNT(*) AS cnt FROM t_record WHERE user_id = ? AND material_id = ? AND mode = 'exam'",
         [userId, materialId]
       )
       if (cnt >= material.attempt_limit) {
