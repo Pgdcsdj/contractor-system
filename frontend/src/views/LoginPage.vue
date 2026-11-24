@@ -20,7 +20,7 @@
       <button class="btn btn-primary full-btn" @click="handleManualLogin" :disabled="loading || !name || !idCard">
         {{ loading ? '验证中…' : '开始答题' }}
       </button>
-      <p class="toggle-link" @click="showRegister = true">没有账号？点击注册</p>
+      <p class="toggle-link" @click="openRegister">没有账号？点击注册</p>
     </div>
 
     <!-- 补全信息区域（登录失败且库里没有该名员工，自动弹出） -->
@@ -35,9 +35,17 @@
       </div>
       <div class="form-group">
         <select v-model="compUnitId" class="form-input" @change="onUnitChange">
-          <option value="">所属承包商单位（下拉选择，可空）</option>
+          <option value="">请选择所属承包商单位 *</option>
           <option v-for="u in units" :key="u.id" :value="u.id">{{ u.unit_name }}</option>
+          <option value="__other__">其他（不在清单内，需管理员审核）</option>
         </select>
+        <input
+          v-if="compUnitId === '__other__'"
+          v-model="compOtherUnit"
+          class="form-input"
+          placeholder="请填写实际单位名称 *（提交后由管理员审核）"
+          type="text"
+        />
       </div>
       <div class="form-group">
         <div class="form-label">主管单位（甲方）<span style="color:#e5484d">*</span></div>
@@ -51,7 +59,11 @@
       <div class="form-group">
         <input v-model="compPosition" class="form-input" placeholder="岗位" type="text" />
       </div>
-      <button class="btn btn-primary full-btn" @click="handleComplete" :disabled="loading || !compIdCard || !compSupervisingUnit">
+      <button
+        class="btn btn-primary full-btn"
+        @click="handleComplete"
+        :disabled="loading || !compIdCard || !compSupervisingUnit || !compUnitId || (compUnitId === '__other__' && !compOtherUnit.trim())"
+      >
         {{ loading ? '提交中…' : '补全并进入' }}
       </button>
       <p class="toggle-link" @click="backToLogin">返回登录</p>
@@ -68,7 +80,18 @@
         <input v-model="regIdCard" class="form-input" placeholder="身份证号 *" type="text" maxlength="18" />
       </div>
       <div class="form-group">
-        <input v-model="regUnit" class="form-input" placeholder="所属承包商单位 *" type="text" />
+        <select v-model="regUnitId" class="form-input" @change="onRegUnitChange">
+          <option value="">请选择所属承包商单位 *</option>
+          <option v-for="u in units" :key="u.id" :value="u.id">{{ u.unit_name }}</option>
+          <option value="__other__">其他（不在清单内，需管理员审核）</option>
+        </select>
+        <input
+          v-if="regUnitId === '__other__'"
+          v-model="regUnit"
+          class="form-input"
+          placeholder="请填写实际单位名称 *（提交后由管理员审核）"
+          type="text"
+        />
       </div>
       <div class="form-group">
         <div class="form-label">主管单位（甲方）<span style="color:#e5484d">*</span></div>
@@ -79,7 +102,11 @@
       <div class="form-group">
         <input v-model="regPhone" class="form-input" placeholder="手机号 *" type="text" maxlength="11" />
       </div>
-      <button class="btn btn-primary full-btn" @click="handleRegister" :disabled="loading || !regName || !regIdCard || !regUnit || !regPhone || !/^1\d{10}$/.test(regPhone) || !regSupervisingUnit">
+      <button
+        class="btn btn-primary full-btn"
+        @click="handleRegister"
+        :disabled="loading || !regName || !regIdCard || !regUnitId || (regUnitId === '__other__' && !regUnit.trim()) || !regPhone || !/^1\d{10}$/.test(regPhone) || !regSupervisingUnit"
+      >
         {{ loading ? '提交中…' : '注册并开始答题' }}
       </button>
       <p class="toggle-link" @click="showRegister = false">已有账号？点击登录</p>
@@ -117,6 +144,7 @@ const completeLast4 = ref('')
 const compIdCard = ref('')
 const compUnitId = ref('')
 const compUnitName = ref('')
+const compOtherUnit = ref('') // 选「其他（不在清单内）」时填写的单位名，提交后由管理员审核
 const compSupervisingUnit = ref('通南巴项目部')
 const compPhone = ref('')
 const compPosition = ref('')
@@ -124,6 +152,7 @@ const units = ref([])
 // 手动注册态
 const regName = ref('')
 const regIdCard = ref('')
+const regUnitId = ref('')
 const regUnit = ref('')
 const regSupervisingUnit = ref('通南巴项目部')
 const regPhone = ref('')
@@ -164,8 +193,17 @@ async function loadUnits() {
 }
 
 function onUnitChange() {
+  // 选「其他」时没有对应在册单位，清空标准名，改用 compOtherUnit 自填值
   const u = units.value.find(x => String(x.id) === String(compUnitId.value))
   compUnitName.value = u ? u.unit_name : ''
+}
+function onRegUnitChange() {
+  const u = units.value.find(x => String(x.id) === String(regUnitId.value))
+  regUnit.value = u ? u.unit_name : ''
+}
+async function openRegister() {
+  showRegister.value = true
+  await loadUnits()
 }
 
 async function handleManualLogin() {
@@ -209,11 +247,11 @@ async function handleComplete() {
     await auth.register({
       name: completeName.value,
       id_card: trimmed,
-      unit: compUnitName.value,
+      unit: compUnitId.value === '__other__' ? compOtherUnit.value.trim() : compUnitName.value,
       supervising_unit: compSupervisingUnit.value,
       phone: compPhone.value,
       position: compPosition.value,
-      contractor_unit_id: compUnitId.value || null,
+      contractor_unit_id: (compUnitId.value && compUnitId.value !== '__other__') ? compUnitId.value : null,
       last4: completeLast4.value,
     })
     router.replace(route.query.redirect || '/quiz')
@@ -235,9 +273,10 @@ async function handleRegister() {
     await auth.register({
       name: regName.value,
       id_card: regIdCard.value,
-      unit: regUnit.value,
+      unit: regUnitId.value === '__other__' ? regUnit.value.trim() : regUnit.value,
       supervising_unit: regSupervisingUnit.value,
       phone: regPhone.value,
+      contractor_unit_id: (regUnitId.value && regUnitId.value !== '__other__') ? regUnitId.value : null,
     })
     router.replace(route.query.redirect || '/quiz')
   } catch (e) {

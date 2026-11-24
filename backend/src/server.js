@@ -85,6 +85,18 @@ async function autoMigrate() {
       console.log('[migrate] ✅ position 字段添加完成')
     }
 
+    // 1.2 t_user.unit_verify_status（单位规范状态）
+    // ok     = 已匹配网格化在册单位，或经确认的别名映射
+    // pending= 用户选「其他（不在清单内）」自填，尚未归一化，需管理员审核
+    if (!(await ensureColumn('t_user', 'unit_verify_status'))) {
+      console.log('[migrate] 正在添加 unit_verify_status 字段...')
+      await pool.execute(
+        "ALTER TABLE t_user ADD COLUMN unit_verify_status VARCHAR(16) NOT NULL DEFAULT 'ok' COMMENT '单位规范状态：ok/pending' AFTER contractor_unit_id"
+      )
+      await pool.execute('ALTER TABLE t_user ADD INDEX idx_unit_verify (unit_verify_status)')
+      console.log('[migrate] ✅ unit_verify_status 字段添加完成')
+    }
+
     // 2. t_system_config（修复 schema.sql 缺口：settings 接口引用但未建表）
     await ensureTable(`
       CREATE TABLE IF NOT EXISTS t_system_config (

@@ -131,7 +131,10 @@ router.get('/import-users/fail/:logId', adminAuth, async (req, res) => {
 
 // ─── GET /api/admin/users ───────────────────────────────────────────────────
 router.get('/users', adminAuth, async (req, res) => {
-  const { keyword = '', unit = '', supervising_unit = '', page = 1, pageSize = 20 } = req.query
+  const {
+    keyword = '', unit = '', supervising_unit = '', page = 1, pageSize = 20,
+    unlinked, unit_verify_status,
+  } = req.query
   const safePage     = Math.max(1, Number(page)     || 1)
   const safePageSize = Math.min(100, Math.max(1, Number(pageSize) || 20))
   const safeOffset   = (safePage - 1) * safePageSize
@@ -151,6 +154,17 @@ router.get('/users', adminAuth, async (req, res) => {
     where += ' AND supervising_unit = ?'
     params.push(supervising_unit)
   }
+  // 前端「关联状态」筛选此前传了 unlinked 但后端未接，等于筛选一直失效
+  if (unlinked === '1') {
+    where += ' AND (contractor_unit_id IS NULL OR contractor_unit_id = 0)'
+  } else if (unlinked === '0') {
+    where += ' AND contractor_unit_id IS NOT NULL AND contractor_unit_id > 0'
+  }
+  // 单位规范状态：pending = 用户自填的「其他（不在清单内）」，待管理员审核
+  if (unit_verify_status === 'ok' || unit_verify_status === 'pending') {
+    where += ' AND unit_verify_status = ?'
+    params.push(unit_verify_status)
+  }
 
   const [[{ total }]] = await pool.execute(
     `SELECT COUNT(*) AS total FROM t_user ${where}`,
@@ -158,7 +172,8 @@ router.get('/users', adminAuth, async (req, res) => {
   )
 
   const [rows] = await pool.query(
-    `SELECT id, name, id_card, unit, supervising_unit, phone, position, status, qr_token, created_at
+    `SELECT id, name, id_card, unit, supervising_unit, phone, position, status, qr_token,
+            contractor_unit_id, unit_verify_status, created_at
      FROM t_user ${where}
      ORDER BY created_at DESC
      LIMIT ${safePageSize} OFFSET ${safeOffset}`,
@@ -306,7 +321,10 @@ router.get('/users/:id', adminAuth, async (req, res) => {
 // 编辑人员信息
 router.put('/users/:id', adminAuth, async (req, res) => {
   const { id } = req.params
-  const { name, id_card, unit, supervising_unit, phone, position, status } = req.body
+  const {
+    name, id_card, unit, supervising_unit, phone, position, status,
+    contractor_unit_id, unit_verify_status,
+  } = req.body
 
   const [existing] = await pool.execute('SELECT id FROM t_user WHERE id = ?', [id])
   if (!existing.length) return res.status(404).json({ error: '用户不存在' })
@@ -321,6 +339,15 @@ router.put('/users/:id', adminAuth, async (req, res) => {
   if (phone !== undefined)            { updates.push('phone = ?');            params.push(phone.trim()) }
   if (position !== undefined)         { updates.push('position = ?');         params.push(position.trim()) }
   if (status !== undefined)           { updates.push('status = ?');           params.push(Number(status)) }
+  // 审核单位时：选了在册单位要同时写 id 并置 ok；自填保留 pending
+  if (contractor_unit_id !== undefined) {
+    updates.push('contractor_unit_id = ?')
+    params.push(contractor_unit_id === '' || contractor_unit_id == null ? null : Number(contractor_unit_id))
+  }
+  if (unit_verify_status === 'ok' || unit_verify_status === 'pending') {
+    updates.push('unit_verify_status = ?')
+    params.push(unit_verify_status)
+  }
 
   if (updates.length === 0) return res.status(400).json({ error: '请提供要修改的字段' })
 

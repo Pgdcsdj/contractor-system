@@ -6,6 +6,7 @@ yarn-error.log*
 
 # Build output
 frontend/dist/
+frontend/dist.new/
 
 # Environment & secrets
 .env

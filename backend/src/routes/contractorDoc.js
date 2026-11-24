@@ -135,10 +135,16 @@ async function replaceFileRecord(docFile, buffer, originalname) {
 // GET /api/contractor-docs/units —— 在册单位下拉
 router.get('/units', async (req, res) => {
   try {
+    // 注册下拉只给「在册三级/四级承包商」（49 家）：
+    // 一级/二级是甲方内部机构，不是承包商单位（见 constants/internalUnits.js）；
+    // 停用单位也不出现在下拉里，避免用户选到已退场单位。
     const [rows] = await pool.execute(
       `SELECT id, unit_name,
-              CASE WHEN short_name IS NULL OR short_name = '' THEN unit_name ELSE short_name END AS short_name
-       FROM t_contractor_unit WHERE is_active = 1 ORDER BY unit_name`
+              CASE WHEN short_name IS NULL OR short_name = '' THEN unit_name ELSE short_name END AS short_name,
+              grid_level, grid_l2
+       FROM t_contractor_unit
+      WHERE is_active = 1 AND grid_level IN ('三级','四级')
+      ORDER BY FIELD(grid_level, '三级', '四级'), unit_name`
     )
     res.json({ success: true, data: rows })
   } catch (e) {

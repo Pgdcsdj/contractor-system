@@ -17,6 +17,11 @@
           <option value="unlinked">仅未关联</option>
           <option value="linked">仅已关联</option>
         </select>
+        <select v-model="filterVerify" class="filter-select" @change="onFilterChange">
+          <option value="">全部单位状态</option>
+          <option value="pending">仅待审核</option>
+          <option value="ok">仅已规范</option>
+        </select>
       </div>
       <div class="toolbar-right">
         <span class="total-count">共 {{ totalCount }} 人</span>
@@ -67,7 +72,10 @@
             <td><strong>{{ u.name }}</strong></td>
             <td class="mono">{{ maskIdCard(u.id_card) }}</td>
             <td>{{ u.supervising_unit || '-' }}</td>
-            <td>{{ u.unit || '-' }}</td>
+            <td>
+              {{ u.unit || '-' }}
+              <span v-if="u.unit_verify_status === 'pending'" class="verify-badge pending" title="单位由用户自填（选择了「其他」），请核实后改为在册标准单位">待审核</span>
+            </td>
             <td>
               <span v-if="u.contractor_unit_id" class="link-badge linked">已关联</span>
               <span v-else class="link-badge unlinked">未关联</span>
@@ -197,6 +205,13 @@
             </select>
           </div>
           <div class="form-group">
+            <label>单位规范状态</label>
+            <select v-model="editForm.unit_verify_status" class="form-input">
+              <option value="ok">已规范（在册单位或已确认）</option>
+              <option value="pending">待审核（用户自填，需核实）</option>
+            </select>
+          </div>
+          <div class="form-group">
             <label>主管单位</label>
             <input v-model="editForm.supervising_unit" class="form-input" />
           </div>
@@ -260,6 +275,7 @@ const keyword = ref('')
 const filterCompany = ref('')
 const filterSupervising = ref('')
 const filterLinked = ref('')
+const filterVerify = ref('')
 const page = ref(1)
 const pageSize = 20
 const totalCount = ref(0)
@@ -283,7 +299,7 @@ const otherWarnings = computed(() =>
 
 // 编辑
 const showEdit = ref(false)
-const editForm = ref({ id: null, name: '', id_card: '', unit: '', contractor_unit_id: null, supervising_unit: '', position: '', phone: '', status: 1 })
+const editForm = ref({ id: null, name: '', id_card: '', unit: '', contractor_unit_id: null, unit_verify_status: 'ok', supervising_unit: '', position: '', phone: '', status: 1 })
 const saving = ref(false)
 
 // 新增
@@ -502,6 +518,7 @@ function editUser(u) {
     id_card: u.id_card || '',
     unit: u.unit || '',
     contractor_unit_id: u.contractor_unit_id || null,
+    unit_verify_status: u.unit_verify_status || 'ok',
     supervising_unit: u.supervising_unit || '',
     position: u.position || '',
     phone: u.phone || '',
@@ -522,7 +539,10 @@ async function handleEdit() {
       phone: editForm.value.phone,
       status: editForm.value.status,
     }
-    if (editForm.value.contractor_unit_id) payload.contractor_unit_id = editForm.value.contractor_unit_id
+    // 清空关联时也要把 null 传给后端，否则下次仍带着旧 id
+    payload.contractor_unit_id = editForm.value.contractor_unit_id || null
+    // 选了在册单位自动视为已规范；管理员也可在下拉里手工确认自填单位
+    payload.unit_verify_status = editForm.value.unit_verify_status || (payload.contractor_unit_id ? 'ok' : 'pending')
     await request.put(`/api/admin/users/${editForm.value.id}`, payload)
     showEdit.value = false
     fetchUsers()
@@ -545,6 +565,7 @@ async function fetchUsers() {
     if (filterSupervising.value) params.supervising_unit = filterSupervising.value
     if (filterLinked.value === 'unlinked') params.unlinked = '1'
     else if (filterLinked.value === 'linked') params.unlinked = '0'
+    if (filterVerify.value) params.unit_verify_status = filterVerify.value
 
     const res = await request.get('/api/admin/users', { params })
     const data = res.data?.data
@@ -692,6 +713,11 @@ watch(page, fetchUsers)
 .link-badge { display: inline-block; padding: 2px 9px; border-radius: 10px; font-size: 12px; font-weight: 500; white-space: nowrap; }
 .link-badge.linked { background: #e6f4ea; color: #1e8e3e; }
 .link-badge.unlinked { background: #fef0e6; color: #e8710a; }
+.verify-badge {
+  display: inline-block; margin-left: 6px; padding: 1px 6px;
+  border-radius: 4px; font-size: 11px; font-weight: 600; white-space: nowrap;
+}
+.verify-badge.pending { background: #fff1f0; color: #cf1322; border: 1px solid #ffa39e; cursor: help; }
 
 /* 按钮变体 */
 .btn-danger { background: var(--danger); color: #fff; border: 1px solid var(--danger); }
