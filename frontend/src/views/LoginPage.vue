@@ -57,12 +57,13 @@
         <input v-model="compPhone" class="form-input" placeholder="手机号" type="text" />
       </div>
       <div class="form-group">
-        <input v-model="compPosition" class="form-input" placeholder="岗位" type="text" />
+        <div class="form-label">岗位<span style="color:#e5484d">*</span></div>
+        <input v-model="compPosition" class="form-input" placeholder="如：操作工、班组长、司钻、安全员" type="text" />
       </div>
       <button
         class="btn btn-primary full-btn"
         @click="handleComplete"
-        :disabled="loading || !compIdCard || !compSupervisingUnit || !compUnitId || (compUnitId === '__other__' && !compOtherUnit.trim())"
+        :disabled="loading || !compIdCard || !compSupervisingUnit || !compUnitId || (compUnitId === '__other__' && !compOtherUnit.trim()) || !compPosition.trim()"
       >
         {{ loading ? '提交中…' : '补全并进入' }}
       </button>
@@ -102,10 +103,14 @@
       <div class="form-group">
         <input v-model="regPhone" class="form-input" placeholder="手机号 *" type="text" maxlength="11" />
       </div>
+      <div class="form-group">
+        <div class="form-label">岗位<span style="color:#e5484d">*</span></div>
+        <input v-model="regPosition" class="form-input" placeholder="如：操作工、班组长、司钻、安全员" type="text" />
+      </div>
       <button
         class="btn btn-primary full-btn"
         @click="handleRegister"
-        :disabled="loading || !regName || !regIdCard || !regUnitId || (regUnitId === '__other__' && !regUnit.trim()) || !regPhone || !/^1\d{10}$/.test(regPhone) || !regSupervisingUnit"
+        :disabled="loading || !regName || !regIdCard || !regUnitId || (regUnitId === '__other__' && !regUnit.trim()) || !regPhone || !/^1\d{10}$/.test(regPhone) || !regSupervisingUnit || !regPosition.trim()"
       >
         {{ loading ? '提交中…' : '注册并开始答题' }}
       </button>
@@ -156,6 +161,7 @@ const regUnitId = ref('')
 const regUnit = ref('')
 const regSupervisingUnit = ref('通南巴项目部')
 const regPhone = ref('')
+const regPosition = ref('')
 const loading = ref(false)
 const errorMsg = ref('')
 const pendingCount = ref(0)
@@ -231,6 +237,7 @@ async function handleManualLogin() {
 
 async function handleComplete() {
   if (!compSupervisingUnit.value) { errorMsg.value = '请选择主管单位'; return }
+  if (!compPosition.value.trim()) { errorMsg.value = '请填写岗位'; return }
   if (!compIdCard.value) return
   const trimmed = compIdCard.value.trim().toUpperCase()
   if (!/^\d{17}[\dX]$/.test(trimmed)) {
@@ -264,6 +271,7 @@ async function handleComplete() {
 
 async function handleRegister() {
   if (!regSupervisingUnit.value) { errorMsg.value = '请选择主管单位'; return }
+  if (!regPosition.value.trim()) { errorMsg.value = '请填写岗位'; return }
   if (!regName.value || !regIdCard.value) return
   if (!regUnit.value) { errorMsg.value = '请填写所属承包商单位'; return }
   if (!/^1\d{10}$/.test(regPhone.value || '')) { errorMsg.value = '请填写正确的 11 位手机号'; return }
@@ -276,6 +284,7 @@ async function handleRegister() {
       unit: regUnitId.value === '__other__' ? regUnit.value.trim() : regUnit.value,
       supervising_unit: regSupervisingUnit.value,
       phone: regPhone.value,
+      position: regPosition.value.trim(),
       contractor_unit_id: (regUnitId.value && regUnitId.value !== '__other__') ? regUnitId.value : null,
     })
     router.replace(route.query.redirect || '/quiz')
