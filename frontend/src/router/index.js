@@ -76,6 +76,11 @@ const routes = [
         name: 'SafetyDocReminders',
         component: () => import('@/views/safety/SafetyDocReminderPage.vue'),
       },
+      {
+        path: 'staff-roster',
+        name: 'SafetyStaffRoster',
+        component: () => import('@/views/safety/StaffRosterPage.vue'),
+      },
     ],
   },
   // ── 承包商开工资料上报（需求 C，公开免登录）──────────────────────────────
@@ -138,6 +143,12 @@ const routes = [
         path: 'training-archive',
         name: 'TrainingArchive',
         component: () => import('@/views/admin/TrainingArchivePage.vue'),
+      },
+      {
+        // 承包商人员清单报送审核（安全员报送 → 管理员审核 → 更新人员库）
+        path: 'staff-roster-review',
+        name: 'StaffRosterReview',
+        component: () => import('@/views/admin/StaffRosterReviewPage.vue'),
       },
       {
         path: 'records/:id',

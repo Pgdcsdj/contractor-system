@@ -13,6 +13,7 @@
           开工资料提醒
           <span v-if="pendingReminders > 0" class="nav-badge">{{ pendingReminders > 99 ? '99+' : pendingReminders }}</span>
         </router-link>
+        <router-link to="/safety/staff-roster" class="nav-tab">人员清单报送</router-link>
       </nav>
       <div class="topbar-right">
         <div class="user-chip">

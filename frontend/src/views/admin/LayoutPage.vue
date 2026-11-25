@@ -46,6 +46,10 @@
           <Icon name="inbox" :size="20" class="nav-icon" />
           <span v-if="!sidebarCollapsed" class="nav-label">培训档案</span>
         </router-link>
+        <router-link to="/admin/staff-roster-review" class="nav-item">
+          <Icon name="users" :size="20" class="nav-icon" />
+          <span v-if="!sidebarCollapsed" class="nav-label">人员清单审核</span>
+        </router-link>
 
         <!-- 分组：承包商安全活动 -->
         <div v-if="!sidebarCollapsed" class="nav-group-title">承包商安全活动</div>
@@ -227,6 +231,7 @@ const sidebarCollapsed = ref(false)
 const routeMap = {
   Dashboard: '培训看板',
   Users: '人员管理',
+  StaffRosterReview: '人员清单审核',
   Trainings: '题库管理',
   NewTraining: '新建培训',
   TrainingQuestions: '题目审核',

@@ -19,6 +19,7 @@ const ADMIN_API_PREFIXES = [
   '/api/notify-config', // ← 钉钉通知设置（后台可配，需 admin token；漏登记会误跳 /login）
   '/api/site-permit',   // ← 直接作业预约报备（admin/superadmin；漏登记会误跳培训端 /login）
   '/api/training-archive', // ← 培训档案 一期一档/一人一档导出（admin/superadmin）
+  '/api/staff-roster',  // ← 承包商人员清单报送（安全员报送/管理员审核）
 ]
 
 const request = axios.create({

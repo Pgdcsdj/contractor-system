@@ -43,6 +43,7 @@ const activityRoutes         = require('./routes/activity')         // 承包商
 const activityOpenRoutes     = require('./routes/activityOpen')     // 承包商安全活动（公开免登录填报端）
 const sitePermitRoutes       = require('./routes/sitePermit')       // 直接作业预约报备（钉钉表格同步）
 const trainingArchiveRoutes  = require('./routes/trainingArchive')  // 培训档案（一期一档/一人一档导出）
+const staffRosterRoutes      = require('./routes/staffRoster')      // 承包商人员清单报送与安全员/管理员审核
 
 // ─── 系统版本常量（与前端 src/version.js 保持一致）─────────────────────
 const { APP_VERSION, BUILD_DATE } = require('./version')
@@ -584,6 +585,59 @@ async function autoMigrate() {
     if (!(await ensureColumn('t_user', 'self_registered'))) {
       await pool.execute('ALTER TABLE t_user ADD COLUMN self_registered TINYINT NOT NULL DEFAULT 0 COMMENT \'1=自助注册（补全信息）待核实\'')
     }
+
+    // 6b. 承包商人员清单报送（安全员报送 → 管理员审核 → 才写 t_user）
+    // 报送批次：一个月一个单位一批，可重复报送覆盖未审核批次
+    await ensureTable(`
+      CREATE TABLE IF NOT EXISTS t_staff_roster_batch (
+        id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        unit_id         INT UNSIGNED NOT NULL COMMENT '报送承包商单位ID（t_contractor_unit.id）',
+        unit_name       VARCHAR(150) NOT NULL DEFAULT '' COMMENT '报送单位名称快照',
+        report_month    VARCHAR(7) NOT NULL COMMENT '报送月份 YYYY-MM',
+        status          TINYINT NOT NULL DEFAULT 0 COMMENT '0=待审核 1=已通过 2=已驳回',
+        submitted_by    INT UNSIGNED DEFAULT NULL COMMENT '报送安全员 admin.id',
+        submitted_by_name VARCHAR(50) NOT NULL DEFAULT '' COMMENT '报送人姓名快照',
+        submitted_at    DATETIME DEFAULT NULL COMMENT '提交时间',
+        source_file     VARCHAR(255) NOT NULL DEFAULT '' COMMENT '报送文件名',
+        reviewed_by     INT UNSIGNED DEFAULT NULL COMMENT '审核管理员 admin.id',
+        reviewed_by_name VARCHAR(50) NOT NULL DEFAULT '' COMMENT '审核人姓名快照',
+        reviewed_at     DATETIME DEFAULT NULL COMMENT '审核时间',
+        review_note     VARCHAR(500) NOT NULL DEFAULT '' COMMENT '审核意见',
+        total_count     INT NOT NULL DEFAULT 0 COMMENT '报送人数',
+        add_count       INT NOT NULL DEFAULT 0 COMMENT '新增人数',
+        remove_count    INT NOT NULL DEFAULT 0 COMMENT '移除人数',
+        apply_count     INT NOT NULL DEFAULT 0 COMMENT '实际应用到人员库的人数',
+        created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_unit_month (unit_id, report_month),
+        INDEX idx_status (status)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='承包商人员清单报送批次'
+    `)
+    if (!(await ensureColumn('t_staff_roster_batch', 'source_file'))) {
+      await pool.execute("ALTER TABLE t_staff_roster_batch ADD COLUMN source_file VARCHAR(255) NOT NULL DEFAULT '' COMMENT '报送文件名' AFTER submitted_at")
+    }
+    // 报送明细：每条记录一个动作（add新增/keep保留/remove移除）
+    await ensureTable(`
+      CREATE TABLE IF NOT EXISTS t_staff_roster_item (
+        id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        batch_id        INT UNSIGNED NOT NULL COMMENT '所属批次ID',
+        action          VARCHAR(10) NOT NULL COMMENT 'add=新增 keep=保留 remove=移除',
+        name            VARCHAR(50) NOT NULL DEFAULT '' COMMENT '姓名',
+        id_card         VARCHAR(18) NOT NULL DEFAULT '' COMMENT '身份证号',
+        unit_name       VARCHAR(150) NOT NULL DEFAULT '' COMMENT '该人员所属承包商单位（标准名）',
+        contractor_unit_id INT UNSIGNED DEFAULT NULL COMMENT '承包商单位ID',
+        position        VARCHAR(100) NOT NULL DEFAULT '' COMMENT '岗位',
+        phone           VARCHAR(20) DEFAULT NULL COMMENT '手机号',
+        current_unit_id INT UNSIGNED DEFAULT NULL COMMENT '报送时库中已有记录的单位ID（供审核对照）',
+        current_supervising VARCHAR(100) NOT NULL DEFAULT '' COMMENT '报送时库中已有记录的主管单位（供审核对照）',
+        exists_in_db    TINYINT NOT NULL DEFAULT 0 COMMENT '报送时该身份证是否已在人员库',
+        apply_status    VARCHAR(16) NOT NULL DEFAULT 'pending' COMMENT 'pending=待审核 applied=已应用 skipped=跳过',
+        apply_note      VARCHAR(200) NOT NULL DEFAULT '' COMMENT '应用结果说明',
+        created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_batch (batch_id),
+        INDEX idx_idcard (id_card)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='承包商人员清单报送明细'
+    `)
 
     // STEP 7：钉钉通知审计日志表（与 migrations/002_dingtalk_notify_log.sql 同源）
     await ensureTable(`
@@ -1204,6 +1258,7 @@ app.use('/api/quality', qualityRoutes)                      // 出题质量量�
 app.use('/api/notify-config', notifyConfigRoutes)            // 钉钉通知开关配置（后台可设）
 app.use('/api/site-permit', sitePermitRoutes)                // 直接作业预约报备（钉钉表格同步）
 app.use('/api/training-archive', trainingArchiveRoutes)      // 培训档案（一期一档/一人一档）
+app.use('/api/staff-roster', staffRosterRoutes)             // 承包商人员清单报送/审核
 
 // ─── 直接作业预约报备：每天 22:00 从钉钉表格同步 ─────────────────────────────
 // 时区 Asia/Shanghai（容器 ENV 已设）；配置开关在 /api/site-permit/config。
