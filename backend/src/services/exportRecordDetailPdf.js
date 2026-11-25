@@ -3,8 +3,9 @@
  *
  * 数据源：复用 GET /api/record/:id/detail 组装好的
  *         { record, totalCorrect, totalCount, detail }
- * 字体：assets/fonts/NotoSansCJKsc-{Regular,Bold}.otf
- *       （从系统 Noto Sans CJK SC 抽取并做 GB2312 子集，随后端镜像发布）
+ * 字体：assets/fonts/NotoSansCJKsc-Regular.ttf（单字体）
+ *       按题库/人员/固定文案实际用字裁剪的精简子集，随后端镜像发布。
+ *       标题与强调改用字号、颜色区分，不再嵌入第二套粗体，以压缩 PDF 体积。
  *
  * 说明：题干/选项/标准答案/解析来自题库实时数据；用户答案/得分/对错/评语来自
  *       t_record.answers 快照。本服务不查库，只负责排版成可归档的 PDF。
@@ -14,8 +15,7 @@ const path = require('path')
 const fs = require('fs')
 
 const FONT_DIR = path.join(process.cwd(), 'assets', 'fonts')
-const FONT_REG = path.join(FONT_DIR, 'NotoSansCJKsc-Regular.otf')
-const FONT_BOLD = path.join(FONT_DIR, 'NotoSansCJKsc-Bold.otf')
+const FONT_REG = path.join(FONT_DIR, 'NotoSansCJKsc-Regular.ttf')
 
 const TYPE_LABEL = { single: '单选题', multiple: '多选题', judgment: '判断题', essay: '简答题' }
 const MODE_LABEL = { exam: '正式考试', practice: '练习', study: '学习' }
@@ -72,12 +72,13 @@ function clean(text) {
  */
 function generateRecordDetailPdf(data) {
   return new Promise((resolve, reject) => {
-    if (!fs.existsSync(FONT_REG) || !fs.existsSync(FONT_BOLD)) {
+    if (!fs.existsSync(FONT_REG)) {
       return reject(new Error('PDF 中文字体缺失：' + FONT_DIR))
     }
 
     const doc = new PDFDocument({
       size: 'A4',
+      compress: true,          // 内容流 Flate 压缩，实测可降约一半体积
       bufferPages: true,
       margins: { top: 58, bottom: 62, left: 46, right: 46 },
       info: { Title: '答题明细报告', Author: '中石化中原油田普光分公司通南巴项目部' },
@@ -88,7 +89,8 @@ function generateRecordDetailPdf(data) {
     doc.on('end', () => resolve(Buffer.concat(chunks)))
 
     doc.registerFont('cn', FONT_REG)
-    doc.registerFont('cnb', FONT_BOLD)
+    // 只用一套字形：原粗体处改由字号与颜色区分层次，避免重复嵌入一套字体
+    const FONT_STRONG = 'cn'
 
     const W = doc.page.width - 92
     const LEFT = 46
@@ -97,7 +99,7 @@ function generateRecordDetailPdf(data) {
     const detail = Array.isArray(data.detail) ? data.detail : []
 
     function pageHeader() {
-      doc.font('cnb').fontSize(9.5).fillColor('#1a73e8')
+      doc.font(FONT_STRONG).fontSize(9.5).fillColor('#1a73e8')
         .text('通南巴项目部 - 培训考试答题明细报告', LEFT, 28, { width: W, lineBreak: false })
       doc.moveTo(LEFT, 46).lineTo(LEFT + W, 46).strokeColor('#c9d6e5').lineWidth(0.8).stroke()
       doc.y = 62
@@ -114,7 +116,7 @@ function generateRecordDetailPdf(data) {
 
     // 两栏信息行（手动维护 y，避免 pdfkit 对 continued 的换行差异）
     function infoRow(label, value, y) {
-      doc.font('cnb').fontSize(9.5).fillColor('#64748b')
+      doc.font(FONT_STRONG).fontSize(9.5).fillColor('#64748b')
         .text(label, LEFT, y, { width: 86, lineBreak: false })
       doc.font('cn').fontSize(10).fillColor('#1f2937')
         .text(clean(value == null || value === '' ? '-' : value), LEFT + 92, y,
@@ -129,7 +131,7 @@ function generateRecordDetailPdf(data) {
     pageHeader()
 
     // ── 标题 ─────────────────────────────────────────────────────────────────
-    doc.font('cnb').fontSize(18).fillColor('#1a73e8')
+    doc.font(FONT_STRONG).fontSize(18).fillColor('#1a73e8')
       .text('答题明细报告', LEFT, doc.y, { width: W, align: 'center' })
     doc.moveDown(1.2)
 
@@ -164,7 +166,7 @@ function generateRecordDetailPdf(data) {
     doc.moveDown(0.5)
     ensure(24)
     doc.rect(LEFT, doc.y - 2, W, 24).fill('#eef4fb')
-    doc.font('cnb').fontSize(10).fillColor('#1a73e8')
+    doc.font(FONT_STRONG).fontSize(10).fillColor('#1a73e8')
       .text(`得分率 ${passRate}%　|　满分 ${maxScore} 分　|　共 ${data.totalCount || 0} 题`, LEFT + 10, doc.y + 3,
             { width: W - 20, lineBreak: false })
     doc.y += 28
@@ -172,15 +174,15 @@ function generateRecordDetailPdf(data) {
     // ── 逐题明细 ─────────────────────────────────────────────────────────────
     doc.moveDown(0.6)
     ensure(26)
-    doc.font('cnb').fontSize(12).fillColor('#1f2937').text('逐题作答明细', { width: W })
+    doc.font(FONT_STRONG).fontSize(12).fillColor('#1f2937').text('逐题作答明细', { width: W })
     doc.moveDown(0.5)
 
     detail.forEach((q) => {
       ensure(78)
       const headY = doc.y
-      doc.font('cnb').fontSize(10.5).fillColor('#1a73e8')
+      doc.font(FONT_STRONG).fontSize(10.5).fillColor('#1a73e8')
         .text(`第 ${q.index} 题  ${TYPE_LABEL[q.type] || '其他'}`, LEFT, headY, { width: W * 0.55, lineBreak: false })
-      doc.font('cnb').fontSize(10).fillColor(q.isCorrect ? '#1d9e75' : '#d64545')
+      doc.font(FONT_STRONG).fontSize(10).fillColor(q.isCorrect ? '#1d9e75' : '#d64545')
         .text(`${q.score || 0} / ${q.maxScore || 0} 分   ${q.isCorrect ? '正确' : '错误'}`,
               LEFT + W * 0.55, headY, { width: W * 0.45, align: 'right', lineBreak: false })
       doc.y = headY + 18
