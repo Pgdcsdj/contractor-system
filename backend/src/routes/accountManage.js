@@ -36,24 +36,27 @@ router.get('/', requireRole('admin', 'superadmin'), async (req, res) => {
 
   const where = []
   const params = []
-  if (role) { where.push('role = ?'); params.push(role) }
-  if (unit_id) { where.push('unit_id = ?'); params.push(Number(unit_id)) }
-  if (status !== '') { where.push('status = ?'); params.push(Number(status)) }
+  if (role) { where.push('a.role = ?'); params.push(role) }
+  if (unit_id) { where.push('a.unit_id = ?'); params.push(Number(unit_id)) }
+  if (status !== '') { where.push('a.status = ?'); params.push(Number(status)) }
   if (keyword) {
-    where.push('(real_name LIKE ? OR username LIKE ? OR phone LIKE ?)')
+    where.push('(a.real_name LIKE ? OR a.username LIKE ? OR a.phone LIKE ?)')
     params.push(`%${keyword}%`, `%${keyword}%`, `%${keyword}%`)
   }
   const whereClause = where.length ? 'WHERE ' + where.join(' AND ') : ''
 
   try {
     const [[{ total }]] = await pool.execute(
-      `SELECT COUNT(*) AS total FROM t_admin ${whereClause}`,
+      `SELECT COUNT(*) AS total FROM t_admin a ${whereClause}`,
       params
     )
     const [rows] = await pool.query(
-      `SELECT id, username, role, status, real_name, phone, unit_id, last_login, created_at
-         FROM t_admin ${whereClause}
-        ORDER BY id DESC
+      `SELECT a.id, a.username, a.role, a.status, a.real_name, a.phone, a.unit_id,
+              u.unit_name, a.last_login, a.created_at
+         FROM t_admin a
+         LEFT JOIN t_contractor_unit u ON u.id = a.unit_id
+         ${whereClause}
+        ORDER BY a.id DESC
         LIMIT ? OFFSET ?`,
       [...params, safePageSize, offset]
     )
