@@ -1187,7 +1187,7 @@ async function autoMigrate() {
         target_desc     VARCHAR(500)  NOT NULL DEFAULT '' COMMENT '参训范围说明',
         expected_count  INT           DEFAULT NULL COMMENT '应参人数（NULL=按目标人群自动计算）',
         assessment_type VARCHAR(30)   NOT NULL DEFAULT '' COMMENT '闭卷考试/实操考核/问答/无考核',
-        doc_checklist   JSON          DEFAULT NULL COMMENT '附件到位情况 {notice,plan,sign,ppt,paper,score,eval}',
+        doc_checklist   JSON          DEFAULT NULL COMMENT '附件到位情况 {notice,plan,sign,ppt,paper,score}',
         status          VARCHAR(16)   NOT NULL DEFAULT 'planned' COMMENT 'planned/done/archived',
         remark          VARCHAR(500)  NOT NULL DEFAULT '',
         created_by      INT UNSIGNED  DEFAULT NULL,

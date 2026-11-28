@@ -31,7 +31,6 @@ const CHECKLIST_KEYS = [
   ['ppt', '课件/教材'],
   ['paper', '试卷'],
   ['score', '成绩表'],
-  ['eval', '效果评估表'],
 ]
 
 const TRAIN_MODES = ['集中授课', '现场实操', '视频学习', '会议宣贯', '网络自学', '符合培训']
