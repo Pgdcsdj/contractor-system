@@ -1208,6 +1208,24 @@ async function autoMigrate() {
         KEY idx_material (material_id)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='培训场次关联的试卷/题库'
     `)
+    // 培训档案附件：存 COS，MySQL 只存元数据（容器 /app/src 只读，不能落本地）
+    await ensureTable(`
+      CREATE TABLE IF NOT EXISTS t_training_session_attachment (
+        id               INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        session_id       INT UNSIGNED NOT NULL COMMENT '培训场次ID',
+        category         VARCHAR(20)  NOT NULL DEFAULT 'other' COMMENT '对应 doc_checklist 键，other=其他',
+        original_name    VARCHAR(255) NOT NULL DEFAULT '' COMMENT '原始文件名',
+        cos_key          VARCHAR(500) NOT NULL DEFAULT '' COMMENT 'COS对象键',
+        cos_url          VARCHAR(1000) NOT NULL DEFAULT '' COMMENT 'COS公网URL',
+        file_ext         VARCHAR(10)  NOT NULL DEFAULT '' COMMENT '扩展名',
+        file_size        INT UNSIGNED NOT NULL DEFAULT 0 COMMENT '字节数',
+        uploaded_by      INT UNSIGNED DEFAULT NULL COMMENT '上传管理员ID',
+        uploaded_by_name VARCHAR(100) NOT NULL DEFAULT '' COMMENT '上传人名',
+        uploaded_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        KEY idx_session (session_id),
+        KEY idx_category (category)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='培训档案上传附件'
+    `)
     console.log('[migrate] ✅ 培训档案（一期一档）表结构已就绪')
 
     console.log('[migrate] ✅ 隐患闭环相关表结构已就绪')

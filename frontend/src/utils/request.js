@@ -67,7 +67,7 @@ request.interceptors.request.use((config) => {
   // 故将答题提交类接口也放宽到 300s，与 nginx proxy_read_timeout 对齐。
   if (
     config.url &&
-    /\/upload|preview-ai|confirm-questions|\/api\/quality\/|\/api\/data\/|\/api\/quiz\//.test(config.url)
+    /\/upload|\/attachments|preview-ai|confirm-questions|\/api\/quality\/|\/api\/data\/|\/api\/quiz\//.test(config.url)
   ) {
     config.timeout = 300000
   }

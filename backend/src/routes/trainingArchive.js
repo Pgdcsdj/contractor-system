@@ -21,10 +21,13 @@
  */
 
 const express = require('express')
+const multer = require('multer')
+const path = require('path')
 const { verifyAdminToken } = require('../services/adminAuth')
 const { pool } = require('../db/db')
 const svc = require('../services/trainingArchiveService')
 const exporter = require('../services/exportTrainingArchive')
+const { uploadFile } = require('../services/cosUpload')
 
 const router = express.Router()
 
@@ -51,6 +54,41 @@ function sendXlsx(res, buffer, filename) {
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
   res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`)
   res.send(buffer)
+}
+
+/* ─── 培训档案附件：COS + MySQL 元数据 ─────────────────────────────────── */
+const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
+const ALLOWED_ATTACHMENT_EXT = new Set([
+  '.pdf', '.doc', '.docx', '.rar', '.zip', '.7z',
+  '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp',
+])
+
+function decodeFilename(name) {
+  try { return Buffer.from(String(name || ''), 'latin1').toString('utf8') } catch { return String(name || '') }
+}
+function safeFilename(name) {
+  return decodeFilename(name).split(/[\\/]/).pop().replace(/[^\w.\-\u4e00-\u9fa5]/g, '_').slice(0, 200)
+}
+
+const uploadAttachment = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 1 },
+  fileFilter: (req, file, cb) => {
+    const name = safeFilename(file.originalname)
+    const ext = path.extname(name).toLowerCase()
+    if (!ALLOWED_ATTACHMENT_EXT.has(ext)) {
+      return cb(new Error('附件仅支持 PDF、Word、RAR/ZIP/7z 及常见图片格式'))
+    }
+    cb(null, true)
+  },
+})
+
+function attachmentUploadGuard(err, req, res, next) {
+  if (err) {
+    if (err.code === 'LIMIT_FILE_SIZE') return sendError(res, 413, '单个附件不能超过 20M')
+    return sendError(res, 400, err.message || '附件上传失败')
+  }
+  next()
 }
 
 /* ─── 下拉选项 ─────────────────────────────────────────────────────────── */
@@ -134,6 +172,69 @@ router.delete('/sessions/:id', async (req, res) => {
     if (e.code === 'HAS_RECORDS') return sendError(res, 409, e.message)
     console.error('[training-archive delete]', e.message)
     sendError(res, 500, '删除失败：' + e.message)
+  }
+})
+
+/* ─── 培训档案附件 ────────────────────────────────────────────────────── */
+router.get('/sessions/:id/attachments', async (req, res) => {
+  try {
+    const id = Number(req.params.id)
+    if (!Number.isInteger(id) || id <= 0) return sendError(res, 400, '场次ID不合法')
+    res.json({ success: true, data: await svc.listAttachments(id) })
+  } catch (e) {
+    sendError(res, 500, '查询附件失败：' + e.message)
+  }
+})
+
+router.post('/sessions/:id/attachments', uploadAttachment.single('file'), attachmentUploadGuard, async (req, res) => {
+  try {
+    const sessionId = Number(req.params.id)
+    if (!Number.isInteger(sessionId) || sessionId <= 0) return sendError(res, 400, '场次ID不合法')
+    if (!req.file) return sendError(res, 400, '请选择附件文件')
+
+    const [[s]] = await pool.query('SELECT id FROM t_training_session WHERE id = ?', [sessionId])
+    if (!s) return sendError(res, 404, '培训场次不存在')
+
+    const category = String(req.body?.category || 'other').trim() || 'other'
+    const validCategories = svc.CHECKLIST_KEYS.map(([k]) => k)
+    if (category !== 'other' && !validCategories.includes(category)) {
+      return sendError(res, 400, '附件类别不合法')
+    }
+
+    const originalName = safeFilename(req.file.originalname)
+    const ext = path.extname(originalName).toLowerCase()
+    const cos = await uploadFile(req.file.buffer, originalName, 'training-archive')
+    const id = await svc.addAttachment({
+      sessionId, category, originalName, cos, fileExt: ext,
+      fileSize: req.file.buffer.length,
+      adminId: req.admin?.id, adminName: req.admin?.username || '',
+    })
+    await svc.syncChecklistFlag(sessionId, category)
+    res.json({ success: true, data: { id, cos_url: cos.url } })
+  } catch (e) {
+    console.error('[training-archive attachment upload]', e.message)
+    sendError(res, 500, '附件上传失败：' + e.message)
+  }
+})
+
+router.get('/attachments/:id/download', async (req, res) => {
+  try {
+    const [[a]] = await pool.query('SELECT cos_url FROM t_training_session_attachment WHERE id = ?', [Number(req.params.id)])
+    if (!a || !a.cos_url) return sendError(res, 404, '附件不存在')
+    return res.redirect(a.cos_url)
+  } catch (e) {
+    sendError(res, 500, '打开附件失败：' + e.message)
+  }
+})
+
+router.delete('/attachments/:id', async (req, res) => {
+  try {
+    const a = await svc.removeAttachment(Number(req.params.id))
+    if (!a) return sendError(res, 404, '附件不存在')
+    res.json({ success: true })
+  } catch (e) {
+    console.error('[training-archive attachment delete]', e.message)
+    sendError(res, 500, '删除附件失败：' + e.message)
   }
 })
 

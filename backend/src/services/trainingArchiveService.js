@@ -15,6 +15,7 @@
  */
 
 const { pool } = require('../db/db')
+const { deleteFile } = require('./cosUpload')
 
 // 培训看板/档案统一只统计「主管单位 = 通南巴项目部」的人员（与 record.js 同口径）
 const SCOPE_SUPERVISING_UNIT = '通南巴项目部'
@@ -33,8 +34,8 @@ const CHECKLIST_KEYS = [
   ['eval', '效果评估表'],
 ]
 
-const TRAIN_MODES = ['集中授课', '现场实操', '视频学习', '会议宣贯', '网络自学']
-const ASSESSMENT_TYPES = ['闭卷考试', '实操考核', '问答', '无考核']
+const TRAIN_MODES = ['集中授课', '现场实操', '视频学习', '会议宣贯', '网络自学', '符合培训']
+const ASSESSMENT_TYPES = ['闭卷考试', '实操考核', '问答', '无考核', '抄写制度']
 const STATUS_LIST = ['planned', 'done', 'archived']
 
 /** 某岗位的年度学时标准：班组长 24，其余 20 */
@@ -120,6 +121,7 @@ async function listSessions({ year, month, categoryId, status, keyword, page = 1
   const [rows] = await pool.query(
     `SELECT s.*, c.name AS category_name,
             (SELECT COUNT(*) FROM t_training_session_material sm WHERE sm.session_id = s.id) AS material_cnt,
+            (SELECT COUNT(*) FROM t_training_session_attachment a WHERE a.session_id = s.id) AS attachment_cnt,
             (SELECT GROUP_CONCAT(m.title ORDER BY m.id SEPARATOR '、')
                FROM t_training_session_material sm JOIN t_material m ON m.id = sm.material_id
               WHERE sm.session_id = s.id) AS material_titles
@@ -197,9 +199,16 @@ async function getSession(id) {
       WHERE sm.session_id = ? ORDER BY m.id`,
     [id]
   )
+  const [atts] = await pool.query(
+    `SELECT id, session_id, category, original_name, cos_key, cos_url, file_ext, file_size,
+            uploaded_by, uploaded_by_name, uploaded_at
+       FROM t_training_session_attachment WHERE session_id = ? ORDER BY id`,
+    [id]
+  )
   s.session_date = toDateStr(s.session_date)
   s.materials = mats
   s.material_ids = mats.map((m) => m.id)
+  s.attachments = atts
   s.expected_count = s.expected_count ?? (await expectedCountByMaterials(s.material_ids))
   const stat = await sessionStat(id, s.material_ids)
   Object.assign(s, { actual_count: stat.actual, passed_count: stat.passed, avg_rate: stat.avgRate })
@@ -300,6 +309,12 @@ async function deleteSession(id) {
       throw err
     }
   }
+  const [atts] = await pool.query('SELECT cos_key FROM t_training_session_attachment WHERE session_id = ?', [id])
+  for (const a of atts) {
+    if (!a.cos_key) continue
+    try { await deleteFile(a.cos_key) } catch (e) { console.error('[training-archive] 删除COS附件失败:', e.message) }
+  }
+  await pool.query('DELETE FROM t_training_session_attachment WHERE session_id = ?', [id])
   await pool.query('DELETE FROM t_training_session_material WHERE session_id = ?', [id])
   await pool.query('DELETE FROM t_training_session WHERE id = ?', [id])
   return true
@@ -541,12 +556,65 @@ async function ledger(year) {
   return { year: y, list: rows, summary: { sessions: rows.length, totalHours } }
 }
 
+/** 场次附件列表 */
+async function listAttachments(sessionId) {
+  const [rows] = await pool.query(
+    `SELECT id, session_id, category, original_name, cos_key, cos_url, file_ext, file_size,
+            uploaded_by, uploaded_by_name, uploaded_at
+       FROM t_training_session_attachment WHERE session_id = ? ORDER BY id`,
+    [sessionId]
+  )
+  return rows
+}
+
+/** 写入附件元数据（COS 上传由路由层完成） */
+async function addAttachment({ sessionId, category, originalName, cos, fileExt, fileSize, adminId, adminName }) {
+  const [res] = await pool.query(
+    `INSERT INTO t_training_session_attachment
+       (session_id, category, original_name, cos_key, cos_url, file_ext, file_size, uploaded_by, uploaded_by_name)
+     VALUES (?,?,?,?,?,?,?,?,?)`,
+    [sessionId, category || 'other', originalName, cos.key, cos.url, fileExt, fileSize, adminId || null, adminName || '']
+  )
+  return res.insertId
+}
+
+/** 同步附件到位勾选：上传自动勾上，删完同类附件自动取消 */
+async function syncChecklistFlag(sessionId, category) {
+  if (!CHECKLIST_KEYS.some(([k]) => k === category)) return
+  const [[row]] = await pool.query('SELECT doc_checklist FROM t_training_session WHERE id = ?', [sessionId])
+  let obj = row?.doc_checklist
+  if (typeof obj === 'string') { try { obj = JSON.parse(obj) } catch { obj = {} } }
+  obj = obj || {}
+  const [[{ cnt }]] = await pool.query(
+    'SELECT COUNT(*) AS cnt FROM t_training_session_attachment WHERE session_id = ? AND category = ?',
+    [sessionId, category]
+  )
+  obj[category] = Number(cnt) > 0 ? 1 : 0
+  await pool.query('UPDATE t_training_session SET doc_checklist = ? WHERE id = ?', [JSON.stringify(obj), sessionId])
+}
+
+/** 删除附件：先删 COS 再删元数据，并回写附件清单勾选 */
+async function removeAttachment(attachmentId) {
+  const [[a]] = await pool.query('SELECT * FROM t_training_session_attachment WHERE id = ?', [attachmentId])
+  if (!a) return null
+  if (a.cos_key) {
+    try { await deleteFile(a.cos_key) } catch (e) { console.error('[training-archive] 删除COS附件失败:', e.message) }
+  }
+  await pool.query('DELETE FROM t_training_session_attachment WHERE id = ?', [attachmentId])
+  await syncChecklistFlag(a.session_id, a.category)
+  return a
+}
+
 module.exports = {
   SCOPE_SUPERVISING_UNIT,
   CHECKLIST_KEYS,
   TRAIN_MODES,
   ASSESSMENT_TYPES,
   STATUS_LIST,
+  listAttachments,
+  addAttachment,
+  syncChecklistFlag,
+  removeAttachment,
   hoursStandardOf,
   expectedCountByMaterials,
   materialIdsOf,

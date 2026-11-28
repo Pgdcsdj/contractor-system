@@ -35,6 +35,23 @@ export function getRoster(id) {
   return request.get(`${BASE}/sessions/${id}/roster`)
 }
 
+export function getAttachments(sessionId) {
+  return request.get(`${BASE}/sessions/${sessionId}/attachments`)
+}
+
+export function uploadAttachment(sessionId, formData) {
+  return request.post(`${BASE}/sessions/${sessionId}/attachments`, formData)
+}
+
+export function deleteAttachment(id) {
+  return request.delete(`${BASE}/attachments/${id}`)
+}
+
+export function openAttachment(id) {
+  const token = localStorage.getItem('tnb_admin_token') || ''
+  window.open(`${BASE}/attachments/${id}/download?token=${encodeURIComponent(token)}`, '_blank')
+}
+
 export function getAnnual(params = {}) {
   return request.get(`${BASE}/annual`, { params })
 }

@@ -37,6 +37,12 @@ function fmtDuration(sec) {
   if (s < 60) return `${s}秒`
   return `${Math.floor(s / 60)}分${s % 60}秒`
 }
+function fmtSize(bytes) {
+  const b = Number(bytes) || 0
+  if (b < 1024) return `${b} B`
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`
+  return `${(b / 1024 / 1024).toFixed(2)} MB`
+}
 
 /**
  * 单位兜底：t_user.unit 有 89 人（约占 12%）为空且无承包商关联，
@@ -192,23 +198,43 @@ function buildSessionPack({ session, roster, scores }) {
   setCols(ws5, [20, 12, 50])
   xlsx.utils.book_append_sheet(wb, ws5, '5-效果评估')
 
-  // Sheet6 附件清单
+  // Sheet6 附件清单（勾选状态 + 实际上传文件）
   let checklist = s.doc_checklist
   if (typeof checklist === 'string') { try { checklist = JSON.parse(checklist) } catch { checklist = {} } }
   checklist = checklist || {}
+  const atts = s.attachments || []
+  const catLabel = Object.fromEntries(CHECKLIST_KEYS)
+  const checklistRows = CHECKLIST_KEYS.map(([k, label], i) => {
+    const files = atts.filter((a) => a.category === k)
+    const status = files.length ? '已上传' : checklist[k] ? '已勾选未上传' : '待补'
+    const note = files.length
+      ? files.map((f) => f.original_name).join('、')
+      : checklist[k] ? '已勾选但未见上传原件，建议补传' : '请在「培训档案」页面上传或勾选到位后重新导出'
+    return [i + 1, label, status, note]
+  })
+  const attachmentRows = atts.length
+    ? atts.map((a, i) => [
+        i + 1, catLabel[a.category] || '其他', a.original_name || '', fmtSize(a.file_size),
+        a.uploaded_by_name || '', fmtTime(a.uploaded_at), a.cos_url || '',
+      ])
+    : [['—', '—', '（暂无已上传附件）', '', '', '', '']]
   const ws6 = xlsx.utils.aoa_to_sheet([
     [`培训档案附件清单 —— ${s.title || ''}`],
     [],
+    ['一、归档材料到位情况'],
     ['序号', '归档材料', '状态', '备注'],
-    ...CHECKLIST_KEYS.map(([k, label], i) => [
-      i + 1, label, checklist[k] ? '已归档' : '待补', checklist[k] ? '' : '请在「培训档案」页面勾选到位后重新导出',
-    ]),
+    ...checklistRows,
+    [],
+    ['二、实际上传附件明细'],
+    ['序号', '材料类别', '文件名', '大小', '上传人', '上传时间', '下载地址'],
+    ...attachmentRows,
     [],
     ['说明', '按《中原油田安全生产教育和培训管理细则》3.10.1「一期一档」要求，上述材料应齐全后装订成册。'],
+    ['', '下载地址为腾讯云 COS 公网直链；单个附件不超过 20M，支持 PDF/Word/RAR/图片等格式。'],
     ['', '每期培训班结束 10 个工作日内须导入中国石化安全管理信息系统（3.10.3）。'],
     ...footerRows(),
   ])
-  setCols(ws6, [6, 22, 12, 46])
+  setCols(ws6, [6, 18, 34, 12, 14, 18, 60])
   xlsx.utils.book_append_sheet(wb, ws6, '6-附件清单')
 
   return xlsx.write(wb, { type: 'buffer', bookType: 'xlsx' })

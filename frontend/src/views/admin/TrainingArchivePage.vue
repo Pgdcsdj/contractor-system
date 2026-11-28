@@ -211,13 +211,48 @@
           <div class="section">
             <div class="section-title">
               档案附件到位情况
-              <span class="tip">勾选后才算「已归档」，未勾选的在导出件里会标「待补」</span>
+              <span class="tip">上传对应材料后会自动勾上；删除最后一份后自动取消</span>
             </div>
             <div class="chk-grid">
               <label v-for="c in meta.checklist" :key="c.key" class="chk">
                 <input type="checkbox" v-model="form.docChecklist[c.key]" />
                 {{ c.label }}
               </label>
+            </div>
+          </div>
+
+          <!-- 上传附件 -->
+          <div class="section">
+            <div class="section-title">
+              上传档案附件
+              <span class="tip">单个不超过 20M；支持 PDF / Word / RAR / ZIP / 图片</span>
+            </div>
+            <div v-if="!form.id" class="muted">请先保存培训场次，再回来上传附件。</div>
+            <div v-else>
+              <div class="att-upload">
+                <select v-model="attachmentCategory" class="sel">
+                  <option v-for="c in meta.checklist" :key="c.key" :value="c.key">{{ c.label }}</option>
+                  <option value="other">其他材料</option>
+                </select>
+                <input
+                  type="file"
+                  class="att-file"
+                  accept=".pdf,.doc,.docx,.rar,.zip,.7z,.jpg,.jpeg,.png,.gif,.bmp,.webp"
+                  @change="onAttachmentFile"
+                />
+                <button class="btn btn-primary nowrap" :disabled="!attachmentFile || uploadingAttachment" @click="doUploadAttachment">
+                  {{ uploadingAttachment ? '上传中…' : '上传附件' }}
+                </button>
+              </div>
+              <div v-if="attachments.length" class="att-list">
+                <div v-for="a in attachments" :key="a.id" class="att-row">
+                  <span class="att-name">{{ a.original_name }}</span>
+                  <span class="att-meta">{{ attachmentCategoryLabel(a.category) }} · {{ fmtSize(a.file_size) }} · {{ a.uploaded_by_name || '-' }}</span>
+                  <button class="lnk" @click="openAttachment(a.id)">下载</button>
+                  <button class="lnk danger" @click="doDeleteAttachment(a)">删除</button>
+                </div>
+              </div>
+              <div v-else class="muted">本场次暂无上传附件。</div>
             </div>
           </div>
 
@@ -283,6 +318,7 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import {
   getArchiveMeta, listSessions, getSession, createSession, updateSession,
   deleteSession, getRoster, openArchiveExport,
+  getAttachments, uploadAttachment, deleteAttachment, openAttachment,
 } from '@/api/trainingArchive'
 import { request } from '@/utils/request'
 
@@ -303,6 +339,11 @@ const saving = ref(false)
 const materials = ref([])
 const rosterOpen = ref(false)
 const rosterData = ref(null)
+
+const attachments = ref([])
+const attachmentCategory = ref('notice')
+const attachmentFile = ref(null)
+const uploadingAttachment = ref(false)
 
 const emptyForm = () => ({
   id: null, title: '', categoryId: null, sessionDate: '', timeRange: '', location: '',
@@ -329,6 +370,65 @@ function rateText(a, b) {
   const x = Number(a) || 0
   const y = Number(b) || 0
   return y > 0 ? Math.round((x / y) * 1000) / 10 + '%' : '-'
+}
+function fmtSize(bytes) {
+  const b = Number(bytes) || 0
+  if (b < 1024) return `${b} B`
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`
+  return `${(b / 1024 / 1024).toFixed(2)} MB`
+}
+function attachmentCategoryLabel(key) {
+  if (key === 'other') return '其他材料'
+  const hit = meta.checklist.find((c) => c.key === key)
+  return hit ? hit.label : key
+}
+
+async function loadAttachments(sessionId) {
+  try {
+    const res = await getAttachments(sessionId)
+    attachments.value = res.data?.data || []
+  } catch {
+    attachments.value = []
+  }
+}
+function onAttachmentFile(e) {
+  attachmentFile.value = e.target.files?.[0] || null
+  if (attachmentFile.value && attachmentFile.value.size > 20 * 1024 * 1024) {
+    alert('单个附件不能超过 20M')
+    attachmentFile.value = null
+    if (e.target) e.target.value = ''
+  }
+}
+async function doUploadAttachment() {
+  if (!form.id) return alert('请先保存培训场次')
+  if (!attachmentFile.value) return alert('请选择附件文件')
+  uploadingAttachment.value = true
+  try {
+    const fd = new FormData()
+    fd.append('category', attachmentCategory.value)
+    fd.append('file', attachmentFile.value)
+    await uploadAttachment(form.id, fd)
+    attachmentFile.value = null
+    const input = document.querySelector('.att-file')
+    if (input) input.value = ''
+    await loadAttachments(form.id)
+    await fetchList()
+    alert('附件已上传')
+  } catch (e) {
+    alert(e?.response?.data?.error || '附件上传失败')
+  } finally {
+    uploadingAttachment.value = false
+  }
+}
+async function doDeleteAttachment(a) {
+  if (!confirm(`确定删除附件「${a.original_name}」？`)) return
+  try {
+    await deleteAttachment(a.id)
+    await loadAttachments(form.id)
+    await fetchList()
+  } catch (e) {
+    alert(e?.response?.data?.error || '删除附件失败')
+  }
 }
 function statusText(s) {
   return { planned: '计划中', done: '已完成', archived: '已归档' }[s] || s
@@ -376,6 +476,8 @@ function openCreate() {
   const ck = {}
   meta.checklist.forEach((c) => { ck[c.key] = false })
   form.docChecklist = ck
+  attachments.value = []
+  attachmentFile.value = null
   if (materials.value.length === 0) fetchMaterials()
   drawer.value = true
 }
@@ -398,6 +500,8 @@ async function openEdit(s) {
   const out = {}
   meta.checklist.forEach((c) => { out[c.key] = !!(ck && ck[c.key]) })
   form.docChecklist = out
+  attachmentFile.value = null
+  await loadAttachments(d.id)
   if (materials.value.length === 0) fetchMaterials()
   drawer.value = true
 }
@@ -531,6 +635,16 @@ onMounted(async () => {
 
 .chk-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
 .chk { display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
+
+.att-upload { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.att-upload .sel { min-width: 150px; }
+.att-file { font-size: 12px; color: var(--text-secondary); max-width: 320px; }
+.att-list { margin-top: 10px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.att-row { display: flex; align-items: center; gap: 8px; padding: 7px 9px; border-bottom: 1px solid var(--border); font-size: 12px; }
+.att-row:last-child { border-bottom: 0; }
+.att-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.att-meta { color: var(--text-secondary); white-space: nowrap; }
+.lnk.danger { color: #dc2626; }
 
 .modal { width: min(900px, 94vw); background: var(--card-bg, #fff); border-radius: 12px; margin: auto; max-height: 88vh; display: flex; flex-direction: column; }
 .drawer-mask:has(.modal) { align-items: center; justify-content: center; }
